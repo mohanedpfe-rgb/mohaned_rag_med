@@ -132,8 +132,15 @@ class EmbeddingService:
         self.test_mode = test_mode
         self.dimension: int | None = None
         self.provider = "deterministic-test" if test_mode else "sentence-transformers"
+        # Provider is immutable for the lifetime of this service instance.
+        # Optional fallback providers (e.g., "ollama") can be configured via
+        # `allowed_fallback_providers`. Empty list means no fallback – ingestion aborts on failure.
+        self.allowed_fallback_providers: list[str] = []
         self.cache_size = max(0, cache_size)
         self.cache_ttl_seconds = max(0.0, cache_ttl_seconds)
+        # Cache keys will be prefixed with the current embedding profile fingerprint
+        # to avoid cross‑profile contamination.
+        self._profile_fingerprint: str | None = None
         self._query_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._active_batch_size = self.batch_size
@@ -185,7 +192,9 @@ class EmbeddingService:
         missing_indices: list[int] = []
         missing_texts: list[str] = []
         for index, text in enumerate(texts):
-            cached = self._embedding_cache.get(text)
+            # Use profile-aware cache key to avoid cross-profile contamination
+            cache_key = f"{self._profile_fingerprint or 'no_profile'}::{text}"
+            cached = self._embedding_cache.get(cache_key)
             if cached is not None:
                 ordered_results[index] = cached
             else:

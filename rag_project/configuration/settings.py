@@ -122,6 +122,9 @@ class Settings:
             ollama_failure_circuit_threshold=int(os.getenv("OLLAMA_FAILURE_CIRCUIT_THRESHOLD", "5")),
             ollama_circuit_open_seconds=float(os.getenv("OLLAMA_CIRCUIT_OPEN_SECONDS", "30.0")),
         )
+        # Ensure required data directories exist
+        for _dir in [settings.incoming_dir, settings.processed_dir, settings.failed_dir, settings.archive_dir, settings.vector_db_dir, settings.log_dir]:
+            _dir.mkdir(parents=True, exist_ok=True)
         valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
         if settings.log_level not in valid_levels:
             settings.log_level = "INFO"

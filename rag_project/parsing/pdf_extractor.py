@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unicodedata
 import uuid
 import hashlib
@@ -18,6 +19,45 @@ class PDFExtractor:
     def __init__(self, state_store: IngestionStateStore | None = None):
         self.ocr_service = OCRService()
         self.state_store = state_store
+
+    @staticmethod
+    def _normalize_for_dedupe(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").casefold()).strip()
+
+    @classmethod
+    def _looks_duplicate(cls, existing: str, candidate: str) -> bool:
+        if not existing or not candidate:
+            return False
+        normalized_existing = cls._normalize_for_dedupe(existing)
+        normalized_candidate = cls._normalize_for_dedupe(candidate)
+        if not normalized_existing or not normalized_candidate:
+            return False
+        if normalized_existing == normalized_candidate:
+            return True
+        if normalized_candidate in normalized_existing or normalized_existing in normalized_candidate:
+            return True
+        existing_tokens = set(re.findall(r"\w+", normalized_existing))
+        candidate_tokens = set(re.findall(r"\w+", normalized_candidate))
+        if not existing_tokens or not candidate_tokens:
+            return False
+        overlap = len(existing_tokens & candidate_tokens) / max(len(existing_tokens | candidate_tokens), 1)
+        return overlap >= 0.8
+
+    @classmethod
+    def _merge_native_and_ocr_text(cls, native_text: str, ocr_text: str) -> str:
+        native = [part.strip() for part in split_paragraphs(native_text or "") if part.strip()]
+        ocr = [part.strip() for part in split_paragraphs(ocr_text or "") if part.strip()]
+        merged: list[str] = []
+        seen: list[str] = []
+        for part in [*native, *ocr]:
+            normalized = cls._normalize_for_dedupe(part)
+            if not normalized:
+                continue
+            if any(cls._looks_duplicate(existing, part) for existing in seen):
+                continue
+            merged.append(part)
+            seen.append(part)
+        return clean_text("\n\n".join(merged)) if merged else clean_text(native_text or ocr_text or "")
 
     def extract(self, pdf_path: str | Path, document_id: str | None = None) -> list[PageExtraction]:
         return list(self.extract_iter(pdf_path, document_id))
@@ -137,12 +177,10 @@ class PDFExtractor:
                             extraction.metadata["ocr_skipped"] = "Page already has a text layer above the OCR threshold."
                         else:
                             ocr_text = clean_text(ocr_text)
-                            # Preserve native text and tables while adding OCR-only content.
+                            # Preserve native text and tables while adding OCR-only content without duplicating repeats.
                             native_text = extraction.text.strip()
-                            if native_text and ocr_text not in native_text:
-                                extraction.text = clean_text(f"{native_text}\n\n{ocr_text}")
-                            else:
-                                extraction.text = ocr_text or native_text
+                            merged_text = self._merge_native_and_ocr_text(native_text, ocr_text)
+                            extraction.text = merged_text or ocr_text or native_text
                             if extraction.text != native_text:
                                 extraction.extraction_method = "ocr"
                                 extraction.blocks = [p.strip() for p in split_paragraphs(extraction.text) if p.strip()]

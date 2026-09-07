@@ -134,6 +134,30 @@ def _status_pill(status: str) -> str:
     return mapping.get(status.upper(), f"⚪ {status.upper()}")
 
 
+def _render_overall_status(system: ResilientRAGSystem) -> None:
+    docs = _documents(system)
+    if not docs:
+        st.info("No documents in the ingestion state yet. Upload a PDF to begin indexing.")
+        return
+    counts = {"READY": 0, "RUNNING": 0, "FAILED": 0, "INTERRUPTED": 0}
+    for doc in docs:
+        status = str(doc.get("status") or "UNKNOWN").upper()
+        counts[status] = counts.get(status, 0) + 1
+    cols = st.columns(4)
+    with cols[0]:
+        st.metric("Documents", len(docs))
+    with cols[1]:
+        st.metric("Ready", counts.get("READY", 0))
+    with cols[2]:
+        st.metric("Running", counts.get("RUNNING", 0))
+    with cols[3]:
+        st.metric("Failed", counts.get("FAILED", 0) + counts.get("INTERRUPTED", 0))
+    latest = docs[0]
+    st.caption(
+        f"Latest document: {latest.get('file_name', 'unknown')} • status={_status_pill(latest.get('status', 'UNKNOWN'))}"
+    )
+
+
 def _render_system_health(system: ResilientRAGSystem) -> None:
     observer = get_observer(system.state_store)
     observer.poll_once()

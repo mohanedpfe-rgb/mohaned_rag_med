@@ -456,17 +456,27 @@ class RAGSystem:
             {"size": self.settings.chunk_size, "overlap": self.settings.chunk_overlap},
             sort_keys=True,
         )
+        current_ocr_config = json.dumps({"engine": "rapidocr", "scale": 2}, sort_keys=True)
+        embedding_profile = self.embedding_service.identity
+        current_version_id = self._ingestion_version_id(
+            content_hash=content_hash,
+            parser_version="pdf-extractor-v2",
+            ocr_config=current_ocr_config,
+            chunking_config=current_chunking_config,
+            embedding_model=self.settings.embedding_model,
+            embedding_profile=getattr(embedding_profile, "fingerprint", None),
+            embedding_dimension=getattr(embedding_profile, "dimension", None),
+        )
         if (
             existing
             and self.state_store.is_ready_status(existing.get("status"))
-            and existing["chunking_config"] == current_chunking_config
-            and existing["embedding_model"] == self.settings.embedding_model
+            and existing.get("version_id") == current_version_id
         ):
             return {
                 "status": "skipped",
                 "file_name": file_path.name,
                 "document_id": existing["document_id"],
-                "reason": "identical content already indexed",
+                "reason": "identical content already indexed for the current parser and embedding profile",
             }
         document_id = existing["document_id"] if existing else (
             previous["document_id"] if previous else content_hash
@@ -487,9 +497,10 @@ class RAGSystem:
                 "current_stage": "DISCOVERED",
                 "status": "RUNNING",
                 "parser_version": "pdf-extractor-v2",
-                "ocr_config": json.dumps({"engine": "rapidocr", "scale": 2}),
+                "ocr_config": current_ocr_config,
                 "chunking_config": current_chunking_config,
                 "embedding_model": self.settings.embedding_model,
+                "version_id": current_version_id,
             }
         )
         worker_id = str(uuid.uuid4())
@@ -834,6 +845,30 @@ class RAGSystem:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(block)
         return digest.hexdigest()
+
+    @staticmethod
+    def _ingestion_version_id(
+        *,
+        content_hash: str,
+        parser_version: str,
+        ocr_config: str | dict[str, Any] | None,
+        chunking_config: str | dict[str, Any] | None,
+        embedding_model: str,
+        embedding_profile: str | None,
+        embedding_dimension: int | None,
+    ) -> str:
+        payload = {
+            "content_hash": content_hash,
+            "parser_version": parser_version,
+            "ocr_config": json.loads(ocr_config) if isinstance(ocr_config, str) else (ocr_config or {}),
+            "chunking_config": json.loads(chunking_config) if isinstance(chunking_config, str) else (chunking_config or {}),
+            "embedding_model": embedding_model,
+            "embedding_profile": embedding_profile or embedding_model,
+            "embedding_dimension": embedding_dimension,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        ).hexdigest()
 
     def answer(self, question: str, metadata_filter: Dict[str, Any] | None = None) -> Dict[str, Any]:
         answer_started = time.perf_counter()
