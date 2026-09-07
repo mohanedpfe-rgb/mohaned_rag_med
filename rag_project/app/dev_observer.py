@@ -92,6 +92,42 @@ class IngestionObserver:
                 if len(self._events) > self.max_events:
                     self._events = self._events[-self.max_events:]
 
+        try:
+            events = self.state_store.get_events(limit=self.max_events)
+        except Exception:
+            events = []
+        if not events:
+            return
+        with self._lock:
+            for event in events:
+                existing = [
+                    item for item in self._events
+                    if item.document_id == str(event.get("document_id") or "")
+                    and item.stage == str(event.get("stage") or "")
+                    and item.status == str(event.get("status") or "")
+                    and item.details.get("message") == event.get("message")
+                ]
+                if existing:
+                    continue
+                self._events.append(
+                    Observation(
+                        timestamp=str(event.get("created_at") or self._now()),
+                        document_id=str(event.get("document_id") or ""),
+                        file_name=str(event.get("file_name") or ""),
+                        status=str(event.get("status") or "UNKNOWN"),
+                        stage=str(event.get("stage") or "UNKNOWN"),
+                        current_page=int(event.get("current_page") or 0),
+                        total_pages=int(event.get("total_pages") or 0),
+                        details={
+                            **(event.get("details") or {}),
+                            "event_type": event.get("event_type"),
+                            "message": event.get("message"),
+                        },
+                    )
+                )
+            if len(self._events) > self.max_events:
+                self._events = self._events[-self.max_events:]
+
     def events(self, document_id: str | None = None, limit: int = 250) -> list[Observation]:
         with self._lock:
             selected = [event for event in self._events if not document_id or event.document_id == document_id]

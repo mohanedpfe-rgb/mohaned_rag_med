@@ -257,6 +257,11 @@ class EmbeddingService:
         texts = [text for text in texts if text is not None]
         if not texts:
             return []
+        # Ollama model tags conventionally include a colon (for example
+        # qwen3-embedding:latest). Use the configured Ollama model directly
+        # instead of attempting a potentially large Hugging Face download.
+        if ":" in self.model:
+            return self._fallback_http_embed_batch(texts)
         try:
             model = self._get_sentence_transformer()
             vectors = model.encode(

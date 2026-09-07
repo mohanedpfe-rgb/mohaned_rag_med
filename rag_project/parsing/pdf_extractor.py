@@ -61,8 +61,11 @@ class PDFExtractor:
                 page = pdf[index]
                 try:
                     import pymupdf4llm
+
                     raw_text = pymupdf4llm.to_markdown(pdf, pages=[index])
-                except ImportError:
+                    if not raw_text or not raw_text.strip():
+                        raw_text = self._extract_page_text(page)
+                except Exception:
                     raw_text = self._extract_page_text(page)
                 text = clean_text(raw_text)
                 blocks = [p.strip() for p in split_paragraphs(text) if p.strip()]
@@ -148,7 +151,7 @@ class PDFExtractor:
                         extraction.ocr_status = "failed"
                         extraction.metadata["ocr_error"] = str(exc)
                         extraction.metadata["quality_warning"] = "Page is marked as OCR-required but OCR could not run."
-                if self.state_store:
+                if self.state_store and self.state_store.get_document(document_id):
                     self.state_store.upsert_page(
                         document_id,
                         page_number,

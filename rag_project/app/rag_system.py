@@ -533,9 +533,29 @@ class RAGSystem:
                     raise RuntimeError("Ingestion cancelled by user.")
 
             classification = DocumentClassifier.classify(file_path)
+            self.state_store.record_event(
+                document_id,
+                stage="VALIDATING",
+                status="RUNNING",
+                event_type="classification",
+                message=f"Classified {file_path.name} as {classification.get('document_type', 'unknown')} ({classification.get('page_count', 0)} pages)",
+                details=classification,
+                total_pages=int(classification.get("page_count") or 0),
+                file_name=file_path.name,
+            )
             mark_stage("classification")
             self.state_store.transition_document_state(
                 document_id, "VALIDATING", total_pages=classification["page_count"]
+            )
+            self.state_store.record_event(
+                document_id,
+                stage="EXTRACTING",
+                status="RUNNING",
+                event_type="extract",
+                message=f"Starting PDF extraction for {file_path.name}",
+                details={"file_path": str(file_path)},
+                total_pages=int(classification.get("page_count") or 0),
+                file_name=file_path.name,
             )
             self.state_store.transition_document_state(document_id, "EXTRACTING")
             pages = PDFExtractor(self.state_store).extract_iter(file_path, document_id)
@@ -543,6 +563,15 @@ class RAGSystem:
             renew_lease(force=True)
             check_cancel()
             self.state_store.transition_document_state(document_id, "CHUNKING")
+            self.state_store.record_event(
+                document_id,
+                stage="CHUNKING",
+                status="RUNNING",
+                event_type="chunk",
+                message="Chunking extracted pages into retrieval units",
+                details={"chunk_size": self.settings.chunk_size, "chunk_overlap": self.settings.chunk_overlap},
+                file_name=file_path.name,
+            )
             chunker = SemanticChunker(self.settings.chunk_size, self.settings.chunk_overlap)
             chunk_batches = chunker.chunk_page_batches(
                 pages, batch_size=self.settings.page_batch_size
@@ -551,6 +580,15 @@ class RAGSystem:
             renew_lease(force=True)
             check_cancel()
             self.state_store.transition_document_state(document_id, "EMBEDDING")
+            self.state_store.record_event(
+                document_id,
+                stage="EMBEDDING",
+                status="RUNNING",
+                event_type="embedding",
+                message="Generating chunk embeddings",
+                details={"batch_size": self.settings.page_batch_size},
+                file_name=file_path.name,
+            )
             chunk_count = 0
             embedding_count = 0
             embedding_ms = 0.0
@@ -611,6 +649,17 @@ class RAGSystem:
                 embedding_ms += (time.perf_counter() - embedding_started) * 1000
                 if batch_embeddings:
                     indexed_embeddings.extend(batch_embeddings)
+                    self.state_store.record_event(
+                        document_id,
+                        stage="EMBEDDING",
+                        status="RUNNING",
+                        event_type="embedding_batch",
+                        message=f"Embedded batch of {len(batch)} chunks",
+                        details={"batch_size": len(batch), "generated_vectors": len(batch_embeddings)},
+                        current_page=chunk_count + len(batch),
+                        total_pages=int(classification.get("page_count") or 0),
+                        file_name=file_path.name,
+                    )
                 indexed_documents.extend(documents)
                 indexed_metadatas.extend(metadatas)
                 indexed_ids.extend(ids)
@@ -619,6 +668,17 @@ class RAGSystem:
             check_cancel()
             if chunk_count == 0:
                 raise ValueError(f"No extractable text was produced for {file_path.name}.")
+            self.state_store.record_event(
+                document_id,
+                stage="INDEXING",
+                status="RUNNING",
+                event_type="index_write",
+                message=f"Writing {chunk_count} chunks to vector and lexical stores",
+                details={"chunk_count": chunk_count, "embedding_count": len(indexed_embeddings)},
+                current_page=int(classification.get("page_count") or 0),
+                total_pages=int(classification.get("page_count") or 0),
+                file_name=file_path.name,
+            )
             self.state_store.transition_document_state(
                 document_id, "INDEXING", embedding_dimension=embedding_dimension
             )
@@ -628,9 +688,27 @@ class RAGSystem:
                     indexed_documents, indexed_metadatas, indexed_embeddings, indexed_ids
                 )
                 embedding_count = len(indexed_embeddings)
+                self.state_store.record_event(
+                    document_id,
+                    stage="INDEXING",
+                    status="RUNNING",
+                    event_type="vector_store",
+                    message="Committed embeddings into the vector store",
+                    details={"vector_count": embedding_count, "chunk_count": chunk_count},
+                    file_name=file_path.name,
+                )
             else:
                 self.vector_store.add_lexical_documents(
                     indexed_documents, indexed_metadatas, indexed_ids
+                )
+                self.state_store.record_event(
+                    document_id,
+                    stage="INDEXING",
+                    status="RUNNING",
+                    event_type="vector_store",
+                    message="Committed lexical-only index entries for the document",
+                    details={"chunk_count": chunk_count},
+                    file_name=file_path.name,
                 )
             indexing_ms += (time.perf_counter() - indexing_started) * 1000
             stage_timings["embedding"] = round(embedding_ms, 3)
@@ -653,9 +731,34 @@ class RAGSystem:
                     document_id, previous_version, "FAILED"
                 )
                 self.vector_store.delete_version(document_id, previous_version)
+            self.state_store.record_event(
+                document_id,
+                stage="VALIDATING_INDEX",
+                status="RUNNING",
+                event_type="validation",
+                message="Validating vector and lexical index integrity",
+                details={"version_id": content_hash, "chunk_count": chunk_count},
+                file_name=file_path.name,
+            )
             self.state_store.transition_document_state(
                 document_id,
                 "VALIDATING_INDEX",
+            )
+            self.state_store.record_event(
+                document_id,
+                stage="READY",
+                status="READY",
+                event_type="completion",
+                message="Document ready for retrieval and answer generation",
+                details={
+                    "page_count": classification["page_count"],
+                    "chunk_count": chunk_count,
+                    "embedding_count": embedding_count,
+                    "vector_store_count": self.vector_store.count(),
+                },
+                current_page=int(classification.get("page_count") or 0),
+                total_pages=int(classification.get("page_count") or 0),
+                file_name=file_path.name,
             )
             self.state_store.transition_document_state(
                 document_id,

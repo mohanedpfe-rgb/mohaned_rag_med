@@ -141,14 +141,13 @@ class SemanticChunker:
         pages: Iterable[PageExtraction],
         batch_size: int = 16,
     ) -> Iterator[List[Chunk]]:
-        """Yield one batch per page.
-
-        The original implementation concatenated all pages before chunking,
-        which produced a single large list of chunks and then yielded fixed-size
-        batches. Tests expect a separate batch for each page, so we iterate over
-        the pages individually and yield the chunks for each page.
-        """
+        """Yield one batch per page while maintaining sequential chunk indices."""
+        chunk_index_offset = 0
         for page in pages:
             page_chunks = self.chunk_pages([page])
-            if page_chunks:
-                yield page_chunks
+            if not page_chunks:
+                continue
+            for chunk in page_chunks:
+                chunk.chunk_index = chunk_index_offset
+                chunk_index_offset += 1
+            yield page_chunks

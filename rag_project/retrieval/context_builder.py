@@ -46,9 +46,11 @@ class ContextBuilder:
             used_tokens += estimated_tokens
             selected.append(hit)
         context = "\n\n".join(
-            f"<evidence id=\"S{index + 1}\">"
-            f"[{hit.metadata.get('file_name', 'unknown')} pages "
-            f"{hit.metadata.get('page_numbers', [])}]\n{hit.text}\n</evidence>"
+            (
+                f"<evidence id=\"S{index + 1}\" chunk_id=\"{str((hit.metadata or {}).get('chunk_id') or f'{hit.doc_id}:{index}') }\">"
+                f"[{hit.metadata.get('file_name', 'unknown')} pages "
+                f"{hit.metadata.get('page_numbers', [])} chunk_id={str((hit.metadata or {}).get('chunk_id') or f'{hit.doc_id}:{index}')}]\n{hit.text}\n</evidence>"
+            )
             for index, hit in enumerate(selected)
         )
         return context, selected

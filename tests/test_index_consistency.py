@@ -88,3 +88,14 @@ def test_profile_mismatch_without_dimension_change_still_requires_migration(tmp_
     report = store.compatibility_report(profile_new)
     assert report["status"] == "INDEX_MIGRATION_REQUIRED"
     assert "Index fingerprint does not match" in report["message"]
+
+
+def test_empty_index_is_ready_for_new_embedding_profile(tmp_path):
+    store = VectorStore(tmp_path / "vectors")
+    profile = EmbeddingProfile("ollama", model="qwen3-embedding:latest", dimension=4096)
+
+    report = store.compatibility_report(profile)
+
+    assert report["status"] == "READY"
+    assert report["valid"] is True
+    assert "no chunks have been indexed" in report["message"]

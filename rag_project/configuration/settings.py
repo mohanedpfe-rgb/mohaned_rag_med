@@ -17,7 +17,7 @@ class Settings:
     vector_db_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2] / "data" / "vector_db")
     log_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2] / "logs")
     ollama_base_url: str = "http://127.0.0.1:11434"
-    embedding_model: str = "BAAI/bge-m3"
+    embedding_model: str = "qwen3-embedding:latest"
     generation_model: str = "llama3.2:3b"
     generation_timeout_seconds: float = 180.0
     generation_latency_budget_seconds: float = 60.0
@@ -88,7 +88,7 @@ class Settings:
             vector_db_dir=project_root / os.getenv("VECTOR_DB_DIR", "data/vector_db"),
             log_dir=project_root / os.getenv("LOG_DIR", "logs"),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"),
+            embedding_model=os.getenv("EMBEDDING_MODEL", "qwen3-embedding:latest"),
             generation_model=os.getenv("GENERATION_MODEL", "llama3.2:3b"),
             generation_timeout_seconds=float(os.getenv("GENERATION_TIMEOUT_SECONDS", "180")),
             generation_latency_budget_seconds=float(

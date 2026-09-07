@@ -78,6 +78,29 @@ def test_state_store_claims_leases_and_recovers_expired_workers(tmp_path: Path):
     assert store.claim_document("doc-lease", "worker-b", lease_seconds=900)
 
 
+def test_state_store_records_live_stage_events_for_monitoring(tmp_path: Path):
+    database = tmp_path / "state-live.sqlite3"
+    store = IngestionStateStore(database)
+    store.upsert_document(
+        {
+            "document_id": "doc-live",
+            "content_hash": "hash-live",
+            "file_path": str(tmp_path / "live.pdf"),
+            "file_name": "live.pdf",
+            "file_size": 11,
+            "embedding_model": "test",
+        }
+    )
+
+    store.transition_document_state("doc-live", "VALIDATING", total_pages=2)
+    store.transition_document_state("doc-live", "EXTRACTING")
+    events = store.get_events("doc-live")
+
+    assert any(event["stage"] == "VALIDATING" and event["status"] == "RUNNING" for event in events)
+    assert any(event["stage"] == "EXTRACTING" and event["status"] == "RUNNING" for event in events)
+    assert any(event["event_type"] == "stage" for event in events)
+
+
 def test_state_store_recovers_after_child_process_termination(tmp_path: Path):
     database = tmp_path / "child-state.sqlite3"
     child_code = (
@@ -166,6 +189,27 @@ def test_embedding_failures_are_not_silently_replaced(monkeypatch):
 def test_test_embeddings_require_explicit_mode():
     service = EmbeddingService("http://unused", "test", test_mode=True)
     assert len(service.embed_texts(["text"])[0]) == 32
+
+
+def test_ollama_tagged_embedding_models_use_ollama_api(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"embeddings": [[0.1, 0.2, 0.3]]}
+
+    monkeypatch.setattr(
+        "rag_project.embeddings.embedding_service.requests.post",
+        lambda *args, **kwargs: Response(),
+    )
+    service = EmbeddingService("http://ollama", "qwen3-embedding:latest", retries=1)
+
+    vectors = service.embed_texts(["text"])
+
+    assert vectors == [[0.1, 0.2, 0.3]]
+    assert service.provider == "ollama"
+    assert service.dimension == 3
 
 
 def test_file_monitor_marks_content_duplicates_not_duplicate_names(tmp_path: Path):

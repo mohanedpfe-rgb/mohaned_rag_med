@@ -98,6 +98,20 @@ class IngestionStateStore:
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS process_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id TEXT NOT NULL,
+                    file_name TEXT,
+                    created_at TEXT NOT NULL,
+                    stage TEXT,
+                    status TEXT,
+                    event_type TEXT NOT NULL DEFAULT 'stage',
+                    message TEXT NOT NULL DEFAULT '',
+                    details TEXT,
+                    current_page INTEGER DEFAULT 0,
+                    total_pages INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_process_events_document_time ON process_events(document_id, created_at DESC);
                 """
             )
             columns = {row[1] for row in connection.execute("PRAGMA table_info(documents)")}
@@ -200,6 +214,94 @@ class IngestionStateStore:
                 f"UPDATE documents SET {assignments} WHERE document_id = ?",
                 (*values.values(), document_id),
             )
+
+    def record_event(
+        self,
+        document_id: str,
+        *,
+        stage: str | None = None,
+        status: str | None = None,
+        event_type: str = "stage",
+        message: str = "",
+        details: dict[str, Any] | None = None,
+        current_page: int | None = None,
+        total_pages: int | None = None,
+        file_name: str | None = None,
+    ) -> dict[str, Any]:
+        if not document_id:
+            return {}
+        record = self.get_document(document_id)
+        effective_stage = (str(stage or (record.get("current_stage") if record else "")).upper() or None) if stage or record else None
+        if file_name is None and record:
+            file_name = record.get("file_name")
+        if current_page is None and record:
+            current_page = int(record.get("current_page") or 0)
+        if total_pages is None and record:
+            total_pages = int(record.get("total_pages") or 0)
+        if status is None and record:
+            status = record.get("status")
+        if status is None and effective_stage:
+            if effective_stage in {"READY", "COMPLETED"}:
+                status = "READY"
+            elif effective_stage == "FAILED":
+                status = "FAILED"
+            else:
+                status = "RUNNING"
+        normalized_status = self.normalize_status(status) if status else None
+        payload = json.dumps(details or {}, default=str, sort_keys=True)
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO process_events (
+                    document_id, file_name, created_at, stage, status, event_type,
+                    message, details, current_page, total_pages
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document_id,
+                    file_name,
+                    utc_now(),
+                    effective_stage,
+                    normalized_status,
+                    event_type,
+                    message,
+                    payload,
+                    int(current_page or 0),
+                    int(total_pages or 0),
+                ),
+            )
+        return {
+            "id": cursor.lastrowid,
+            "document_id": document_id,
+            "file_name": file_name,
+            "stage": effective_stage,
+            "status": normalized_status,
+            "event_type": event_type,
+            "message": message,
+            "details": details or {},
+        }
+
+    def get_events(self, document_id: str | None = None, limit: int = 250) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            if document_id:
+                rows = connection.execute(
+                    "SELECT * FROM process_events WHERE document_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (document_id, max(1, int(limit))),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM process_events ORDER BY created_at DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                ).fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            entry = dict(row)
+            try:
+                entry["details"] = json.loads(entry.get("details") or "{}")
+            except Exception:
+                entry["details"] = {}
+            events.append(entry)
+        return list(reversed(events))
 
     def claim_document(
         self,
@@ -328,6 +430,17 @@ class IngestionStateStore:
             values.setdefault("status", "FAILED")
             values.setdefault("index_state", "FAILED")
         self.update_document(document_id, **values)
+        self.record_event(
+            document_id,
+            stage=new_stage_value,
+            status=values.get("status", record.get("status")),
+            event_type="stage",
+            message=f"State transition {current_stage} -> {new_stage_value}",
+            details={"from_stage": current_stage, "to_stage": new_stage_value, **values},
+            current_page=int(record.get("current_page") or values.get("current_page", 0)),
+            total_pages=int(record.get("total_pages") or values.get("total_pages", 0)),
+            file_name=record.get("file_name"),
+        )
 
     def is_document_ready(self, document_id: str) -> bool:
         record = self.get_document(document_id)
