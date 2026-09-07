@@ -39,9 +39,15 @@ class OCRService:
 
             return self._recognize(image_path)
 
-    def ocr_page_object(self, page: fitz.Page, page_index: int) -> tuple[str, float | None]:
+    def ocr_page_object(
+        self,
+        page: fitz.Page,
+        page_index: int,
+        *,
+        force: bool = False,
+    ) -> tuple[str, float | None]:
         """OCR an already-open page to avoid reopening a large PDF per page."""
-        if not self.should_ocr_page(page):
+        if not force and not self.should_ocr_page(page):
             return "", None
         with tempfile.TemporaryDirectory(prefix="rag-ocr-") as directory:
             image_path = Path(directory) / f"page-{page_index + 1}.png"

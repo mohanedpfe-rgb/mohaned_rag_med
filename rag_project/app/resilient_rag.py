@@ -75,6 +75,7 @@ class ResilientRAGSystem(RAGSystem):
             test_mode=self.settings.embedding_test_mode,
             cache_size=self.settings.embedding_cache_size,
             cache_ttl_seconds=self.settings.embedding_cache_ttl_seconds,
+            max_concurrency=self.settings.ollama_concurrency,
         )
         self.embedding_startup_error = None
         self.vector_store.set_expected_identity(None)

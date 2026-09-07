@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import time
+import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any
@@ -121,6 +122,7 @@ class EmbeddingService:
         test_mode: bool = False,
         cache_size: int = 10000,
         cache_ttl_seconds: float = 86400.0,
+        max_concurrency: int = 1,
     ):
         self.base_url = base_url.rstrip("/") if base_url else ""
         self.model = model
@@ -136,6 +138,7 @@ class EmbeddingService:
         self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
         self._active_batch_size = self.batch_size
         self._consecutive_timeouts = 0
+        self._inference_semaphore = threading.BoundedSemaphore(max(1, int(max_concurrency)))
         self._sentence_transformer = None
         self.last_error: str | None = None
 
@@ -190,7 +193,8 @@ class EmbeddingService:
                 missing_texts.append(text)
 
         if missing_texts:
-            new_vectors = self._embed_batch(missing_texts)
+            with self._inference_semaphore:
+                new_vectors = self._embed_batch(missing_texts)
             if len(new_vectors) != len(missing_texts):
                 raise RuntimeError(
                     f"Embedding backend returned {len(new_vectors)} vectors for {len(missing_texts)} texts."
@@ -294,6 +298,11 @@ class EmbeddingService:
             for vector in vectors
         ):
             raise ValueError("Embedding vectors have inconsistent dimensions.")
+        if any(
+            math.sqrt(sum(float(value) * float(value) for value in vector)) <= 1e-12
+            for vector in vectors
+        ):
+            raise ValueError("Embedding vectors must have a non-zero norm.")
         if self.dimension is None:
             self.dimension = dimension
         elif self.dimension != dimension:
@@ -316,6 +325,12 @@ class EmbeddingService:
             while len(self._query_cache) > self.cache_size:
                 self._query_cache.popitem(last=False)
         return vector
+
+    def validate_embedding(self, vector: list[float] | tuple[float, ...]) -> None:
+        self._validate([list(vector)], 1)
+
+    def validate_batch(self, vectors: list[list[float]]) -> None:
+        self._validate(vectors, len(vectors))
 
     def _test_embedding(self, text: str) -> list[float]:
         vector = [byte / 255.0 for byte in hashlib.sha256(text.encode("utf-8")).digest()]

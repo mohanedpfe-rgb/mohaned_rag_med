@@ -130,17 +130,20 @@ class PDFExtractor:
 
                 if ocr_required:
                     try:
-                        ocr_text, confidence = self.ocr_service.ocr_page_object(page, index)
+                        ocr_text, confidence = self.ocr_service.ocr_page_object(page, index, force=True)
                         if not ocr_text:
                             extraction.ocr_status = "skipped"
                             extraction.ocr_required = False
                             extraction.metadata["ocr_skipped"] = "Page already has a text layer above the OCR threshold."
                         else:
                             ocr_text = clean_text(ocr_text)
-                            # Keep selectable PDF text when OCR is clearly worse, but
-                            # replace sparse/garbled extraction with the OCR result.
-                            if len(ocr_text) > len(extraction.text) or not extraction.text:
-                                extraction.text = ocr_text
+                            # Preserve native text and tables while adding OCR-only content.
+                            native_text = extraction.text.strip()
+                            if native_text and ocr_text not in native_text:
+                                extraction.text = clean_text(f"{native_text}\n\n{ocr_text}")
+                            else:
+                                extraction.text = ocr_text or native_text
+                            if extraction.text != native_text:
                                 extraction.extraction_method = "ocr"
                                 extraction.blocks = [p.strip() for p in split_paragraphs(extraction.text) if p.strip()]
                             extraction.ocr_required = True

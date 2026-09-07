@@ -46,6 +46,18 @@ def test_lexical_index_is_persistent_and_returns_matching_chunks(tmp_path):
     assert result["metadatas"][0][0]["document_id"] == "doc-a"
 
 
+def test_zero_vectors_are_rejected_from_semantic_index(tmp_path):
+    store = VectorStore(tmp_path / "vectors")
+
+    with pytest.raises(ValueError, match="Invalid semantic embedding"):
+        store.add_documents(
+            ["text"],
+            [{"document_id": "doc", "chunk_id": "chunk", "page_numbers": [1], "version_id": "v1"}],
+            [[0.0, 0.0]],
+            ["vec"],
+        )
+
+
 def test_embedding_mismatch_is_reported_before_chroma_query(tmp_path):
     store = VectorStore(tmp_path / "vectors")
     store.set_expected_identity(EmbeddingIdentity("test", "old", 2))

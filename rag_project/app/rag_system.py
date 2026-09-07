@@ -279,6 +279,7 @@ class RAGSystem:
             test_mode=self.settings.embedding_test_mode,
             cache_size=self.settings.embedding_cache_size,
             cache_ttl_seconds=self.settings.embedding_cache_ttl_seconds,
+            max_concurrency=self.settings.ollama_concurrency,
         )
         self.vector_store = VectorStore(self.settings.vector_db_dir)
         self.embedding_startup_error: str | None = None
@@ -297,7 +298,7 @@ class RAGSystem:
             lexical_mode=self.settings.lexical_mode,
             vector_weight=self.settings.vector_weight,
         )
-        self.reranker = Reranker()
+        self.reranker = Reranker(self.settings.reranker_model)
         self.llm = OllamaLLMClient(
             self.settings.ollama_base_url,
             self.settings.generation_model,
@@ -630,22 +631,25 @@ class RAGSystem:
                     )
                 batch_embeddings: list[list[float]] = []
                 embedding_started = time.perf_counter()
-                if self.embedding_startup_error is None:
-                    try:
-                        batch_embeddings = self.embedding_service.embed_texts(documents)
-                        self.vector_store.set_expected_identity(self.embedding_service.identity)
-                        compatibility = self.vector_store.compatibility_report(
-                            self.embedding_service.identity
+                if self.embedding_startup_error is not None:
+                    raise RuntimeError(f"FAILED_EMBEDDING: {self.embedding_startup_error}")
+                try:
+                    batch_embeddings = self.embedding_service.embed_texts(documents)
+                    if len(batch_embeddings) != len(documents):
+                        raise RuntimeError(
+                            f"Embedding backend returned {len(batch_embeddings)} vectors for "
+                            f"{len(documents)} chunks."
                         )
-                        if compatibility["status"] != "READY":
-                            raise RuntimeError(compatibility["message"])
-                        embedding_dimension = self.embedding_service.dimension
-                    except RuntimeError as exc:
-                        self.embedding_startup_error = str(exc)
-                        indexed_embeddings = []
-                        self.logger.warning(
-                            "Embedding batch unavailable; indexing lexical text only: %s", exc
-                        )
+                    self.vector_store.set_expected_identity(self.embedding_service.identity)
+                    compatibility = self.vector_store.compatibility_report(
+                        self.embedding_service.identity
+                    )
+                    if compatibility["status"] != "READY":
+                        raise RuntimeError(compatibility["message"])
+                    embedding_dimension = self.embedding_service.dimension
+                except (RuntimeError, ValueError) as exc:
+                    self.embedding_startup_error = str(exc)
+                    raise RuntimeError(f"FAILED_EMBEDDING: {exc}") from exc
                 embedding_ms += (time.perf_counter() - embedding_started) * 1000
                 if batch_embeddings:
                     indexed_embeddings.extend(batch_embeddings)
@@ -698,17 +702,14 @@ class RAGSystem:
                     file_name=file_path.name,
                 )
             else:
-                self.vector_store.add_lexical_documents(
-                    indexed_documents, indexed_metadatas, indexed_ids
+                raise RuntimeError(
+                    "FAILED_EMBEDDING: semantic chunk count does not match embedding count."
                 )
-                self.state_store.record_event(
-                    document_id,
-                    stage="INDEXING",
-                    status="RUNNING",
-                    event_type="vector_store",
-                    message="Committed lexical-only index entries for the document",
-                    details={"chunk_count": chunk_count},
-                    file_name=file_path.name,
+            validation = self.vector_store.validate_document_index(document_id, content_hash)
+            if not validation["valid"] or validation["count"] != embedding_count:
+                raise RuntimeError(
+                    "FAILED_EMBEDDING: committed index validation failed: "
+                    + "; ".join(validation.get("issues", []))
                 )
             indexing_ms += (time.perf_counter() - indexing_started) * 1000
             stage_timings["embedding"] = round(embedding_ms, 3)
@@ -792,14 +793,16 @@ class RAGSystem:
         except Exception as exc:  # pragma: no cover
             self.logger.exception("Failed to process %s", file_path.name)
             try:
+                self.vector_store.delete_version(document_id, content_hash)
                 self.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
             except (RuntimeError, ValueError):
                 self.logger.exception("Failed to quarantine partial index for %s", file_path.name)
+            failure_stage = "FAILED_EMBEDDING" if str(exc).startswith("FAILED_EMBEDDING:") else "FAILED"
             try:
-                self.state_store.transition_document_state(document_id, "FAILED", error=str(exc))
+                self.state_store.transition_document_state(document_id, failure_stage, error=str(exc))
             except ValueError:
                 self.state_store.update_document(
-                    document_id, current_stage="FAILED", status="FAILED", error=str(exc)
+                    document_id, current_stage=failure_stage, status=failure_stage, error=str(exc)
                 )
             quarantine_error: str | None = None
             failed_path = self.settings.failed_dir / file_path.name

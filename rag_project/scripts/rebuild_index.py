@@ -37,6 +37,7 @@ def rebuild_index(project_root: str | Path | None = None) -> dict[str, Any]:
         retries=settings.embedding_retries,
         test_mode=settings.embedding_test_mode,
         cache_size=0,
+        max_concurrency=settings.ollama_concurrency,
     )
     service.discover_dimension()
     staging = settings.vector_db_dir.parent / (

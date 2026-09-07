@@ -52,7 +52,8 @@ class HybridRetriever:
         return 1.0 / (k + float(max(1, int(rank))))
 
     def retrieve(self, query: str, top_k: int = 6, where: Dict[str, Any] | None = None) -> List[RetrievalHit]:
-        query = " ".join(meaningful_tokens(query))
+        original_query = (query or "").strip()
+        lexical_query = " ".join(meaningful_tokens(original_query))
         candidate_count = max(top_k * 5, 20)
         vector_results: dict[str, list[list[Any]]] = {
             "ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]
@@ -68,11 +69,11 @@ class HybridRetriever:
             vector_future = None
             if mode in {"hybrid", "lexical"}:
                 lexical_future = executor.submit(
-                    self.vector_store.search_lexical, query, candidate_count, where
+                    self.vector_store.search_lexical, lexical_query, candidate_count, where
                 )
             if mode in {"hybrid", "vector"}:
                 try:
-                    query_embedding = self.embedding_service.embed_query(query)
+                    query_embedding = self.embedding_service.embed_query(original_query)
                     vector_future = executor.submit(
                         self.vector_store.search, query_embedding, candidate_count, where
                     )
@@ -148,7 +149,7 @@ class HybridRetriever:
         hits: List[RetrievalHit] = []
         for item_id, hit in hits_by_id.items():
             if hit.lexical_score <= 0.0:
-                hit.lexical_score = keyword_overlap_score(query, hit.text)
+                hit.lexical_score = keyword_overlap_score(lexical_query, hit.text)
             v_norm = hit.vector_score / max(1e-9, max_vector)
             l_norm = hit.lexical_score / max(1e-9, max_lexical)
             if mode == "hybrid":

@@ -126,6 +126,7 @@ def _status_pill(status: str) -> str:
         "READY": "🟢 READY",
         "RUNNING": "🟡 RUNNING",
         "FAILED": "🔴 FAILED",
+        "FAILED_EMBEDDING": "🔴 FAILED EMBEDDING",
         "INTERRUPTED": "🟠 INTERRUPTED",
         "BUILDING": "🔵 BUILDING",
         "PENDING": "⚪ PENDING",

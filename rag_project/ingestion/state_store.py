@@ -17,7 +17,10 @@ class IngestionStateStore:
 
     READY_STATUSES = {"READY", "COMPLETED"}
     ACTIVE_STATUSES = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "INTERRUPTED", "RECOVERING"}
-    TERMINAL_STATUSES = {"FAILED", "QUARANTINED", "READY", "COMPLETED"}
+    TERMINAL_STATUSES = {
+        "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING",
+        "FAILED_INDEXING", "DEGRADED_LEXICAL", "QUARANTINED", "READY", "COMPLETED",
+    }
 
     def __init__(self, database_path: str | Path):
         self.database_path = Path(database_path)
@@ -243,8 +246,8 @@ class IngestionStateStore:
         if status is None and effective_stage:
             if effective_stage in {"READY", "COMPLETED"}:
                 status = "READY"
-            elif effective_stage == "FAILED":
-                status = "FAILED"
+            elif effective_stage.startswith("FAILED") or effective_stage == "DEGRADED_LEXICAL":
+                status = effective_stage
             else:
                 status = "RUNNING"
         normalized_status = self.normalize_status(status) if status else None
@@ -406,16 +409,21 @@ class IngestionStateStore:
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
         allowed = {
-            "DISCOVERED": {"VALIDATING", "FAILED", "QUARANTINED"},
-            "VALIDATING": {"EXTRACTING", "FAILED", "QUARANTINED"},
-            "EXTRACTING": {"OCR", "CHUNKING", "EMBEDDING", "INDEXING", "FAILED", "QUARANTINED"},
-            "OCR": {"CHUNKING", "FAILED", "QUARANTINED"},
-            "CHUNKING": {"EMBEDDING", "FAILED", "QUARANTINED"},
-            "EMBEDDING": {"INDEXING", "FAILED", "QUARANTINED"},
-            "INDEXING": {"VALIDATING_INDEX", "FAILED", "QUARANTINED"},
-            "VALIDATING_INDEX": {"READY", "FAILED", "QUARANTINED"},
+            "DISCOVERED": {"VALIDATING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
+            "VALIDATING": {"EXTRACTING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
+            "EXTRACTING": {"OCR", "CHUNKING", "EMBEDDING", "INDEXING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
+            "OCR": {"CHUNKING", "FAILED", "FAILED_OCR", "QUARANTINED"},
+            "CHUNKING": {"EMBEDDING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
+            "EMBEDDING": {"INDEXING", "FAILED", "FAILED_EMBEDDING", "QUARANTINED"},
+            "INDEXING": {"VALIDATING_INDEX", "FAILED", "FAILED_INDEXING", "QUARANTINED"},
+            "VALIDATING_INDEX": {"READY", "FAILED", "FAILED_INDEXING", "QUARANTINED"},
             "READY": {"READY"},
             "FAILED": {"RECOVERING", "QUARANTINED"},
+            "FAILED_EXTRACTION": {"RECOVERING", "QUARANTINED"},
+            "FAILED_OCR": {"RECOVERING", "QUARANTINED"},
+            "FAILED_EMBEDDING": {"RECOVERING", "QUARANTINED"},
+            "FAILED_INDEXING": {"RECOVERING", "QUARANTINED"},
+            "DEGRADED_LEXICAL": {"RECOVERING", "READY", "QUARANTINED"},
             "QUARANTINED": {"RECOVERING", "FAILED"},
             "INTERRUPTED": {"RECOVERING", "FAILED", "QUARANTINED"},
             "RECOVERING": {"VALIDATING", "EXTRACTING", "CHUNKING", "EMBEDDING", "INDEXING", "READY", "FAILED", "QUARANTINED"},
@@ -426,8 +434,8 @@ class IngestionStateStore:
         if new_stage_value in {"READY", "COMPLETED"}:
             values.setdefault("status", "READY")
             values.setdefault("index_state", "READY")
-        elif new_stage_value == "FAILED":
-            values.setdefault("status", "FAILED")
+        elif new_stage_value.startswith("FAILED") or new_stage_value == "DEGRADED_LEXICAL":
+            values.setdefault("status", new_stage_value)
             values.setdefault("index_state", "FAILED")
         self.update_document(document_id, **values)
         self.record_event(

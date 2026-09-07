@@ -45,6 +45,7 @@ class Settings:
     ingestion_lease_seconds: int = 900
     log_level: str = "INFO"
     ollama_concurrency: int = 2
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
     ollama_failure_circuit_threshold: int = 5
     ollama_circuit_open_seconds: float = 30.0
 
@@ -117,6 +118,7 @@ class Settings:
             ingestion_lease_seconds=int(os.getenv("INGESTION_LEASE_SECONDS", "900")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
             ollama_concurrency=int(os.getenv("OLLAMA_CONCURRENCY", "2")),
+            reranker_model=os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"),
             ollama_failure_circuit_threshold=int(os.getenv("OLLAMA_FAILURE_CIRCUIT_THRESHOLD", "5")),
             ollama_circuit_open_seconds=float(os.getenv("OLLAMA_CIRCUIT_OPEN_SECONDS", "30.0")),
         )
