@@ -1,0 +1,2 @@
+2026-09-07 00:37:03,352 WARNING rag_system: Embedding service unavailable; lexical retrieval remains enabled: Embedding service failed after 3 attempts for model 'BAAI/bge-m3'.
+2026-09-07 00:45:47,074 INFO rag_system: Processed DC endocrino version 2024 (portrait sans astuces).pdf
