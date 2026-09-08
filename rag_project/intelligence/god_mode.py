@@ -9,6 +9,7 @@ from rag_project.intelligence.evidence_guard import evidence_confidence, citatio
 from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
 from rag_project.intelligence.pdf_intelligence import enrich_text
 from rag_project.intelligence.atomic_versioning import install as install_atomic_versioning
+from rag_project.intelligence.index_auditor import audit_index
 
 
 GOD_MODE_FEATURES = (
@@ -148,7 +149,6 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         where = MetadataFilter.build(metadata_filter)
     except Exception:
         where = None
-
     retrieval_start = time.perf_counter()
     hits = _safe_hits(self, plan.normalized, plan, where)
     retrieval_ms = (time.perf_counter() - retrieval_start) * 1000
@@ -222,4 +222,8 @@ def install() -> None:
         if not hasattr(RAGSystem, "_original_god_mode_answer"):
             RAGSystem._original_god_mode_answer = RAGSystem.answer
             RAGSystem.answer = _god_answer
+        if not hasattr(RAGSystem, "god_mode_report"):
+            RAGSystem.god_mode_report = staticmethod(report)
+        if not hasattr(RAGSystem, "audit_god_mode_index"):
+            RAGSystem.audit_god_mode_index = audit_index
         _INSTALLED = True
