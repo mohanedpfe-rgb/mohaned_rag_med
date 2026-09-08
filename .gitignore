@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
 env/
@@ -14,6 +16,7 @@ data/*.sqlite3
 data/vector_db/
 data/ingestion.sqlite3
 data/**/*.sqlite3
+data/**/*.sqlite3-*
 *.db
 *.db-journal
 *.db-wal
@@ -22,3 +25,12 @@ data/**/*.sqlite3
 .cache/
 *.tmp
 *.temp
+# Runtime OCR/extraction/cache artifacts
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.onnx
+*.onnx.data
+*.parquet
+*.arrow
