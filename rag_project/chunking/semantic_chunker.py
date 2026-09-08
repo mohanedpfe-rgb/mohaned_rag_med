@@ -4,150 +4,122 @@ import re
 from collections.abc import Iterable, Iterator
 from typing import List
 
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+
 from rag_project.ingestion.document_models import Chunk, PageExtraction
-from rag_project.utils.text_utils import split_paragraphs
+from rag_project.intelligence.pdf_intelligence import enrich_text
 
 
 class SemanticChunker:
+    """Structure-aware child chunking with explicit parent/section and alternate search representations."""
+
     def __init__(self, chunk_size: int = 700, chunk_overlap: int = 120):
         self.chunk_size = max(1, int(chunk_size))
         self.chunk_overlap = max(0, int(chunk_overlap))
+        self._headers = [("#", "chapter"), ("##", "section"), ("###", "subsection")]
 
-    def _flush_chunk(
-        self,
-        chunks: List[Chunk],
-        doc_id: str,
-        file_name: str,
-        text: str,
-        page_numbers: set[int],
-        evidence_types: set[str],
-    ) -> None:
-        if not text or not text.strip():
-            return
-        chunks.append(
-            Chunk(
-                doc_id=doc_id,
-                file_name=file_name,
-                chunk_index=len(chunks),
-                text=text.strip(),
-                page_numbers=sorted(page_numbers),
-                metadata={
-                    "source_pages": sorted(page_numbers),
-                    "evidence_types": sorted(evidence_types),
-                },
-            )
+    @staticmethod
+    def _section_fallback(text: str) -> str | None:
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if re.match(r"^(?:\d+(?:\.\d+)*|[IVXLC]+)[.)]?\s+\S", line) and len(line) <= 180:
+                return line
+        return None
+
+    def _parent_sections(self, text: str) -> list[tuple[str, dict[str, str]]]:
+        splitter = MarkdownHeaderTextSplitter(headers_to_split_on=self._headers)
+        try:
+            sections = splitter.split_text(text or "")
+        except Exception:
+            sections = []
+        if not sections:
+            fallback = self._section_fallback(text)
+            return [(text or "", {"section": fallback} if fallback else {})]
+        return [(s.page_content, {k: str(v) for k, v in s.metadata.items()}) for s in sections]
+
+    def _child_splitter(self) -> RecursiveCharacterTextSplitter:
+        return RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=min(self.chunk_overlap, max(0, self.chunk_size // 2)),
+            separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""],
         )
-
-    def _split_paragraph(self, paragraph: str) -> list[str]:
-        text = paragraph.strip()
-        if not text:
-            return []
-        if len(text) <= self.chunk_size:
-            return [text]
-
-        sentences = [
-            sentence.strip()
-            for sentence in re.split(r"(?<=[.!?。！？])\s+", text)
-            if sentence.strip()
-        ]
-        tokens = (
-            sentences
-            if len(sentences) > 1 and max(map(len, sentences), default=0) <= self.chunk_size
-            else text.split()
-        )
-        segments: list[str] = []
-        current_tokens: list[str] = []
-
-        for token in tokens:
-            candidate = "".join(current_tokens) if not current_tokens else " ".join(current_tokens + [token])
-            if len(candidate) <= self.chunk_size or not current_tokens:
-                current_tokens.append(token)
-                continue
-            segments.append(" ".join(current_tokens))
-            current_tokens = [token]
-
-        if current_tokens:
-            segments.append(" ".join(current_tokens))
-
-        return segments
 
     def chunk_pages(self, pages: List[PageExtraction]) -> List[Chunk]:
         if not pages:
             return []
-        
-        # Process each page individually to preserve per-page evidence types
+        child_splitter = self._child_splitter()
         chunks: List[Chunk] = []
-        chunk_idx = 0
-        from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
-        headers = [("#", "chapter"), ("##", "section")]
-        parent_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers)
-        child_splitter = RecursiveCharacterTextSplitter(chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap)
-
         for page in pages:
-            # Split the page text into parent sections (e.g., chapters/sections)
-            lc_chunks = parent_splitter.split_text(page.text or "")
-            for lc in lc_chunks:
-                metadata = lc.metadata
-                parent_text = lc.page_content
-
-                # Build context prefix from chapter/section metadata
-                context_parts = []
-                if metadata.get("chapter"):
-                    context_parts.append(f"Chapter: {metadata['chapter']}")
-                if metadata.get("section"):
-                    context_parts.append(f"Section: {metadata['section']}")
-                context_prefix = " - ".join(context_parts)
-                if context_prefix:
-                    contextualized_parent = f"[{context_prefix}]\n{parent_text}"
-                else:
-                    contextualized_parent = parent_text
-
-                # Determine evidence types for this page
-                evidence: set[str] = {"text"}
-                if page.has_images:
-                    evidence.add("figure")
-                if page.table_count > 0:
-                    evidence.add("table")
-
-                # Split parent section into child chunks
-                child_texts = child_splitter.split_text(parent_text)
-                for child_text in child_texts:
-                    if context_prefix:
-                        child_search_text = f"[{context_prefix}]\n{child_text}"
-                    else:
-                        child_search_text = child_text
-
-                    chunks.append(
-                        Chunk(
-                            doc_id=page.document_id,
-                            file_name=page.file_name,
-                            chunk_index=chunk_idx,
-                            text=child_search_text,
-                            page_numbers=[page.page_number or 1],
-                            metadata={
-                                "source_pages": [page.page_number or 1],
-                                "evidence_types": sorted(evidence),
-                                "chapter": metadata.get("chapter"),
-                                "section": metadata.get("section"),
-                                "parent_text": contextualized_parent,
-                            },
-                        )
-                    )
-                    chunk_idx += 1
+            section_index = 0
+            evidence: set[str] = {"text"}
+            if page.has_images or page.figure_ids:
+                evidence.add("figure")
+            if page.table_count or page.table_ids:
+                evidence.add("table")
+            page_enriched = enrich_text(page.text or "")
+            for parent_text, parent_meta in self._parent_sections(page.text or ""):
+                section_title = parent_meta.get("section") or parent_meta.get("subsection") or page_enriched.get("headings", [None])[0]
+                chapter_title = parent_meta.get("chapter")
+                parent_id = f"{page.document_id}:p{page.page_number}:parent:{section_index}"
+                section_id = f"{page.document_id}:p{page.page_number}:section:{section_index}"
+                children = child_splitter.split_text(parent_text) or [parent_text]
+                for child_index, child_text in enumerate(children):
+                    child_text = child_text.strip()
+                    if not child_text:
+                        continue
+                    enriched = enrich_text(child_text)
+                    table_id = (page.table_ids[section_index % len(page.table_ids)] if page.table_ids and "table" in evidence else None)
+                    figure_id = (page.figure_ids[section_index % len(page.figure_ids)] if page.figure_ids and "figure" in evidence else None)
+                    prefix_parts = []
+                    if chapter_title: prefix_parts.append(f"Chapter: {chapter_title}")
+                    if section_title: prefix_parts.append(f"Section: {section_title}")
+                    prefix = " - ".join(prefix_parts)
+                    search_text = f"[{prefix}]\n{child_text}" if prefix else child_text
+                    metadata = {
+                        "source_pages": [page.page_number or 1],
+                        "evidence_types": sorted(evidence),
+                        "chapter": chapter_title,
+                        "section": section_title,
+                        "section_id": section_id,
+                        "parent_id": parent_id,
+                        "parent_text": parent_text,
+                        "child_index": child_index,
+                        "normalized_text": enriched["normalized_text"],
+                        "entities": enriched["entities"],
+                        "headings": enriched["headings"],
+                        "number_forms": enriched["number_forms"],
+                        "table_id": table_id,
+                        "figure_id": figure_id,
+                        "document_id": page.document_id,
+                        "file_name": page.file_name,
+                        "page_type": page.page_type,
+                        "quality_score": page.quality_score,
+                        "ocr_status": page.ocr_status,
+                    }
+                    chunks.append(Chunk(
+                        doc_id=page.document_id,
+                        file_name=page.file_name,
+                        chunk_index=len(chunks),
+                        text=search_text,
+                        page_numbers=[page.page_number or 1],
+                        metadata=metadata,
+                        representation_type="canonical",
+                        parent_id=parent_id,
+                        section_id=section_id,
+                        table_id=table_id,
+                        figure_id=figure_id,
+                        normalized_text=enriched["normalized_text"],
+                    ))
+                section_index += 1
         return chunks
 
-    def chunk_page_batches(
-        self,
-        pages: Iterable[PageExtraction],
-        batch_size: int = 16,
-    ) -> Iterator[List[Chunk]]:
-        """Yield one batch per page while maintaining sequential chunk indices."""
-        chunk_index_offset = 0
+    def chunk_page_batches(self, pages: Iterable[PageExtraction], batch_size: int = 16) -> Iterator[List[Chunk]]:
+        """Yield bounded page batches; indices remain globally sequential across the iterator."""
+        offset = 0
         for page in pages:
-            page_chunks = self.chunk_pages([page])
-            if not page_chunks:
-                continue
-            for chunk in page_chunks:
-                chunk.chunk_index = chunk_index_offset
-                chunk_index_offset += 1
-            yield page_chunks
+            batch = self.chunk_pages([page])
+            for chunk in batch:
+                chunk.chunk_index = offset
+                offset += 1
+            if batch:
+                yield batch
