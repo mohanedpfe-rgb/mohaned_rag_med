@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -41,7 +42,6 @@ def _safe_add_documents(
             if not self._valid_vector(embeddings[index], dim):
                 raise ValueError(f"Invalid semantic embedding at index {index}.")
             normalized.append(metadata)
-
         try:
             self.collection.upsert(
                 ids=safe_ids,
@@ -58,7 +58,6 @@ def _safe_add_documents(
                 except Exception:
                     pass
                 raise
-            # Make records visible only after both stores contain the batch.
             ready_metadata = []
             for metadata in normalized:
                 ready = dict(metadata)
@@ -79,7 +78,7 @@ def _safe_ingestion_version_id(
     embedding_profile: str | None,
     embedding_dimension: int | None,
 ) -> str:
-    """Stable content/index fingerprint including the actual embedding profile inputs."""
+    """Stable content/index fingerprint including embedding profile inputs."""
     def as_dict(value: str | dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(value, str):
             try:
@@ -174,10 +173,8 @@ def _safe_extract_markdown(self: Any, pdf_path: str | Path) -> str:
         page_count = pdf.page_count
     finally:
         pdf.close()
-    # Whole-document conversion remains optional and is given a bounded global budget.
-    # Concatenate per-page results so one pathological page cannot freeze the process.
-    chunks: list[str] = []
     timeout_per_page = max(3.0, float(os.getenv("RAG_PAGE_TIMEOUT", "30")))
+    chunks: list[str] = []
     for index in range(page_count):
         ok, payload, error = _timed_process(_run_markdown_worker, (str(path), index), timeout_per_page)
         if ok and payload:
@@ -237,17 +234,13 @@ def _lexical_fallback_after_embedding_failure(self: Any, pdf_path: str | Path) -
         return {"status": "failed", "file_name": file_path.name, "error": "No state record for lexical fallback."}
     document_id = document["document_id"]
     worker_id = f"lexical-{threading.get_ident()}-{time.time_ns()}"
-    if not self.state_store.claim_document(
-        document_id, worker_id, lease_seconds=self.settings.ingestion_lease_seconds
-    ):
+    if not self.state_store.claim_document(document_id, worker_id, lease_seconds=self.settings.ingestion_lease_seconds):
         return {"status": "busy", "file_name": file_path.name, "document_id": document_id}
 
     indexed = 0
     try:
         classification = DocumentClassifier.classify(file_path)
-        self.state_store.transition_document_state(
-            document_id, "EXTRACTING", total_pages=int(classification.get("page_count") or 0)
-        )
+        self.state_store.transition_document_state(document_id, "EXTRACTING", total_pages=int(classification.get("page_count") or 0))
         extractor = PDFExtractor(
             self.state_store,
             ocr_enabled=getattr(self.settings, "ocr_enabled", False),
@@ -259,7 +252,6 @@ def _lexical_fallback_after_embedding_failure(self: Any, pdf_path: str | Path) -
         chunker = SemanticChunker(self.settings.chunk_size, self.settings.chunk_overlap)
         self.state_store.transition_document_state(document_id, "CHUNKING")
         batches = chunker.chunk_page_batches(pages, batch_size=self.settings.page_batch_size)
-
         self.vector_store.delete_version(document_id, content_hash)
         for batch in batches:
             if not batch:
@@ -287,7 +279,6 @@ def _lexical_fallback_after_embedding_failure(self: Any, pdf_path: str | Path) -
             self.vector_store.add_lexical_documents(documents, metadatas, ids)
             indexed += len(batch)
             self.state_store.update_document(document_id, current_page=indexed)
-
         if indexed == 0:
             raise ValueError(f"No extractable text was produced for lexical fallback: {file_path.name}")
         self.vector_store.set_version_index_state(document_id, content_hash, "READY")
@@ -319,14 +310,43 @@ def _lexical_fallback_after_embedding_failure(self: Any, pdf_path: str | Path) -
         self.state_store.release_document(document_id, worker_id)
 
 
+def _same_filesystem(path_a: Path, path_b: Path) -> bool:
+    try:
+        return os.stat(path_a.parent).st_dev == os.stat(path_b.parent).st_dev
+    except OSError:
+        return True
+
+
 def _safe_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
+    """Run ingestion from a same-filesystem staging area to avoid EXDEV replace failures."""
     original = self._original_safe_ingest_file
-    result = original(pdf_path)
-    if result.get("status") == "failed" and "FAILED_EMBEDDING" in str(result.get("error", "")):
-        fallback = _lexical_fallback_after_embedding_failure(self, pdf_path)
-        if fallback.get("status") == "success":
-            return fallback
-    return result
+    source = Path(pdf_path)
+    target = Path(self.settings.processed_dir) / source.name
+    staged: Path | None = None
+    call_path = source
+    if source.is_file() and source.resolve() != target.resolve() and not _same_filesystem(source, target):
+        staging_dir = Path(self.settings.processed_dir) / ".staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        staged = staging_dir / f"{uuid.uuid4().hex}-{source.name}"
+        shutil.copy2(source, staged)
+        call_path = staged
+    try:
+        result = original(call_path)
+        if staged is not None and result.get("status") != "success":
+            return {**result, "file_name": source.name}
+        if result.get("file_name") and result["file_name"] != source.name:
+            result["file_name"] = source.name
+        return result
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                staged.parent.rmdir()
+            except OSError:
+                pass
 
 
 def install() -> None:
