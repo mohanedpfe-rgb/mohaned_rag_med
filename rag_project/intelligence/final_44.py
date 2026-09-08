@@ -26,15 +26,15 @@ from rag_project.intelligence.evidence_guard import (
     grounding_decision,
     verify_claims,
 )
-from rag_project.intelligence.pdf_intelligence import enrich_text, score_page_quality
+from rag_project.intelligence.pdf_intelligence import score_page_quality
 from rag_project.intelligence.query_intelligence import plan_query
 
 
 FEATURE_IMPLEMENTATIONS: dict[str, str] = {
-    "universal_pdf_routing": "rag_project.intelligence.pdf_intelligence:classify_page_route",
+    "universal_pdf_routing": "rag_project.intelligence.pdf_intelligence:classify_document_pages",
     "page_quality_scoring": "rag_project.intelligence.pdf_intelligence:score_page_quality",
-    "adaptive_ocr_routing": "rag_project.intelligence.pdf_intelligence:classify_page_route",
-    "alternate_extractor_trigger": "rag_project.intelligence.pdf_intelligence:classify_page_route",
+    "adaptive_ocr_routing": "rag_project.intelligence.pdf_intelligence:classify_document_pages",
+    "alternate_extractor_trigger": "rag_project.intelligence.pdf_intelligence:score_page_quality",
     "ocr_quality_detection": "rag_project.intelligence.pdf_intelligence:score_page_quality",
     "multi_representation_chunks": "rag_project.intelligence.pdf_intelligence:enrich_text",
     "numeric_normalization": "rag_project.intelligence.advanced_reasoning:normalize_numeric_measurements",
@@ -139,8 +139,6 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
             return base
 
         reasoning_start = time.perf_counter()
-        # Obtain a bounded all-hit pool for parent/neighbor/hop expansion. The existing hybrid retriever
-        # already fuses lexical + vector scores; this adds explicit context-graph expansion without unbounded scans.
         try:
             all_hits = self.retriever.retrieve(plan.normalized, top_k=max(self.settings.top_k * 5, 30), where=None)
         except Exception:
@@ -157,7 +155,6 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
         evidence_hits = list(base_hits)
         evidence_hits.extend(h for h in reasoning.get("parent_child_hits", ()) if h not in evidence_hits)
         evidence_hits.extend(h for h in reasoning.get("neighbor_hits", ()) if h not in evidence_hits)
-        # Keep the evidence list bounded so the i5/16GB profile remains predictable.
         evidence_hits = evidence_hits[: max(self.settings.top_k * 4, 16)]
 
         evidence_blocks = [str(getattr(h, "text", "")) for h in evidence_hits]
@@ -179,7 +176,7 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
             reasoning.get("compressed_context", ""), plan.normalized,
             max(1200, int(getattr(self.settings, "context_token_budget", 3200)) * 3),
         )
-        _ = compression_preview  # ContextBuilder remains the final token-budget authority.
+        _ = compression_preview
         _ = numeric
         _ = route
 
@@ -246,8 +243,7 @@ def install() -> None:
             wrapped = _wrap_answer(current)
             wrapped._final_44_wrapped = True
             RAGSystem.answer = wrapped
-        original_report = getattr(RAGSystem, "final_44_report", None)
-        if original_report is None:
+        if getattr(RAGSystem, "final_44_report", None) is None:
             def final_44_report(self: Any) -> dict[str, Any]:
                 return {
                     "feature_count": len(FEATURE_IMPLEMENTATIONS),
