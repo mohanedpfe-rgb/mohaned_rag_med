@@ -13,22 +13,22 @@ _INSTALL_LOCK = threading.RLock()
 _INSTALLED = False
 
 
-def _stamp_metadata(metadata: dict[str, Any], physical_id: str) -> dict[str, Any]:
+def _stamp_metadata(metadata: dict[str, Any], physical_id: str, source_text: str = "") -> dict[str, Any]:
     meta = dict(metadata or {})
     meta.setdefault("version_id", meta.get("document_id", "legacy"))
     meta["storage_id"] = physical_id
     meta["build_id"] = str(meta.get("build_id") or uuid.uuid4().hex)
     meta["index_state"] = str(meta.get("index_state", "BUILDING")).upper()
     try:
-        enriched = enrich_text(str(meta.get("source_text", ""))) if meta.get("source_text") else {}
-        if enriched:
-            meta["keywords"] = json.dumps(enriched.get("keywords", []), ensure_ascii=False)
-            meta["entities"] = json.dumps(enriched.get("entities", {}), ensure_ascii=False, sort_keys=True)
-            meta["normalized_numbers"] = json.dumps(enriched.get("number_forms", []), ensure_ascii=False)
+        enriched = enrich_text(source_text)
+        meta["keywords"] = json.dumps(enriched.get("keywords", []), ensure_ascii=False)
+        meta["entities"] = json.dumps(enriched.get("entities", {}), ensure_ascii=False, sort_keys=True)
+        meta["normalized_numbers"] = json.dumps(enriched.get("number_forms", []), ensure_ascii=False)
+        headings = enriched.get("headings", [])
+        if headings:
+            meta["section_hints"] = json.dumps(headings[:10], ensure_ascii=False)
     except Exception:
-        # Metadata enrichment is auxiliary; it must never block an otherwise valid index write.
         pass
-    meta.pop("source_text", None)
     return meta
 
 
@@ -41,8 +41,7 @@ def _safe_add(self: Any, documents: Sequence[str], metadatas: Sequence[dict[str,
         physical_ids.append(physical)
         meta = dict(metadatas[index] or {})
         meta["build_id"] = build_id
-        meta = _stamp_metadata(meta, physical)
-        stamped.append(meta)
+        stamped.append(_stamp_metadata(meta, physical, str(documents[index] or "")))
     return self._god_atomic_original_add_documents(documents, stamped, embeddings, physical_ids)
 
 
@@ -55,8 +54,7 @@ def _safe_add_lexical(self: Any, documents: Sequence[str], metadatas: Sequence[d
         physical_ids.append(physical)
         meta = dict(metadatas[index] or {})
         meta["build_id"] = build_id
-        meta = _stamp_metadata(meta, physical)
-        stamped.append(meta)
+        stamped.append(_stamp_metadata(meta, physical, str(documents[index] or "")))
     return self._god_atomic_original_add_lexical_documents(documents, stamped, physical_ids)
 
 
@@ -98,7 +96,6 @@ def _safe_set_version_state(self: Any, document_id: str, version_id: str, state:
                 [(desired, desired, item_id) for item_id in matching],
             )
     if desired == "READY":
-        # Remove older generations only AFTER every new batch was promoted.
         old_ids = []
         for item_id, metadata in zip(records.get("ids", []), records.get("metadatas", []), strict=False):
             meta = self._coerce_metadata(metadata)
