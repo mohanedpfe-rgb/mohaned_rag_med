@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import tempfile
-import time
 
 import fitz
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -16,13 +15,15 @@ class OCRService:
         use_rapidocr: bool = True,
         *,
         lazy_init: bool = False,
-        render_scale: int = 3,
+        render_scale: int = 2,
         enhance_contrast: float = 1.8,
+        max_render_pixels: int = 12_000_000,
     ):
         self.use_rapidocr = use_rapidocr
         self.lazy_init = bool(lazy_init)
         self.render_scale = max(1, int(render_scale))
         self.enhance_contrast = max(1.0, float(enhance_contrast))
+        self.max_render_pixels = max(1_000_000, int(max_render_pixels))
         self._rapidocr = None
         self._init_attempted = False
         self._init_error: str | None = None
@@ -49,22 +50,36 @@ class OCRService:
             return False
 
     def unload(self) -> None:
-        """Release the ONNX runtime session to reclaim memory."""
         self._rapidocr = None
         self._init_attempted = False
 
     @staticmethod
     def should_ocr_page(page: fitz.Page) -> bool:
-        """Only run OCR when the page does not already have enough text."""
         text = (page.get_text("text") or "").strip()
         return len(text) < 20
 
+    def _render_pixmap(self, page: fitz.Page) -> fitz.Pixmap:
+        matrix = fitz.Matrix(self.render_scale, self.render_scale)
+        width = max(1, int(page.rect.width * self.render_scale))
+        height = max(1, int(page.rect.height * self.render_scale))
+        pixels = width * height
+        if pixels > self.max_render_pixels:
+            scale = (self.max_render_pixels / float(max(1, page.rect.width * page.rect.height))) ** 0.5
+            safe_scale = max(1.0, min(float(self.render_scale), scale))
+            matrix = fitz.Matrix(safe_scale, safe_scale)
+            width = max(1, int(page.rect.width * safe_scale))
+            height = max(1, int(page.rect.height * safe_scale))
+            pixels = width * height
+        if pixels > self.max_render_pixels:
+            raise RuntimeError(
+                f"OCR render refused: page would require {pixels:,} pixels; "
+                f"limit is {self.max_render_pixels:,}."
+            )
+        return page.get_pixmap(matrix=matrix, alpha=False)
+
     def ocr_page(self, pdf_path: str | Path, page_index: int) -> tuple[str, float | None]:
         if not self._ensure_rapidocr():
-            raise RuntimeError(
-                self._init_error
-                or "No OCR engine available; install rapidocr-onnxruntime."
-            )
+            raise RuntimeError(self._init_error or "No OCR engine available; install rapidocr-onnxruntime.")
         with tempfile.TemporaryDirectory(prefix="rag-ocr-") as directory:
             image_path = Path(directory) / f"page-{page_index + 1}.png"
             pdf = fitz.open(str(pdf_path))
@@ -72,14 +87,10 @@ class OCRService:
                 page = pdf[page_index]
                 if not self.should_ocr_page(page):
                     return "", None
-                pix = page.get_pixmap(
-                    matrix=fitz.Matrix(self.render_scale, self.render_scale),
-                    alpha=False,
-                )
+                pix = self._render_pixmap(page)
                 pix.save(str(image_path))
             finally:
                 pdf.close()
-
             return self._recognize(image_path)
 
     def ocr_page_object(
@@ -89,29 +100,19 @@ class OCRService:
         *,
         force: bool = False,
     ) -> tuple[str, float | None]:
-        """OCR an already-open page to avoid reopening a large PDF per page."""
         if not self._ensure_rapidocr():
-            raise RuntimeError(
-                self._init_error
-                or "No OCR engine available; install rapidocr-onnxruntime."
-            )
+            raise RuntimeError(self._init_error or "No OCR engine available; install rapidocr-onnxruntime.")
         if not force and not self.should_ocr_page(page):
             return "", None
         with tempfile.TemporaryDirectory(prefix="rag-ocr-") as directory:
             image_path = Path(directory) / f"page-{page_index + 1}.png"
-            pix = page.get_pixmap(
-                matrix=fitz.Matrix(self.render_scale, self.render_scale),
-                alpha=False,
-            )
+            pix = self._render_pixmap(page)
             pix.save(str(image_path))
             return self._recognize(image_path)
 
     def _recognize(self, image_path: Path) -> tuple[str, float | None]:
         if self._rapidocr is None:
-            raise RuntimeError(
-                self._init_error
-                or "No OCR engine available; install rapidocr-onnxruntime."
-            )
+            raise RuntimeError(self._init_error or "No OCR engine available; install rapidocr-onnxruntime.")
         result, _ = self._rapidocr(str(image_path))
         if not result:
             with Image.open(image_path) as image:
@@ -122,6 +123,6 @@ class OCRService:
             result, _ = self._rapidocr(str(image_path))
         if result:
             text = "\n".join(item[1] for item in result if item and len(item) > 1)
-            confidence = sum(item[2] for item in result if len(item) > 2) / max(len(result), 1)
+            confidence = sum(float(item[2]) for item in result if len(item) > 2) / max(len(result), 1)
             return text.strip(), float(confidence)
         raise RuntimeError("OCR produced no text for this page.")
