@@ -52,11 +52,22 @@ class Settings:
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     ollama_failure_circuit_threshold: int = 5
     ollama_circuit_open_seconds: float = 30.0
-    ocr_enabled: bool = False
+    # Universal mode favors coverage and explicit degradation over silent omission.
+    ocr_enabled: bool = True
+    auto_ocr: bool = True
+    universal_pdf_mode: bool = True
     ocr_confidence_threshold: float = 0.55
     ocr_min_char_density: float = 0.001
     ocr_image_coverage_threshold: float = 0.55
     lazy_model_loading: bool = True
+    retrieval_candidate_multiplier: int = 5
+    evidence_min_confidence: float = 0.25
+    answer_verification_enabled: bool = True
+    numeric_verification_enabled: bool = True
+    contradiction_detection_enabled: bool = True
+    query_decomposition_enabled: bool = True
+    multi_query_retrieval_enabled: bool = True
+    max_query_variants: int = 8
 
     @staticmethod
     def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
@@ -89,7 +100,6 @@ class Settings:
             return default
 
     def __post_init__(self) -> None:
-        # Guard direct construction as well as values loaded from environment.
         self.device_mode = self.device_mode if self.device_mode in DEVICE_PRESETS else "i5_16gb"
         self.project_root = Path(self.project_root).resolve()
         self.ollama_base_url = str(self.ollama_base_url).strip().rstrip("/") or "http://127.0.0.1:11434"
@@ -118,6 +128,9 @@ class Settings:
         self.ocr_confidence_threshold = max(0.0, min(float(self.ocr_confidence_threshold), 1.0))
         self.ocr_min_char_density = max(0.0, float(self.ocr_min_char_density))
         self.ocr_image_coverage_threshold = max(0.0, min(float(self.ocr_image_coverage_threshold), 1.0))
+        self.retrieval_candidate_multiplier = max(2, min(12, int(self.retrieval_candidate_multiplier)))
+        self.evidence_min_confidence = max(0.0, min(1.0, float(self.evidence_min_confidence)))
+        self.max_query_variants = max(1, min(12, int(self.max_query_variants)))
 
     def apply_device_preset(self, device_mode: str) -> None:
         normalized = device_mode if device_mode in DEVICE_PRESETS else "i5_16gb"
@@ -145,11 +158,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        for dotenv_candidate in (
-            Path.cwd() / ".env",
-            Path(__file__).resolve().parents[2] / ".env",
-            Path.home() / ".bookrag.env",
-        ):
+        for dotenv_candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[2] / ".env", Path.home() / ".bookrag.env"):
             if dotenv_candidate.is_file():
                 load_dotenv(dotenv_candidate, override=False)
                 break
@@ -211,11 +220,21 @@ class Settings:
             reranker_model=os.getenv("RERANKER_MODEL", preset["reranker_model"]),
             ollama_failure_circuit_threshold=cls._parse_int(os.getenv("OLLAMA_FAILURE_CIRCUIT_THRESHOLD"), int(preset["ollama_failure_circuit_threshold"])),
             ollama_circuit_open_seconds=cls._parse_float(os.getenv("OLLAMA_CIRCUIT_OPEN_SECONDS"), float(preset["ollama_circuit_open_seconds"])),
-            ocr_enabled=cls._parse_bool(os.getenv("OCR_ENABLED"), bool(preset["ocr_enabled"])),
+            ocr_enabled=cls._parse_bool(os.getenv("OCR_ENABLED"), True),
+            auto_ocr=cls._parse_bool(os.getenv("AUTO_OCR"), True),
+            universal_pdf_mode=cls._parse_bool(os.getenv("UNIVERSAL_PDF_MODE"), True),
             ocr_confidence_threshold=cls._parse_float(os.getenv("OCR_CONFIDENCE_THRESHOLD"), 0.55),
             ocr_min_char_density=cls._parse_float(os.getenv("OCR_MIN_CHAR_DENSITY"), 0.001),
             ocr_image_coverage_threshold=cls._parse_float(os.getenv("OCR_IMAGE_COVERAGE_THRESHOLD"), 0.55),
             lazy_model_loading=cls._parse_bool(os.getenv("LAZY_MODEL_LOADING"), True),
+            retrieval_candidate_multiplier=cls._parse_int(os.getenv("RETRIEVAL_CANDIDATE_MULTIPLIER"), 5),
+            evidence_min_confidence=cls._parse_float(os.getenv("EVIDENCE_MIN_CONFIDENCE"), 0.25),
+            answer_verification_enabled=cls._parse_bool(os.getenv("ANSWER_VERIFICATION_ENABLED"), True),
+            numeric_verification_enabled=cls._parse_bool(os.getenv("NUMERIC_VERIFICATION_ENABLED"), True),
+            contradiction_detection_enabled=cls._parse_bool(os.getenv("CONTRADICTION_DETECTION_ENABLED"), True),
+            query_decomposition_enabled=cls._parse_bool(os.getenv("QUERY_DECOMPOSITION_ENABLED"), True),
+            multi_query_retrieval_enabled=cls._parse_bool(os.getenv("MULTI_QUERY_RETRIEVAL_ENABLED"), True),
+            max_query_variants=cls._parse_int(os.getenv("MAX_QUERY_VARIANTS"), 8),
         )
         for _dir in [settings.incoming_dir, settings.processed_dir, settings.failed_dir, settings.archive_dir, settings.vector_db_dir, settings.log_dir]:
             _dir.mkdir(parents=True, exist_ok=True)
