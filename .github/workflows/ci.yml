@@ -24,6 +24,8 @@ jobs:
           # The source constraints are the CI compatibility baseline.
           # The generated lockfile is validated separately by the lock workflow.
           python -m pip install -r requirements.txt
+      - name: Validate installed environment
+        run: python -m pip check
       - name: Compile source
         run: python -m compileall -q rag_project app.py run_dev.py
       - name: Run tests
