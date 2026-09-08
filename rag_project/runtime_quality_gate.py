@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -166,6 +167,35 @@ def _safe_ocr_worker(pdf_path: str, page_index: int, queue: Any, render_scale: i
             pass
 
 
+def _sanitize_evidence(text: str) -> str:
+    """Defense-in-depth source-data sanitization without altering normal medical prose."""
+    if not text:
+        return text
+    normalized = unicodedata.normalize("NFKC", str(text))
+    normalized = normalized.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\ufeff", "")
+    control = {ord(char): None for char in normalized if ord(char) < 32 and char not in "\n\t\r"}
+    normalized = normalized.translate(control)
+    suspicious = (
+        "ignore previous instructions",
+        "ignore all instructions",
+        "disregard previous instructions",
+        "override system prompt",
+        "reveal system prompt",
+        "developer mode",
+        "admin override",
+        "jailbreak",
+    )
+    lines: list[str] = []
+    for line in normalized.splitlines():
+        folded = " ".join(line.casefold().split())
+        role_prefix = folded.startswith(("assistant:", "system:", "developer:", "instruction:", "user:"))
+        if role_prefix or any(marker in folded for marker in suspicious):
+            lines.append("[REDACTED: source instruction-like text]")
+        else:
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
 def _quarantine_processed_failure(system: Any, pdf_path: str | Path, result: dict[str, Any]) -> dict[str, Any]:
     """Guarantee failed files end up in failed_dir even when the source was already moved."""
     if str(result.get("status", "")).lower() != "failed":
@@ -178,6 +208,7 @@ def _quarantine_processed_failure(system: Any, pdf_path: str | Path, result: dic
     for candidate in candidates:
         if not candidate.exists() or candidate.resolve() == failed.resolve():
             continue
+        tmp: Path | None = None
         try:
             tmp = failed.with_name(f".{failed.name}.{os.getpid()}.{time.time_ns()}.part")
             if candidate.stat().st_dev == failed.parent.stat().st_dev:
@@ -188,11 +219,11 @@ def _quarantine_processed_failure(system: Any, pdf_path: str | Path, result: dic
             os.replace(tmp, failed)
             break
         except OSError:
-            try:
-                if 'tmp' in locals() and tmp.exists():
+            if tmp is not None:
+                try:
                     tmp.unlink()
-            except OSError:
-                pass
+                except OSError:
+                    pass
     return result
 
 
@@ -231,12 +262,34 @@ def _safe_ingest_file(self: Any, pdf_path: str | Path):
     return _quarantine_processed_failure(self, pdf_path, result)
 
 
+def _safe_init(self: Any, *args: Any, **kwargs: Any):
+    result = self._original_runtime_quality_init(*args, **kwargs)
+    try:
+        self.state_store.recover_stale_documents()
+        recovery = _recover_stale_building_records(self.vector_store, self.state_store, self.logger)
+        if any(recovery.values()):
+            self.logger.info("Recovered stale records during startup: %s", recovery)
+    except Exception:
+        self.logger.exception("Startup index recovery failed")
+    return result
+
+
+def _safe_ingest_directory(self: Any, directory: str | Path | None = None):
+    """Serialize overlapping directory-ingestion calls so future registries cannot be clobbered."""
+    lock = getattr(self, "_directory_ingest_lock", None)
+    if lock is None:
+        lock = threading.RLock()
+        self._directory_ingest_lock = lock
+    with lock:
+        return self._original_runtime_quality_ingest_directory(directory)
+
+
 def install() -> None:
+    from rag_project.app import rag_system as rag_module
     from rag_project.app.rag_system import RAGSystem
     from rag_project.ingestion.state_store import IngestionStateStore
-    from rag_project.ocr import ocr_service as ocr_module
-    from rag_project.storage.vector_store import VectorStore
     import rag_project.runtime_hardening as hardening
+    from rag_project.storage.vector_store import VectorStore
 
     if not hasattr(hardening, "_quality_gate_original_table_worker"):
         hardening._quality_gate_original_table_worker = hardening._run_table_worker
@@ -258,16 +311,12 @@ def install() -> None:
         RAGSystem._original_runtime_quality_ingest_file = RAGSystem.ingest_file
         RAGSystem.ingest_file = _safe_ingest_file
 
-    if not hasattr(ocr_module.OCRService.ocr_page, "_quality_gate_wrapped"):
-        original_ocr_page = ocr_module.OCRService.ocr_page
+    if not hasattr(RAGSystem, "_original_runtime_quality_ingest_directory"):
+        RAGSystem._original_runtime_quality_ingest_directory = RAGSystem.ingest_directory
+        RAGSystem.ingest_directory = _safe_ingest_directory
 
-        def guarded_ocr_page(self: Any, pdf_path: str | Path, page_index: int):
-            start = time.monotonic()
-            timeout = max(1.0, float(os.getenv("RAG_OCR_CALL_TIMEOUT", os.getenv("RAG_OCR_TIMEOUT", "45"))))
-            result = original_ocr_page(self, pdf_path, page_index)
-            if time.monotonic() - start > timeout:
-                raise TimeoutError(f"OCR call exceeded configured budget of {timeout:.1f}s")
-            return result
+    if not hasattr(RAGSystem, "_original_runtime_quality_init"):
+        RAGSystem._original_runtime_quality_init = RAGSystem.__init__
+        RAGSystem.__init__ = _safe_init
 
-        guarded_ocr_page._quality_gate_wrapped = True
-        ocr_module.OCRService.ocr_page = guarded_ocr_page
+    rag_module.sanitize_evidence = _sanitize_evidence
