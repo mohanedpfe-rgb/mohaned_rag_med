@@ -14,7 +14,16 @@ from rag_project.storage.vector_store import VectorStore
 def rebuild_index(project_root: str | Path | None = None) -> dict[str, Any]:
     """Build a validated replacement index without modifying the active index."""
     root = Path(project_root).resolve() if project_root else Path.cwd()
-    settings = Settings(project_root=root)
+    settings = Settings(
+        project_root=root,
+        incoming_dir=root / "data" / "incoming",
+        processed_dir=root / "data" / "processed",
+        failed_dir=root / "data" / "failed",
+        archive_dir=root / "data" / "archive",
+        vector_db_dir=root / "data" / "vector_db",
+        log_dir=root / "logs",
+        ingestion_db_path=root / "data" / "ingestion.sqlite3",
+    )
     source = VectorStore(settings.vector_db_dir)
     records = source.collection.get(include=["documents", "metadatas"])
     documents = [str(value) for value in records.get("documents", [])]

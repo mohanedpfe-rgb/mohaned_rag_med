@@ -175,6 +175,17 @@ class VectorStore:
            ).fetchone()
        return int(row[0] if row else 0)
 
+   def clear_all(self) -> None:
+       """Delete all vector and lexical records while keeping the store usable."""
+       records = self.collection.get(include=["metadatas"])
+       ids = [str(item_id) for item_id in records.get("ids", [])]
+       if ids:
+           self.collection.delete(ids=ids)
+       with sqlite3.connect(self.lexical_database) as connection:
+           connection.execute("DELETE FROM lexical_documents")
+           connection.commit()
+           connection.execute("VACUUM")
+
    def get_documents(self, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
        if where:
            return self.collection.get(where=where, include=["documents", "metadatas"])
@@ -413,21 +424,9 @@ class VectorStore:
            if expected_fingerprint and stored.get("fingerprint") != expected_fingerprint:
                metadata_valid = False
                issues.append("Index fingerprint does not match expected embedding profile.")
-       elif not is_empty and expected_identity is not None and stored is None:
+       if not is_empty and expected_identity is not None and stored is None:
            metadata_valid = False
            issues.append("Index metadata missing expected embedding profile.")
-       if not is_empty:
-           records = self.collection.get(include=["embeddings"])
-           embeddings = records.get("embeddings")
-           if embeddings is None:
-               embeddings = []
-           invalid_count = sum(
-               1 for vector in embeddings
-               if not self._valid_vector(vector, collection_dimension)
-           )
-           if invalid_count:
-               metadata_valid = False
-               issues.append(f"Index contains {invalid_count} invalid semantic embeddings.")
        valid = metadata_valid
        status = "READY"
        if not valid:
@@ -494,6 +493,16 @@ class VectorStore:
            "distances": [distances],
        }
 
+   @staticmethod
+   def _metadata_matches(meta: Dict[str, Any], where: Dict[str, Any] | None) -> bool:
+       if not where:
+           return True
+       if "$and" in where:
+           return all(VectorStore._metadata_matches(meta, clause) for clause in where.get("$and") or [])
+       if "$or" in where:
+           return any(VectorStore._metadata_matches(meta, clause) for clause in where.get("$or") or [])
+       return all(meta.get(key) == value for key, value in where.items())
+
    def search(self, embedding: Sequence[float], n_results: int = 5, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
        expected = self.expected_identity
        report = self.compatibility_report(expected)
@@ -540,7 +549,7 @@ class VectorStore:
            meta = self._coerce_metadata(json.loads(row[2]))
            if str(meta.get("index_state", "READY")).upper() != "READY":
                continue
-           if where and any(meta.get(key) != value for key, value in where.items()):
+           if not VectorStore._metadata_matches(meta, where):
                continue
            term_counts = {token: row_tokens.count(token) for token in tokens}
            length = max(1, len(row_tokens))
@@ -566,15 +575,46 @@ class VectorStore:
    def set_version_state(self, document_id: str, version_id: str, state: str) -> None:
        self.set_version_index_state(document_id, version_id, state)
 
-   def activate_staging_index(self, document_id: str | None = None, *, expected_identity: Any | None = None) -> Dict[str, Any]:
+   def verify_index(self, document_id: str | None = None) -> Dict[str, Any]:
+       if document_id:
+           return self.validate_document_index(document_id)
+       return self.index_health_check(self.expected_identity)
+
+   def rebuild_index(self, document_id: str | None = None) -> Dict[str, Any]:
+       reconciled = self.reconcile_index(document_id)
+       health = self.index_health_check(self.expected_identity)
+       return {
+           "status": "RECONCILED" if health.get("valid") else "NEEDS_ATTENTION",
+           "reconciled": reconciled,
+           "health": health,
+       }
+
+   def activate_staging_index(
+       self,
+       document_id: str | None = None,
+       *,
+       expected_identity: Any | None = None,
+       staging_directory: str | Path | None = None,
+   ) -> Dict[str, Any]:
        if expected_identity is not None:
            self.expected_identity = expected_identity
-       staging_path = self.persist_directory.parent / (
-           f"{self.persist_directory.name}.staging-{time.strftime('%Y%m%d%H%M%S')}"
-       )
+       if staging_directory is not None:
+           staging_path = Path(staging_directory)
+       else:
+           parent = self.persist_directory.parent
+           candidates = sorted(
+               parent.glob(f"{self.persist_directory.name}.staging-*"),
+               key=lambda path: path.stat().st_mtime,
+           )
+           if not candidates:
+               raise RuntimeError(
+                   f"No staging directory matching {self.persist_directory.name}.staging-* was found."
+               )
+           staging_path = candidates[-1]
        if not staging_path.exists():
            raise RuntimeError(f"Staging directory {staging_path} does not exist.")
-       health = self.index_health_check(self.expected_identity)
+       staging_store = VectorStore(staging_path)
+       health = staging_store.index_health_check(self.expected_identity)
        if not health["valid"] or not health["metadata_valid"]:
            raise RuntimeError(json.dumps(health, default=str))
        active_path = self.persist_directory

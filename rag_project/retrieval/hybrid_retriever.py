@@ -77,14 +77,16 @@ class HybridRetriever:
                     vector_future = executor.submit(
                         self.vector_store.search, query_embedding, candidate_count, where
                     )
-                except (RuntimeError, ValueError):
+                except (RuntimeError, ValueError, TypeError):
                     if mode == "vector":
                         mode = "lexical"
             if vector_future is not None:
                 try:
                     vector_results = vector_future.result()
-                except (RuntimeError, ValueError):
+                except (RuntimeError, ValueError, TypeError):
                     if mode == "vector":
+                        mode = "lexical"
+                    elif mode == "hybrid":
                         mode = "lexical"
             if lexical_future is not None:
                 lexical_results = lexical_future.result()

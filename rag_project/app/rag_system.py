@@ -280,14 +280,13 @@ class RAGSystem:
             cache_size=self.settings.embedding_cache_size,
             cache_ttl_seconds=self.settings.embedding_cache_ttl_seconds,
             max_concurrency=self.settings.ollama_concurrency,
+            prefer_local_transformers=False,
         )
         self.vector_store = VectorStore(self.settings.vector_db_dir)
         self.embedding_startup_error: str | None = None
-        try:
-            self.embedding_service.discover_dimension()
-        except RuntimeError as exc:
-            self.embedding_startup_error = str(exc)
-            self.logger.warning("Embedding service unavailable; lexical retrieval remains enabled: %s", exc)
+        self._embedding_dimension_probed = False
+        if not getattr(self.settings, "lazy_model_loading", True):
+            self._ensure_embedding_dimension()
         self.vector_store.set_expected_identity(self.embedding_service.identity)
         self.index_compatibility = self.vector_store.compatibility_report(
             self.embedding_service.identity
@@ -298,12 +297,18 @@ class RAGSystem:
             lexical_mode=self.settings.lexical_mode,
             vector_weight=self.settings.vector_weight,
         )
-        self.reranker = Reranker(self.settings.reranker_model)
+        self.reranker = Reranker(
+            self.settings.reranker_model,
+            max_batch_size=8,
+            max_text_length=512,
+        )
         self.llm = OllamaLLMClient(
             self.settings.ollama_base_url,
             self.settings.generation_model,
             self.settings.generation_timeout_seconds,
             self.settings.generation_max_output_tokens,
+            circuit_threshold=self.settings.ollama_failure_circuit_threshold,
+            circuit_open_seconds=self.settings.ollama_circuit_open_seconds,
         )
         self.citation_manager = CitationManager()
         self.conversation_memory = ConversationMemory(max_history=5)
@@ -313,6 +318,20 @@ class RAGSystem:
             neighbor_expansion=self.settings.neighbor_expansion,
         )
         self._apply_settings_mutex = threading.Lock()
+
+    def _ensure_embedding_dimension(self) -> None:
+        if self._embedding_dimension_probed and self.embedding_service.dimension is not None:
+            return
+        try:
+            self.embedding_service.discover_dimension()
+            self.embedding_startup_error = None
+        except RuntimeError as exc:
+            self.embedding_startup_error = str(exc)
+            self.logger.warning(
+                "Embedding service unavailable; lexical retrieval remains enabled: %s", exc
+            )
+        finally:
+            self._embedding_dimension_probed = True
 
     def apply_settings_in_place(self, updates: Dict[str, Any]) -> tuple[bool, list[str]]:
         warnings: list[str] = []
@@ -430,6 +449,28 @@ class RAGSystem:
                     count += 1
             return count
 
+    def clear_pdf_data(self) -> list[str]:
+        """Clear indexed PDF data and files from the managed data directories."""
+        self.cancel_all_ingests()
+        self.vector_store.clear_all()
+        self.state_store.clear_all()
+        removed: list[str] = []
+        for directory in (
+            self.settings.incoming_dir,
+            self.settings.processed_dir,
+            self.settings.failed_dir,
+            self.settings.archive_dir,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+            for child in directory.iterdir():
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+                removed.append(str(child))
+        self.conversation_memory.history.clear()
+        return removed
+
     def ingest_file(self, pdf_path: str | Path) -> Dict[str, Any]:
         ingestion_started = time.perf_counter()
         stage_started = ingestion_started
@@ -464,8 +505,11 @@ class RAGSystem:
             ocr_config=current_ocr_config,
             chunking_config=current_chunking_config,
             embedding_model=self.settings.embedding_model,
-            embedding_profile=getattr(embedding_profile, "fingerprint", None),
-            embedding_dimension=getattr(embedding_profile, "dimension", None),
+            # Profile discovery is lazy and may happen during indexing. Do
+            # not let that runtime state change the version of identical
+            # content between the first and second ingestion.
+            embedding_profile=None,
+            embedding_dimension=None,
         )
         if (
             existing
@@ -570,7 +614,14 @@ class RAGSystem:
                 file_name=file_path.name,
             )
             self.state_store.transition_document_state(document_id, "EXTRACTING")
-            pages = PDFExtractor(self.state_store).extract_iter(file_path, document_id)
+            extractor = PDFExtractor(
+                self.state_store,
+                ocr_enabled=getattr(self.settings, "ocr_enabled", False),
+                ocr_confidence_threshold=getattr(self.settings, "ocr_confidence_threshold", 0.55),
+                ocr_min_char_density=getattr(self.settings, "ocr_min_char_density", 0.001),
+                ocr_image_coverage_threshold=getattr(self.settings, "ocr_image_coverage_threshold", 0.55),
+            )
+            pages = extractor.extract_iter(file_path, document_id)
             mark_stage("extraction")
             renew_lease(force=True)
             check_cancel()
@@ -642,6 +693,7 @@ class RAGSystem:
                     )
                 batch_embeddings: list[list[float]] = []
                 embedding_started = time.perf_counter()
+                self._ensure_embedding_dimension()
                 if self.embedding_startup_error is not None:
                     raise RuntimeError(f"FAILED_EMBEDDING: {self.embedding_startup_error}")
                 try:
@@ -806,7 +858,7 @@ class RAGSystem:
             try:
                 self.vector_store.delete_version(document_id, content_hash)
                 self.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
-            except (RuntimeError, ValueError):
+            except Exception:
                 self.logger.exception("Failed to quarantine partial index for %s", file_path.name)
             failure_stage = "FAILED_EMBEDDING" if str(exc).startswith("FAILED_EMBEDDING:") else "FAILED"
             try:
@@ -872,7 +924,7 @@ class RAGSystem:
 
     def answer(self, question: str, metadata_filter: Dict[str, Any] | None = None) -> Dict[str, Any]:
         answer_started = time.perf_counter()
-        # Compatibility check – ensure a ready index before proceeding
+        self._ensure_embedding_dimension()
         try:
             self.index_compatibility = self.vector_store.compatibility_report(
                 self.embedding_service.identity
@@ -898,6 +950,17 @@ class RAGSystem:
                 "citations": [],
                 "hits": [],
                 "confidence": {"level": "unavailable", "top_score": 0.0, "margin": 0.0},
+            }
+        query_analysis = QueryQualityClassifier.assess(question)
+        if query_analysis["should_abstain"]:
+            return {
+                "status": query_analysis["query_quality"],
+                "answer": query_analysis.get("clarification")
+                or "The question appears ambiguous or malformed. Please rephrase it.",
+                "citations": [],
+                "hits": [],
+                "confidence": {"level": "none", "top_score": 0.0, "margin": 0.0},
+                "query_analysis": query_analysis,
             }
         # Normal answer flow
         rewritten_question = QueryRewriter.rewrite(
@@ -938,23 +1001,14 @@ class RAGSystem:
                 "confidence": confidence,
             }
 
-        # Assess the question quality and evidence alignment.
-        query_analysis = QueryQualityClassifier.assess(question)
         evidence_alignment = EvidenceAlignment.evaluate(question, selected_hits)
-        # If the classifier suggests abstaining, we still proceed but include a clarification note.
-        clarification_note = None
-        if query_analysis["should_abstain"]:
-            clarification_note = query_analysis.get("clarification") or "The question appears ambiguous or malformed."
-        # If evidence is only tangential, add an evidence note.
-        evidence_note = None
         if evidence_alignment["decision"] in {"RELATED_BUT_NOT_ANSWERING", "NOT_SUPPORTED"}:
             evidence_note = (
                 "The retrieved evidence is only tangentially related to the question and does not directly answer it. "
-                "Consider providing a more precise question."
+                "Consider providing a more precise question.\n\n"
             )
-        # Proceed to generate answer with possible notes.
-        # The notes will be incorporated into the final response after generation.
-        
+        else:
+            evidence_note = "" 
         conversation_context = self.conversation_memory.prompt_context()
         generation_started = time.perf_counter()
         cited_markers: set[int] = set()
@@ -981,6 +1035,8 @@ class RAGSystem:
         answer, answer_grounding, query_coverage, grounding_fallback = (
             self.apply_grounding_guard(answer, rewritten_question, selected_hits)
         )
+        if evidence_note and not grounding_fallback:
+            answer = f"{evidence_note}{answer}"
         if grounding_fallback:
             self.logger.warning(
                 "Generated answer failed grounding thresholds; returning evidence fallback "

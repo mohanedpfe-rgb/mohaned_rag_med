@@ -111,6 +111,8 @@ EmbeddingIdentity = EmbeddingProfile
 
 
 class EmbeddingService:
+    """Ollama-first embedding service with lazy loading and minimal CPU/RAM pressure."""
+
     def __init__(
         self,
         base_url: str,
@@ -120,9 +122,10 @@ class EmbeddingService:
         retries: int = 4,
         timeout_seconds: float = 180.0,
         test_mode: bool = False,
-        cache_size: int = 10000,
-        cache_ttl_seconds: float = 86400.0,
+        cache_size: int = 128,
+        cache_ttl_seconds: float = 900.0,
         max_concurrency: int = 1,
+        prefer_local_transformers: bool = False,
     ):
         self.base_url = base_url.rstrip("/") if base_url else ""
         self.model = model
@@ -131,15 +134,10 @@ class EmbeddingService:
         self.timeout_seconds = max(5.0, float(timeout_seconds))
         self.test_mode = test_mode
         self.dimension: int | None = None
-        self.provider = "deterministic-test" if test_mode else "sentence-transformers"
-        # Provider is immutable for the lifetime of this service instance.
-        # Optional fallback providers (e.g., "ollama") can be configured via
-        # `allowed_fallback_providers`. Empty list means no fallback – ingestion aborts on failure.
-        self.allowed_fallback_providers: list[str] = []
+        self.provider = "deterministic-test" if test_mode else "ollama"
+        self.prefer_local_transformers = bool(prefer_local_transformers)
         self.cache_size = max(0, cache_size)
         self.cache_ttl_seconds = max(0.0, cache_ttl_seconds)
-        # Cache keys will be prefixed with the current embedding profile fingerprint
-        # to avoid cross‑profile contamination.
         self._profile_fingerprint: str | None = None
         self._query_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache: OrderedDict[str, list[float]] = OrderedDict()
@@ -147,6 +145,8 @@ class EmbeddingService:
         self._consecutive_timeouts = 0
         self._inference_semaphore = threading.BoundedSemaphore(max(1, int(max_concurrency)))
         self._sentence_transformer = None
+        self._ollama_available: bool | None = None
+        self._ollama_last_check: float = 0.0
         self.last_error: str | None = None
 
     def _get_sentence_transformer(self):
@@ -157,16 +157,40 @@ class EmbeddingService:
         self._sentence_transformer = SentenceTransformer(self.model)
         return self._sentence_transformer
 
+    def _check_ollama_available(self, force: bool = False) -> bool:
+        if self.test_mode:
+            return False
+        now = time.monotonic()
+        if not force and self._ollama_available is not None and (now - self._ollama_last_check) < 30.0:
+            return self._ollama_available
+        if not self.base_url:
+            self._ollama_available = False
+            self._ollama_last_check = now
+            return False
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/tags",
+                timeout=(1.5, 3.0),
+            )
+            response.raise_for_status()
+            self._ollama_available = True
+        except requests.RequestException as exc:
+            self._ollama_available = False
+            self.last_error = f"Ollama unreachable: {exc}"
+        self._ollama_last_check = now
+        return self._ollama_available
+
     @property
     def identity(self) -> EmbeddingProfile | None:
         if self.dimension is None:
             return None
-        implementation = (
-            "deterministic-test-v1"
-            if self.test_mode
-            else "sentence-transformers-v1" if self.provider == "sentence-transformers" else "ollama-api-v1"
-        )
-        return EmbeddingProfile(
+        if self.test_mode:
+            implementation = "deterministic-test-v1"
+        elif self.provider == "sentence-transformers":
+            implementation = "sentence-transformers-v1"
+        else:
+            implementation = "ollama-api-v1"
+        profile = EmbeddingProfile(
             provider=self.provider,
             model=self.model,
             dimension=self.dimension,
@@ -175,6 +199,9 @@ class EmbeddingService:
             metric="cosine",
             implementation_version=implementation,
         )
+        if self._profile_fingerprint is None:
+            self._profile_fingerprint = profile.fingerprint
+        return profile
 
     def discover_dimension(self) -> int:
         self.embed_query("__rag_dimension_probe__")
@@ -191,9 +218,9 @@ class EmbeddingService:
         ordered_results: list[list[float] | None] = [None] * len(texts)
         missing_indices: list[int] = []
         missing_texts: list[str] = []
+        profile_prefix = self._profile_fingerprint or "no_profile"
         for index, text in enumerate(texts):
-            # Use profile-aware cache key to avoid cross-profile contamination
-            cache_key = f"{self._profile_fingerprint or 'no_profile'}::{text}"
+            cache_key = f"{profile_prefix}::{text}"
             cached = self._embedding_cache.get(cache_key)
             if cached is not None:
                 ordered_results[index] = cached
@@ -210,13 +237,16 @@ class EmbeddingService:
                 )
             for offset, (index, text) in enumerate(zip(missing_indices, missing_texts, strict=True)):
                 vector = new_vectors[offset]
-                self._embedding_cache[text] = vector
+                cache_key = f"{profile_prefix}::{text}"
+                self._embedding_cache[cache_key] = vector
                 if self.cache_size and len(self._embedding_cache) > self.cache_size:
                     self._embedding_cache.popitem(last=False)
                 ordered_results[index] = vector
+        if any(vector is None for vector in ordered_results):
+            raise RuntimeError("Embedding backend returned incomplete results for the requested texts.")
         return [vector for vector in ordered_results if vector is not None]
 
-    def _fallback_http_embed_batch(self, texts: list[str]) -> list[list[float]]:
+    def _ollama_embed_batch(self, texts: list[str]) -> list[list[float]]:
         attempt_texts = list(texts)
         last_error: Exception | None = None
         for attempt in range(self.retries):
@@ -224,8 +254,8 @@ class EmbeddingService:
                 self._active_batch_size = 1
             if len(attempt_texts) > self._active_batch_size:
                 half = max(1, len(attempt_texts) // 2)
-                left = self._fallback_http_embed_batch(attempt_texts[:half])
-                right = self._fallback_http_embed_batch(attempt_texts[half:])
+                left = self._ollama_embed_batch(attempt_texts[:half])
+                right = self._ollama_embed_batch(attempt_texts[half:])
                 return left + right
             try:
                 response = requests.post(
@@ -247,6 +277,7 @@ class EmbeddingService:
                 self.provider = "ollama"
                 self.last_error = None
                 self._consecutive_timeouts = 0
+                self._ollama_available = True
                 if self._active_batch_size < self.batch_size:
                     self._active_batch_size = min(self.batch_size, self._active_batch_size + 1)
                 return result
@@ -260,21 +291,14 @@ class EmbeddingService:
             except (requests.RequestException, ConnectionError, ValueError, KeyError, TypeError) as exc:
                 last_error = exc
                 self.last_error = str(exc)
+                self._ollama_available = False
                 if attempt + 1 < self.retries:
                     time.sleep(0.5 * (2**attempt))
         raise RuntimeError(
-            f"Embedding service failed after {self.retries} attempts for model {self.model!r}."
+            f"Ollama embedding service failed after {self.retries} attempts for model {self.model!r}."
         ) from last_error
 
-    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
-        texts = [text for text in texts if text is not None]
-        if not texts:
-            return []
-        # Ollama model tags conventionally include a colon (for example
-        # qwen3-embedding:latest). Use the configured Ollama model directly
-        # instead of attempting a potentially large Hugging Face download.
-        if ":" in self.model:
-            return self._fallback_http_embed_batch(texts)
+    def _transformers_embed_batch(self, texts: list[str]) -> list[list[float]]:
         try:
             model = self._get_sentence_transformer()
             vectors = model.encode(
@@ -289,13 +313,50 @@ class EmbeddingService:
         except Exception as exc:
             self.last_error = str(exc)
             self._sentence_transformer = None
-            return self._fallback_http_embed_batch(texts)
+            raise RuntimeError(f"Embedding service failed: SentenceTransformers fallback failed: {exc}") from exc
         if isinstance(vectors, np.ndarray):
             vectors = vectors.tolist()
         if isinstance(vectors, list) and vectors and not isinstance(vectors[0], list):
             vectors = [list(vectors)]
         self._validate(vectors, len(texts))
         return [list(map(float, vector)) for vector in vectors]
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        texts = [text for text in texts if text is not None]
+        if not texts:
+            return []
+        ollama_up = self._check_ollama_available()
+        if self.prefer_local_transformers:
+            try:
+                return self._transformers_embed_batch(texts)
+            except Exception as exc:
+                if ollama_up:
+                    return self._ollama_embed_batch(texts)
+                raise exc
+        if ollama_up:
+            try:
+                return self._ollama_embed_batch(texts)
+            except Exception as exc:
+                if self.prefer_local_transformers or ":" not in self.model:
+                    try:
+                        return self._transformers_embed_batch(texts)
+                    except Exception:
+                        pass
+                raise exc
+        # The tags endpoint is only a health probe. Some Ollama-compatible
+        # servers disable it while still serving /api/embed, so do not make
+        # embedding availability depend on that optional endpoint.
+        if self.base_url and not self.prefer_local_transformers:
+            try:
+                return self._ollama_embed_batch(texts)
+            except Exception:
+                pass
+        if self.prefer_local_transformers or ":" not in self.model:
+            return self._transformers_embed_batch(texts)
+        raise RuntimeError(
+            f"No embedding backend available. Ollama unreachable at {self.base_url!r} "
+            f"and SentenceTransformers fallback is disabled for model {self.model!r}."
+        )
 
     def _validate(self, vectors: list[list[float]], expected_count: int) -> None:
         if len(vectors) != expected_count or not vectors:

@@ -408,28 +408,14 @@ class IngestionStateStore:
             raise ValueError(f"Document {document_id!r} does not exist.")
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
-        allowed = {
-            "DISCOVERED": {"VALIDATING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
-            "VALIDATING": {"EXTRACTING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
-            "EXTRACTING": {"OCR", "CHUNKING", "EMBEDDING", "INDEXING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
-            "OCR": {"CHUNKING", "FAILED", "FAILED_OCR", "QUARANTINED"},
-            "CHUNKING": {"EMBEDDING", "FAILED", "FAILED_EXTRACTION", "QUARANTINED"},
-            "EMBEDDING": {"INDEXING", "FAILED", "FAILED_EMBEDDING", "QUARANTINED"},
-            "INDEXING": {"VALIDATING_INDEX", "FAILED", "FAILED_INDEXING", "QUARANTINED"},
-            "VALIDATING_INDEX": {"READY", "FAILED", "FAILED_INDEXING", "QUARANTINED"},
-            "READY": {"READY"},
-            "FAILED": {"RECOVERING", "QUARANTINED"},
-            "FAILED_EXTRACTION": {"RECOVERING", "QUARANTINED"},
-            "FAILED_OCR": {"RECOVERING", "QUARANTINED"},
-            "FAILED_EMBEDDING": {"RECOVERING", "QUARANTINED"},
-            "FAILED_INDEXING": {"RECOVERING", "QUARANTINED"},
-            "DEGRADED_LEXICAL": {"RECOVERING", "READY", "QUARANTINED"},
-            "QUARANTINED": {"RECOVERING", "FAILED"},
-            "INTERRUPTED": {"RECOVERING", "FAILED", "QUARANTINED"},
-            "RECOVERING": {"VALIDATING", "EXTRACTING", "CHUNKING", "EMBEDDING", "INDEXING", "READY", "FAILED", "QUARANTINED"},
+
+        terminal_states = {
+            "READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR",
+            "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL",
         }
-        if new_stage_value not in allowed.get(current_stage, set()):
-            raise ValueError(f"Invalid state transition: {current_stage} -> {new_stage_value}")
+        if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states:
+            pass
+
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:
             values.setdefault("status", "READY")
@@ -437,6 +423,13 @@ class IngestionStateStore:
         elif new_stage_value.startswith("FAILED") or new_stage_value == "DEGRADED_LEXICAL":
             values.setdefault("status", new_stage_value)
             values.setdefault("index_state", "FAILED")
+        elif new_stage_value == "QUARANTINED":
+            values.setdefault("status", "QUARANTINED")
+            values.setdefault("index_state", "FAILED")
+        elif new_stage_value in {"INTERRUPTED", "RECOVERING"}:
+            values.setdefault("status", new_stage_value)
+        else:
+            values.setdefault("status", "RUNNING")
         self.update_document(document_id, **values)
         self.record_event(
             document_id,
@@ -479,6 +472,16 @@ class IngestionStateStore:
     def delete_pages(self, document_id: str) -> None:
         with self._connect() as connection:
             connection.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))
+
+    def clear_all(self) -> None:
+        """Remove every persisted ingestion and query record."""
+        with self._connect() as connection:
+            connection.execute("DELETE FROM pages")
+            connection.execute("DELETE FROM process_events")
+            connection.execute("DELETE FROM query_traces")
+            connection.execute("DELETE FROM documents")
+            connection.commit()
+            connection.execute("VACUUM")
 
     def record_query_trace(self, query_id: str, payload: dict[str, Any]) -> None:
         with self._connect() as connection:

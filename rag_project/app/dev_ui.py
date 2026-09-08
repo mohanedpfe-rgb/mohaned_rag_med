@@ -849,6 +849,31 @@ def main() -> None:
             get_system.clear()
             get_observer.clear()
             st.rerun()
+        st.divider()
+        st.subheader("Data cleanup")
+        st.caption("Deletes PDFs, extracted data, ingestion history, query traces, and search indexes.")
+        confirm_cleanup = st.checkbox(
+            "I understand this permanently deletes all indexed PDF data",
+            key="confirm_full_cleanup",
+        )
+        if st.button(
+            "Delete all PDF data and reset databases",
+            type="secondary",
+            disabled=not confirm_cleanup,
+        ):
+            running_id, _ = _active_job()
+            if running_id:
+                st.error("Stop or wait for the current ingestion job before cleaning the data.")
+            else:
+                try:
+                    removed = system.clear_pdf_data()
+                except (OSError, RuntimeError) as exc:
+                    st.error(f"Cleanup failed: {exc}")
+                else:
+                    get_system.clear()
+                    get_observer.clear()
+                    st.success(f"Cleanup complete. Removed {len(removed)} managed data item(s).")
+                    st.rerun()
         st.write(f"**Project:** `{system.settings.project_root}`")
         st.write(f"**Incoming:** `{system.settings.incoming_dir}`")
         st.write(f"**Vector DB:** `{system.settings.vector_db_dir}`")

@@ -53,6 +53,9 @@ class ResilientRAGSystem(RAGSystem):
                 continue
             if current_index not in wanted or current_index == int(chunk_index):
                 continue
+            state = str((metadata or {}).get("index_state", "READY")).upper()
+            if state != "READY":
+                continue
             result.append(
                 RetrievalHit(
                     doc_id=str((metadata or {}).get("document_id", document_id)),
@@ -76,20 +79,26 @@ class ResilientRAGSystem(RAGSystem):
             cache_size=self.settings.embedding_cache_size,
             cache_ttl_seconds=self.settings.embedding_cache_ttl_seconds,
             max_concurrency=self.settings.ollama_concurrency,
+            prefer_local_transformers=False,
         )
         self.embedding_startup_error = None
+        self._embedding_dimension_probed = False
         self.vector_store.set_expected_identity(None)
-        try:
-            self.embedding_service.discover_dimension()
-            self.vector_store.set_expected_identity(self.embedding_service.identity)
-        except RuntimeError as exc:
-            self.embedding_startup_error = str(exc)
+        if not getattr(self.settings, "lazy_model_loading", True):
+            try:
+                self.embedding_service.discover_dimension()
+                self._embedding_dimension_probed = True
+                self.vector_store.set_expected_identity(self.embedding_service.identity)
+            except RuntimeError as exc:
+                self.embedding_startup_error = str(exc)
         self.retriever.set_embedding_service(self.embedding_service)
         self.llm = OllamaLLMClient(
             self.settings.ollama_base_url,
             self.settings.generation_model,
             self.settings.generation_timeout_seconds,
             self.settings.generation_max_output_tokens,
+            circuit_threshold=self.settings.ollama_failure_circuit_threshold,
+            circuit_open_seconds=self.settings.ollama_circuit_open_seconds,
         )
         self._rebuild_context_builder()
 
@@ -133,11 +142,11 @@ class ResilientRAGSystem(RAGSystem):
 
         file_path = Path(pdf_path)
         self.embedding_startup_error = None
+        self._ensure_embedding_dimension()
         try:
-            self.embedding_service.discover_dimension()
             self.vector_store.set_expected_identity(self.embedding_service.identity)
-        except RuntimeError as exc:
-            self.embedding_startup_error = str(exc)
+        except Exception:
+            pass
 
         if file_path.is_file():
             content_hash = self._hash_file(file_path)
@@ -187,6 +196,19 @@ class ResilientRAGSystem(RAGSystem):
                 "confidence": {"level": "none", "top_score": 0.0, "margin": 0.0},
             }
 
+        query_analysis = QueryQualityClassifier.assess(original_question)
+        if query_analysis["should_abstain"]:
+            return {
+                "status": query_analysis["query_quality"],
+                "answer": query_analysis.get("clarification")
+                or "The question appears ambiguous or malformed. Please rephrase it.",
+                "citations": [],
+                "hits": [],
+                "confidence": {"level": "none", "top_score": 0.0, "margin": 0.0},
+                "query_analysis": query_analysis,
+            }
+
+        self._ensure_embedding_dimension()
         self.index_compatibility = self.vector_store.compatibility_report(self.embedding_service.identity)
         rewritten_question = self._safe_rewrite(original_question)
         filter_query = MetadataFilter.build(metadata_filter)
@@ -245,7 +267,6 @@ class ResilientRAGSystem(RAGSystem):
             sanitized_hits.append(hit)
 
         context, selected_hits = self.context_builder.build(sanitized_hits)
-        query_analysis = QueryQualityClassifier.assess(original_question)
         evidence_alignment = EvidenceAlignment.evaluate(original_question, selected_hits)
         if not selected_hits:
             result = {

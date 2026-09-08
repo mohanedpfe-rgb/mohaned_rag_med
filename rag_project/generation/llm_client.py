@@ -47,8 +47,11 @@ class OllamaLLMClient:
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
 
+    def _circuit_is_open(self) -> bool:
+        return time.monotonic() < self._circuit_open_until
+
     def health_check(self, timeout_seconds: float = 2.0) -> bool:
-        if time.monotonic() < self._circuit_open_until:
+        if self._circuit_is_open():
             return False
         try:
             response = requests.get(
@@ -73,15 +76,13 @@ class OllamaLLMClient:
         self._circuit_open_until = 0.0
 
     @retry(
-        stop=stop_after_attempt(3) | stop_after_delay(45),
+        stop=stop_after_attempt(5) | stop_after_delay(45),
         wait=wait_random_exponential(min=0.5, max=8),
         retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
         before_sleep=_before_sleep_cb,
         reraise=True,
     )
     def _generate_raw(self, prompt: str, system_prompt: str | None, temperature: float) -> dict:
-        if time.monotonic() < self._circuit_open_until:
-            raise RuntimeError("Ollama circuit breaker is open; generation was skipped.")
         payload = {
             "model": self.model,
             "stream": False,
@@ -94,18 +95,23 @@ class OllamaLLMClient:
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=(5, min(self.timeout_seconds, 60.0)),
+                timeout=(5, self.timeout_seconds),
             )
             response.raise_for_status()
             data = response.json()
-            self._record_success()
             return data
         except (requests.RequestException, ValueError, TypeError) as exc:
-            self._record_failure(exc)
+            self.last_error = str(exc)
             raise RuntimeError(f"Generation service failed for model {self.model!r}.") from exc
 
     def generate(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.2) -> str:
-        data = self._generate_raw(prompt, system_prompt, temperature)
+        if self._circuit_is_open():
+            raise RuntimeError("Ollama circuit breaker is open; generation was skipped.")
+        try:
+            data = self._generate_raw(prompt, system_prompt, temperature)
+        except Exception as exc:
+            self._record_failure(exc)
+            raise
         self.last_metrics = {
             k: data.get(k)
             for k in ("prompt_eval_count", "eval_count", "eval_duration", "load_duration", "total_duration")
@@ -113,5 +119,8 @@ class OllamaLLMClient:
         }
         message = data.get("message")
         if isinstance(message, dict) and isinstance(message.get("content"), str):
+            self._record_success()
             return message["content"].strip()
-        raise RuntimeError(f"Ollama returned an invalid chat response for model {self.model!r}.")
+        error = RuntimeError(f"Ollama returned an invalid chat response for model {self.model!r}.")
+        self._record_failure(error)
+        raise error

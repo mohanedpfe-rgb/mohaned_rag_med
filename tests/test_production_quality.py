@@ -145,3 +145,36 @@ def test_building_chunks_are_not_searchable_until_activated(tmp_path: Path):
     assert store.search_lexical("insulin nutrition")["ids"] == [[]]
     store.set_document_index_state("doc", "READY")
     assert store.search_lexical("insulin nutrition")["ids"] == [["doc-0"]]
+
+
+def test_ingestion_version_id_changes_when_parser_or_embedding_profile_changes():
+    base = RAGSystem._ingestion_version_id(
+        content_hash="abcd",
+        parser_version="pdf-extractor-v2",
+        ocr_config={"engine": "rapidocr", "scale": 2},
+        chunking_config={"size": 700, "overlap": 120},
+        embedding_model="qwen3-embedding:latest",
+        embedding_profile="fp-v1",
+        embedding_dimension=1024,
+    )
+    upgraded = RAGSystem._ingestion_version_id(
+        content_hash="abcd",
+        parser_version="pdf-extractor-v3",
+        ocr_config={"engine": "rapidocr", "scale": 2},
+        chunking_config={"size": 700, "overlap": 120},
+        embedding_model="qwen3-embedding:latest",
+        embedding_profile="fp-v1",
+        embedding_dimension=1024,
+    )
+    assert base != upgraded
+
+
+def test_pdf_extractor_removes_duplicate_ocr_repetitions():
+    from rag_project.parsing.pdf_extractor import PDFExtractor
+
+    merged = PDFExtractor._merge_native_and_ocr_text(
+        "Diabetes mellitus is diagnosed with HbA1c testing.\n\nFollow-up is required.",
+        "Diabetes mellitus is diagnosed with HbA1c testing.\n\nFollow-up is required.",
+    )
+    assert merged.count("Diabetes mellitus") == 1
+    assert "Follow-up is required." in merged
