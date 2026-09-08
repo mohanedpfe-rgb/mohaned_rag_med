@@ -22,6 +22,14 @@ class PageExtraction:
     blocks: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     source_path: str | None = None
+    quality_score: float = 0.0
+    routing_decision: str = "native"
+    table_ids: List[str] = field(default_factory=list)
+    figure_ids: List[str] = field(default_factory=list)
+    normalized_text: str = ""
+    entities: Dict[str, List[str]] = field(default_factory=dict)
+    headings: List[str] = field(default_factory=list)
+    representation_ids: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -32,3 +40,9 @@ class Chunk:
     text: str
     page_numbers: List[int]
     metadata: Dict[str, Any] = field(default_factory=dict)
+    representation_type: str = "canonical"
+    parent_id: str | None = None
+    section_id: str | None = None
+    table_id: str | None = None
+    figure_id: str | None = None
+    normalized_text: str = ""
