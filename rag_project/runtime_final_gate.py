@@ -68,6 +68,25 @@ def _safe_release(self: Any, document_id: str, worker_id: str) -> bool:
         _clear_lease(document_id, worker_id)
 
 
+def _safe_upsert(self: Any, values: dict[str, Any]) -> None:
+    document_id = values.get("document_id")
+    if document_id:
+        existing = self.get_document(str(document_id))
+        existing_owner = str((existing or {}).get("lease_owner") or "")
+        _, expected_document, expected_worker = _current_lease()
+        if existing_owner:
+            expires = (existing or {}).get("lease_expires_at")
+            try:
+                live = datetime.fromisoformat(str(expires).replace("Z", "+00:00")) > datetime.now(timezone.utc)
+            except (TypeError, ValueError):
+                live = False
+            if live and not (expected_document == str(document_id) and expected_worker == existing_owner):
+                raise RuntimeError(
+                    f"Document {document_id} is actively leased by another worker; refusing metadata overwrite."
+                )
+    return self._original_runtime_final_upsert(values)
+
+
 def _safe_transition(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
     stage = str(new_stage).upper()
     if stage in {
@@ -143,6 +162,9 @@ def install() -> None:
     if not hasattr(IngestionStateStore, "_original_runtime_final_release"):
         IngestionStateStore._original_runtime_final_release = IngestionStateStore.release_document
         IngestionStateStore.release_document = _safe_release
+    if not hasattr(IngestionStateStore, "_original_runtime_final_upsert"):
+        IngestionStateStore._original_runtime_final_upsert = IngestionStateStore.upsert_document
+        IngestionStateStore.upsert_document = _safe_upsert
     if not hasattr(IngestionStateStore, "_original_runtime_final_transition"):
         IngestionStateStore._original_runtime_final_transition = IngestionStateStore.transition_document_state
         IngestionStateStore.transition_document_state = _safe_transition
