@@ -88,12 +88,45 @@ class Settings:
         except (TypeError, ValueError):
             return default
 
+    def __post_init__(self) -> None:
+        # Guard direct construction as well as values loaded from environment.
+        self.device_mode = self.device_mode if self.device_mode in DEVICE_PRESETS else "i5_16gb"
+        self.project_root = Path(self.project_root).resolve()
+        self.ollama_base_url = str(self.ollama_base_url).strip().rstrip("/") or "http://127.0.0.1:11434"
+        self.chunk_size = max(200, int(self.chunk_size))
+        self.chunk_overlap = max(0, min(int(self.chunk_overlap), self.chunk_size - 1))
+        self.top_k = max(1, min(int(self.top_k), 50))
+        self.temperature = max(0.0, min(float(self.temperature), 1.0))
+        self.vector_weight = max(0.0, min(float(self.vector_weight), 1.0))
+        self.page_batch_size = max(1, int(self.page_batch_size))
+        self.chunk_batch_size = max(1, int(self.chunk_batch_size))
+        self.embedding_batch_size = max(1, int(self.embedding_batch_size))
+        self.embedding_retries = max(0, int(self.embedding_retries))
+        self.embedding_timeout_seconds = max(1.0, float(self.embedding_timeout_seconds))
+        self.generation_timeout_seconds = max(1.0, float(self.generation_timeout_seconds))
+        self.generation_latency_budget_seconds = max(1.0, float(self.generation_latency_budget_seconds))
+        self.generation_max_output_tokens = max(32, int(self.generation_max_output_tokens))
+        self.context_token_budget = max(256, int(self.context_token_budget))
+        self.max_workers = max(1, int(self.max_workers))
+        self.max_memory_target = max(256, int(self.max_memory_target))
+        self.ollama_concurrency = max(1, int(self.ollama_concurrency))
+        self.embedding_cache_size = max(0, int(self.embedding_cache_size))
+        self.embedding_cache_ttl_seconds = max(0.0, float(self.embedding_cache_ttl_seconds))
+        self.ingestion_lease_seconds = max(30, int(self.ingestion_lease_seconds))
+        self.ollama_failure_circuit_threshold = max(1, int(self.ollama_failure_circuit_threshold))
+        self.ollama_circuit_open_seconds = max(1.0, float(self.ollama_circuit_open_seconds))
+        self.ocr_confidence_threshold = max(0.0, min(float(self.ocr_confidence_threshold), 1.0))
+        self.ocr_min_char_density = max(0.0, float(self.ocr_min_char_density))
+        self.ocr_image_coverage_threshold = max(0.0, min(float(self.ocr_image_coverage_threshold), 1.0))
+
     def apply_device_preset(self, device_mode: str) -> None:
-        preset = get_preset(device_mode)
+        normalized = device_mode if device_mode in DEVICE_PRESETS else "i5_16gb"
+        preset = get_preset(normalized)
         for key, value in preset.items():
             if hasattr(self, key):
                 setattr(self, key, value)
-        self.device_mode = device_mode
+        self.device_mode = normalized
+        self.__post_init__()
 
     def override_from_dict(self, overrides: dict[str, Any]) -> list[str]:
         warnings: list[str] = []
@@ -107,11 +140,11 @@ class Settings:
             for key, value in preset.items():
                 if key not in overrides and hasattr(self, key):
                     setattr(self, key, value)
+        self.__post_init__()
         return warnings
 
     @classmethod
     def from_env(cls) -> "Settings":
-        env_loaded = False
         for dotenv_candidate in (
             Path.cwd() / ".env",
             Path(__file__).resolve().parents[2] / ".env",
@@ -119,22 +152,23 @@ class Settings:
         ):
             if dotenv_candidate.is_file():
                 load_dotenv(dotenv_candidate, override=False)
-                env_loaded = True
                 break
-        if not env_loaded:
+        else:
             project_root_env = os.getenv("PROJECT_ROOT")
             if project_root_env:
                 candidate = Path(project_root_env) / ".env"
                 if candidate.is_file():
                     load_dotenv(candidate, override=False)
+
         default_root = Path(__file__).resolve().parents[2]
         project_root = Path(os.getenv("PROJECT_ROOT", str(default_root))).resolve()
-        if not env_loaded:
-            additional = project_root / ".env"
-            if additional.is_file():
-                load_dotenv(additional, override=False)
+        additional = project_root / ".env"
+        if additional.is_file():
+            load_dotenv(additional, override=False)
 
         device_mode = os.getenv("DEVICE_MODE", "i5_16gb")
+        if device_mode not in DEVICE_PRESETS:
+            device_mode = "i5_16gb"
         preset = get_preset(device_mode)
         settings = cls(
             device_mode=device_mode,
@@ -148,45 +182,40 @@ class Settings:
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             embedding_model=os.getenv("EMBEDDING_MODEL", preset["embedding_model"]),
             generation_model=os.getenv("GENERATION_MODEL", preset["generation_model"]),
-            generation_timeout_seconds=float(os.getenv("GENERATION_TIMEOUT_SECONDS", str(preset["generation_timeout_seconds"]))),
-            generation_latency_budget_seconds=float(
-                os.getenv("GENERATION_LATENCY_BUDGET_SECONDS", str(preset["generation_latency_budget_seconds"]))
-            ),
-            generation_max_output_tokens=int(os.getenv("GENERATION_MAX_OUTPUT_TOKENS", str(preset["generation_max_output_tokens"]))),
-            chunk_size=int(os.getenv("CHUNK_SIZE", str(preset["chunk_size"]))),
-            chunk_overlap=int(os.getenv("CHUNK_OVERLAP", str(preset["chunk_overlap"]))),
-            top_k=int(os.getenv("TOP_K", str(preset["top_k"]))),
-            temperature=float(os.getenv("TEMPERATURE", "0.2")),
+            generation_timeout_seconds=cls._parse_float(os.getenv("GENERATION_TIMEOUT_SECONDS"), float(preset["generation_timeout_seconds"])),
+            generation_latency_budget_seconds=cls._parse_float(os.getenv("GENERATION_LATENCY_BUDGET_SECONDS"), float(preset["generation_latency_budget_seconds"])),
+            generation_max_output_tokens=cls._parse_int(os.getenv("GENERATION_MAX_OUTPUT_TOKENS"), int(preset["generation_max_output_tokens"])),
+            chunk_size=cls._parse_int(os.getenv("CHUNK_SIZE"), int(preset["chunk_size"])),
+            chunk_overlap=cls._parse_int(os.getenv("CHUNK_OVERLAP"), int(preset["chunk_overlap"])),
+            top_k=cls._parse_int(os.getenv("TOP_K"), int(preset["top_k"])),
+            temperature=cls._parse_float(os.getenv("TEMPERATURE"), 0.2),
             ingestion_db_path=project_root / os.getenv("INGESTION_DB_PATH", "data/ingestion.sqlite3"),
-            page_batch_size=int(os.getenv("PAGE_BATCH_SIZE", "16")),
-            chunk_batch_size=int(os.getenv("CHUNK_BATCH_SIZE", "32")),
-            embedding_batch_size=int(os.getenv("EMBEDDING_BATCH_SIZE", str(preset["embedding_batch_size"]))),
-            embedding_retries=int(os.getenv("EMBEDDING_RETRIES", str(preset["embedding_retries"]))),
-            embedding_timeout_seconds=float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", str(preset["embedding_timeout_seconds"]))),
-            embedding_test_mode=cls._parse_bool(os.getenv("EMBEDDING_TEST_MODE", "false"), False),
+            page_batch_size=cls._parse_int(os.getenv("PAGE_BATCH_SIZE"), 16),
+            chunk_batch_size=cls._parse_int(os.getenv("CHUNK_BATCH_SIZE"), 32),
+            embedding_batch_size=cls._parse_int(os.getenv("EMBEDDING_BATCH_SIZE"), int(preset["embedding_batch_size"])),
+            embedding_retries=cls._parse_int(os.getenv("EMBEDDING_RETRIES"), int(preset["embedding_retries"])),
+            embedding_timeout_seconds=cls._parse_float(os.getenv("EMBEDDING_TIMEOUT_SECONDS"), float(preset["embedding_timeout_seconds"])),
+            embedding_test_mode=cls._parse_bool(os.getenv("EMBEDDING_TEST_MODE"), False),
             lexical_mode=os.getenv("LEXICAL_MODE", "hybrid"),
-            vector_weight=float(os.getenv("VECTOR_WEIGHT", "0.7")),
-            context_token_budget=int(os.getenv("CONTEXT_TOKEN_BUDGET", str(preset["context_token_budget"]))),
-            neighbor_expansion=cls._parse_bool(os.getenv("NEIGHBOR_EXPANSION", "true"), True),
-            contextual_retrieval=cls._parse_bool(
-                os.getenv("CONTEXTUAL_RETRIEVAL", str(preset.get("contextual_retrieval", True))),
-                True,
-            ),
-            max_workers=int(os.getenv("MAX_WORKERS", str(preset["max_workers"]))),
-            max_memory_target=int(os.getenv("MAX_MEMORY_TARGET", str(preset["max_memory_target"]))),
-            embedding_cache_size=int(os.getenv("EMBEDDING_CACHE_SIZE", str(preset["embedding_cache_size"]))),
-            embedding_cache_ttl_seconds=float(os.getenv("EMBEDDING_CACHE_TTL_SECONDS", str(preset["embedding_cache_ttl_seconds"]))),
-            ingestion_lease_seconds=int(os.getenv("INGESTION_LEASE_SECONDS", str(preset["ingestion_lease_seconds"]))),
+            vector_weight=cls._parse_float(os.getenv("VECTOR_WEIGHT"), 0.7),
+            context_token_budget=cls._parse_int(os.getenv("CONTEXT_TOKEN_BUDGET"), int(preset["context_token_budget"])),
+            neighbor_expansion=cls._parse_bool(os.getenv("NEIGHBOR_EXPANSION"), True),
+            contextual_retrieval=cls._parse_bool(os.getenv("CONTEXTUAL_RETRIEVAL"), bool(preset.get("contextual_retrieval", True))),
+            max_workers=cls._parse_int(os.getenv("MAX_WORKERS"), int(preset["max_workers"])),
+            max_memory_target=cls._parse_int(os.getenv("MAX_MEMORY_TARGET"), int(preset["max_memory_target"])),
+            embedding_cache_size=cls._parse_int(os.getenv("EMBEDDING_CACHE_SIZE"), int(preset["embedding_cache_size"])),
+            embedding_cache_ttl_seconds=cls._parse_float(os.getenv("EMBEDDING_CACHE_TTL_SECONDS"), float(preset["embedding_cache_ttl_seconds"])),
+            ingestion_lease_seconds=cls._parse_int(os.getenv("INGESTION_LEASE_SECONDS"), int(preset["ingestion_lease_seconds"])),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
-            ollama_concurrency=int(os.getenv("OLLAMA_CONCURRENCY", str(preset["ollama_concurrency"]))),
+            ollama_concurrency=cls._parse_int(os.getenv("OLLAMA_CONCURRENCY"), int(preset["ollama_concurrency"])),
             reranker_model=os.getenv("RERANKER_MODEL", preset["reranker_model"]),
-            ollama_failure_circuit_threshold=int(os.getenv("OLLAMA_FAILURE_CIRCUIT_THRESHOLD", str(preset["ollama_failure_circuit_threshold"]))),
-            ollama_circuit_open_seconds=float(os.getenv("OLLAMA_CIRCUIT_OPEN_SECONDS", str(preset["ollama_circuit_open_seconds"]))),
-            ocr_enabled=cls._parse_bool(os.getenv("OCR_ENABLED", str(preset["ocr_enabled"])), preset["ocr_enabled"]),
-            ocr_confidence_threshold=cls._parse_float(os.getenv("OCR_CONFIDENCE_THRESHOLD", None), 0.55),
-            ocr_min_char_density=cls._parse_float(os.getenv("OCR_MIN_CHAR_DENSITY", None), 0.001),
-            ocr_image_coverage_threshold=cls._parse_float(os.getenv("OCR_IMAGE_COVERAGE_THRESHOLD", None), 0.55),
-            lazy_model_loading=cls._parse_bool(os.getenv("LAZY_MODEL_LOADING", "true"), True),
+            ollama_failure_circuit_threshold=cls._parse_int(os.getenv("OLLAMA_FAILURE_CIRCUIT_THRESHOLD"), int(preset["ollama_failure_circuit_threshold"])),
+            ollama_circuit_open_seconds=cls._parse_float(os.getenv("OLLAMA_CIRCUIT_OPEN_SECONDS"), float(preset["ollama_circuit_open_seconds"])),
+            ocr_enabled=cls._parse_bool(os.getenv("OCR_ENABLED"), bool(preset["ocr_enabled"])),
+            ocr_confidence_threshold=cls._parse_float(os.getenv("OCR_CONFIDENCE_THRESHOLD"), 0.55),
+            ocr_min_char_density=cls._parse_float(os.getenv("OCR_MIN_CHAR_DENSITY"), 0.001),
+            ocr_image_coverage_threshold=cls._parse_float(os.getenv("OCR_IMAGE_COVERAGE_THRESHOLD"), 0.55),
+            lazy_model_loading=cls._parse_bool(os.getenv("LAZY_MODEL_LOADING"), True),
         )
         for _dir in [settings.incoming_dir, settings.processed_dir, settings.failed_dir, settings.archive_dir, settings.vector_db_dir, settings.log_dir]:
             _dir.mkdir(parents=True, exist_ok=True)
