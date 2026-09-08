@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from dataclasses import dataclass
 
 from rag_project.intelligence.advanced_reasoning import (
@@ -29,7 +30,9 @@ class Hit:
 def test_all_44_are_wired_to_concrete_implementations():
     assert len(FEATURE_IMPLEMENTATIONS) == 44
     assert len(set(FEATURE_IMPLEMENTATIONS)) == 44
-    assert all(":" in target for target in FEATURE_IMPLEMENTATIONS.values())
+    for target in FEATURE_IMPLEMENTATIONS.values():
+        module_name, symbol = target.split(":", 1)
+        assert callable(getattr(importlib.import_module(module_name), symbol))
     assert report()["all_features_wired"] is True
 
 
