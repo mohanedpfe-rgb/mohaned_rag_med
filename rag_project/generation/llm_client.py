@@ -38,6 +38,8 @@ class OllamaLLMClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = max(5.0, float(timeout_seconds))
+        # A single Ollama call should not consume the whole end-to-end latency budget.
+        self.request_timeout_seconds = min(self.timeout_seconds, 60.0)
         self.max_output_tokens = max(32, int(max_output_tokens))
         self.circuit_threshold = max(1, int(circuit_threshold))
         self.circuit_open_seconds = max(1.0, float(circuit_open_seconds))
@@ -76,8 +78,8 @@ class OllamaLLMClient:
         self._circuit_open_until = 0.0
 
     @retry(
-        stop=stop_after_attempt(5) | stop_after_delay(45),
-        wait=wait_random_exponential(min=0.5, max=8),
+        stop=stop_after_attempt(2) | stop_after_delay(65),
+        wait=wait_random_exponential(min=0.5, max=4),
         retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
         before_sleep=_before_sleep_cb,
         reraise=True,
@@ -95,10 +97,12 @@ class OllamaLLMClient:
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=(5, self.timeout_seconds),
+                timeout=(5, self.request_timeout_seconds),
             )
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                raise RuntimeError("Ollama returned a non-object JSON response.")
             return data
         except (requests.RequestException, ValueError, TypeError) as exc:
             self.last_error = str(exc)
