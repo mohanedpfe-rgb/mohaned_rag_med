@@ -65,7 +65,7 @@ class OCRService:
         pixels = width * height
         if pixels > self.max_render_pixels:
             scale = (self.max_render_pixels / float(max(1, page.rect.width * page.rect.height))) ** 0.5
-            safe_scale = max(1.0, min(float(self.render_scale), scale))
+            safe_scale = max(0.25, min(float(self.render_scale), scale))
             matrix = fitz.Matrix(safe_scale, safe_scale)
             width = max(1, int(page.rect.width * safe_scale))
             height = max(1, int(page.rect.height * safe_scale))
