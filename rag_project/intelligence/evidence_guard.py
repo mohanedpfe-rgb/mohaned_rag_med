@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, asdict
 from typing import Any, Iterable, Sequence
@@ -15,108 +16,206 @@ class ClaimCheck:
     sources: tuple[str, ...]
     numeric_mismatch: bool = False
     contradiction: bool = False
+    reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
+_SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+")
 _NUM_RE = re.compile(r"[-+]?\d+(?:[\.,]\d+)?")
-_UNIT_RE = re.compile(r"[-+]?\d+(?:[\.,]\d+)?\s*(?:mg|g|kg|mcg|µg|ug|ml|l|mmhg|%|bpm|cm|mm|mL)\b", re.I)
-_NEGATION = re.compile(r"\b(no|not|without|never|none|contraindicated|avoid|cannot|does not|non|aucun|sans|jamais|ne\s+pas|لا|ليس|دون|ممنوع)\b", re.I)
-_SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+")
+_VALUE_UNIT_RE = re.compile(
+    r"(?P<value>[-+]?\d+(?:[\.,]\d+)?(?:\s*[-–]\s*\d+(?:[\.,]\d+)?)?)\s*"
+    r"(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)\b",
+    re.I,
+)
+_NEGATION = re.compile(
+    r"\b(no|not|without|never|none|contraindicated|avoid|cannot|does not|doesn't|non|aucun|sans|jamais|ne\s+pas|لا|ليس|دون|ممنوع|منع)\b",
+    re.I,
+)
+_MODAL = re.compile(r"\b(may|might|can|could|should|recommended|suggested|possibly|likely|probably|must|shall|may not|should not)\b", re.I)
 
 
 def split_claims(answer: str) -> list[str]:
     raw = (answer or "").strip()
     if not raw:
         return []
-    sentences = [x.strip() for x in _SENTENCE_RE.split(raw) if x.strip()]
-    claims = []
-    for sentence in sentences:
+    claims: list[str] = []
+    for sentence in _SENTENCE_RE.split(raw):
+        sentence = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence.strip())
         if len(meaningful_tokens(sentence)) >= 3:
             claims.append(sentence)
-    return claims[:30]
+    return claims[:40]
 
 
-def _numbers(text: str) -> set[str]:
-    return {m.group(0).replace(",", ".") for m in _NUM_RE.finditer(text or "")}
+def _norm_num(value: str) -> str:
+    return value.replace(",", ".").replace("–", "-").replace(" ", "")
+
+
+def _unit(value: str) -> str:
+    aliases = {"µg": "ug", "mcg": "ug", "milligram": "mg", "milliliter": "ml", "litre": "l", "liter": "l", "°c": "c"}
+    return aliases.get(value.casefold(), value.casefold())
+
+
+def extract_measurements(text: str) -> list[tuple[str, str]]:
+    result: list[tuple[str, str]] = []
+    for match in _VALUE_UNIT_RE.finditer(text or ""):
+        pair = (_norm_num(match.group("value")), _unit(match.group("unit")))
+        if pair not in result:
+            result.append(pair)
+    return result
+
+
+def _to_float(value: str) -> float | None:
+    try:
+        return float(value.replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _measurement_compatible(claim: tuple[str, str], evidence: tuple[str, str], tolerance: float = 1e-6) -> bool:
+    cv, cu = claim
+    ev, eu = evidence
+    if cu != eu:
+        return False
+    if "-" in cv or "-" in ev:
+        return cv == ev
+    c = _to_float(cv)
+    e = _to_float(ev)
+    if c is None or e is None:
+        return cv == ev
+    return math.isclose(c, e, rel_tol=0.0, abs_tol=tolerance)
 
 
 def numeric_consistency(claim: str, evidence: str) -> dict[str, Any]:
-    claim_units = {m.group(0).lower().replace(",", ".") for m in _UNIT_RE.finditer(claim or "")}
-    evidence_units = {m.group(0).lower().replace(",", ".") for m in _UNIT_RE.finditer(evidence or "")}
-    if not claim_units:
-        return {"checked": False, "mismatch": False, "claim_values": [], "evidence_values": []}
+    claim_values = extract_measurements(claim)
+    evidence_values = extract_measurements(evidence)
+    if not claim_values:
+        return {"checked": False, "mismatch": False, "claim_values": [], "evidence_values": [], "unsupported_numeric": []}
+    unsupported = [item for item in claim_values if not any(_measurement_compatible(item, ev) for ev in evidence_values)]
+    # Bare numbers still matter for medical/scientific answers, but do not count a mismatch unless
+    # there is at least one dimensional measurement in the claim.
+    if not claim_values:
+        unsupported = []
     return {
         "checked": True,
-        "mismatch": bool(claim_units - evidence_units),
-        "claim_values": sorted(claim_units),
-        "evidence_values": sorted(evidence_units),
+        "mismatch": bool(unsupported),
+        "claim_values": [f"{v} {u}" for v, u in claim_values],
+        "evidence_values": [f"{v} {u}" for v, u in evidence_values],
+        "unsupported_numeric": [f"{v} {u}" for v, u in unsupported],
     }
 
 
+def _polarity(text: str) -> int:
+    # -1 negative, +1 positive, 0 neutral/uncertain
+    if not text:
+        return 0
+    return -1 if _NEGATION.search(text) else 1
+
+
+def semantic_support(claim: str, evidence: str) -> float:
+    claim_tokens = set(meaningful_tokens(claim))
+    evidence_tokens = set(meaningful_tokens(evidence))
+    if not claim_tokens or not evidence_tokens:
+        return 0.0
+    overlap = len(claim_tokens & evidence_tokens) / max(len(claim_tokens), 1)
+    token_jaccard = len(claim_tokens & evidence_tokens) / max(len(claim_tokens | evidence_tokens), 1)
+    char_hint = keyword_overlap_score(claim, evidence)
+    neg_penalty = 0.35 if _polarity(claim) != _polarity(evidence) else 0.0
+    modal_bonus = 0.04 if bool(_MODAL.search(claim)) == bool(_MODAL.search(evidence)) else 0.0
+    return max(0.0, min(1.0, 0.48 * overlap + 0.22 * token_jaccard + 0.25 * char_hint + modal_bonus - neg_penalty))
+
+
 def detect_contradiction(claim: str, evidence_blocks: Sequence[str]) -> bool:
-    claim_low = (claim or "").casefold()
-    claim_neg = bool(_NEGATION.search(claim_low))
-    claim_tokens = set(meaningful_tokens(claim_low))
+    claim_tokens = set(meaningful_tokens(claim.casefold()))
+    claim_pol = _polarity(claim)
     for evidence in evidence_blocks:
-        ev_low = evidence.casefold()
-        overlap = keyword_overlap_score(claim, evidence)
-        if overlap < 0.45:
+        score = semantic_support(claim, evidence)
+        if score < 0.42 or len(claim_tokens & set(meaningful_tokens(evidence.casefold()))) < 2:
             continue
-        ev_neg = bool(_NEGATION.search(ev_low))
-        if claim_neg != ev_neg and len(claim_tokens & set(meaningful_tokens(ev_low))) >= 2:
+        if claim_pol and _polarity(evidence) and claim_pol != _polarity(evidence):
             return True
     return False
 
 
+def _best_support(claim: str, evidence_blocks: Sequence[str], source_ids: Sequence[str]) -> tuple[float, tuple[str, ...]]:
+    ranked: list[tuple[float, str]] = []
+    for index, evidence in enumerate(evidence_blocks):
+        score = semantic_support(claim, evidence)
+        if score <= 0:
+            continue
+        source = source_ids[index] if index < len(source_ids) else f"S{index + 1}"
+        ranked.append((score, source))
+    ranked.sort(reverse=True)
+    return (ranked[0][0] if ranked else 0.0, tuple(source for _, source in ranked[:3]))
+
+
 def verify_claims(answer: str, evidence_blocks: Sequence[str], source_ids: Sequence[str]) -> list[ClaimCheck]:
     checks: list[ClaimCheck] = []
+    joined = "\n".join(evidence_blocks)
     for claim in split_claims(answer):
-        supports: list[tuple[float, str]] = []
-        for index, evidence in enumerate(evidence_blocks):
-            score = keyword_overlap_score(claim, evidence)
-            if score > 0:
-                source = source_ids[index] if index < len(source_ids) else f"S{index + 1}"
-                supports.append((score, source))
-        supports.sort(reverse=True)
-        best = supports[0][0] if supports else 0.0
-        top_sources = tuple(item[1] for item in supports[:3])
-        evidence_joined = "\n".join(evidence_blocks)
-        num = numeric_consistency(claim, evidence_joined)
+        best, sources = _best_support(claim, evidence_blocks, source_ids)
+        num = numeric_consistency(claim, joined)
         contradiction = detect_contradiction(claim, evidence_blocks)
         if contradiction:
-            status = "CONTRADICTED"
-        elif num.get("mismatch"):
-            status = "NUMERIC_MISMATCH"
-        elif best >= 0.55:
-            status = "SUPPORTED"
-        elif best >= 0.30:
-            status = "PARTIAL"
+            status, reason = "CONTRADICTED", "A high-overlap source has opposing polarity/negation."
+        elif num["mismatch"]:
+            status, reason = "NUMERIC_MISMATCH", "A stated measurement is not present with a compatible unit/value in evidence."
+        elif best >= 0.62:
+            status, reason = "SUPPORTED", "Claim has strong lexical/semantic evidence support."
+        elif best >= 0.38:
+            status, reason = "PARTIAL", "Claim has partial evidence support."
+        elif best > 0:
+            status, reason = "WEAK", "Claim overlaps evidence weakly."
         else:
-            status = "UNSUPPORTED"
-        checks.append(ClaimCheck(claim, round(best, 4), status, top_sources, bool(num.get("mismatch")), contradiction))
+            status, reason = "UNSUPPORTED", "No meaningful evidence support found."
+        checks.append(ClaimCheck(claim, round(best, 4), status, sources, bool(num["mismatch"]), contradiction, reason))
     return checks
 
 
 def evidence_confidence(*, retrieval: float, rerank: float, entailment: float, quality: float, contradiction: float = 0.0, ocr_penalty: float = 0.0) -> float:
-    value = 0.25 * retrieval + 0.25 * rerank + 0.30 * entailment + 0.20 * quality
-    value -= 0.35 * contradiction
+    value = 0.24 * retrieval + 0.26 * rerank + 0.30 * entailment + 0.20 * quality
+    value -= 0.40 * contradiction
     value -= 0.20 * ocr_penalty
     return round(max(0.0, min(1.0, value)), 4)
+
+
+def contradiction_report(claims: Sequence[ClaimCheck]) -> dict[str, Any]:
+    contradicted = [c for c in claims if c.contradiction or c.status == "CONTRADICTED"]
+    return {
+        "has_contradiction": bool(contradicted),
+        "count": len(contradicted),
+        "claims": [c.to_dict() for c in contradicted],
+    }
 
 
 def citation_firewall(answer: str, claim_checks: Iterable[ClaimCheck]) -> tuple[str, bool]:
     checks = list(claim_checks)
     if not checks:
         return answer, False
+    safe = [c for c in checks if c.status in {"SUPPORTED", "PARTIAL"} and not c.contradiction]
     unsafe = [c for c in checks if c.status in {"UNSUPPORTED", "NUMERIC_MISMATCH", "CONTRADICTED"}]
     if not unsafe:
         return answer, False
-    supported = [c for c in checks if c.status in {"SUPPORTED", "PARTIAL"}]
-    lines = []
-    if supported:
-        lines.append("Supported evidence:")
-        lines.extend(f"- {c.claim} {' '.join('[' + s + ']' for s in c.sources)}" for c in supported)
-    lines.append("\nI could not safely verify every generated claim against the indexed evidence, so unsupported details were withheld.")
+    lines: list[str] = []
+    if safe:
+        lines.append("Verified findings:")
+        for c in safe:
+            refs = " ".join(f"[{s}]" for s in c.sources)
+            lines.append(f"- {c.claim} {refs}".strip())
+    lines.append("\nSome generated details were withheld because they could not be verified against the indexed evidence.")
     return "\n".join(lines), True
+
+
+def grounding_decision(claims: Sequence[ClaimCheck], *, min_supported_ratio: float = 0.60) -> dict[str, Any]:
+    if not claims:
+        return {"allow": False, "reason": "No claims were extracted from the generated answer.", "supported_ratio": 0.0}
+    safe = sum(1 for c in claims if c.status in {"SUPPORTED", "PARTIAL"} and not c.contradiction)
+    blocked = sum(1 for c in claims if c.status in {"UNSUPPORTED", "NUMERIC_MISMATCH", "CONTRADICTED"} or c.contradiction)
+    ratio = safe / max(len(claims), 1)
+    return {
+        "allow": ratio >= min_supported_ratio and blocked == 0,
+        "reason": "Grounding threshold passed." if ratio >= min_supported_ratio and blocked == 0 else "Grounding threshold failed.",
+        "supported_ratio": round(ratio, 4),
+        "blocked_claims": blocked,
+    }
