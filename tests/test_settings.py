@@ -46,8 +46,20 @@ def test_invalid_environment_numbers_fall_back(monkeypatch, tmp_path: Path) -> N
 def test_unknown_device_mode_is_safe(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("DEVICE_MODE", "does-not-exist")
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
 
     settings = Settings.from_env()
 
     assert settings.device_mode == "i5_16gb"
     assert settings.embedding_model == "nomic-embed-text"
+
+
+def test_universal_mode_defaults_to_safe_coverage(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    for name in ("OCR_ENABLED", "AUTO_OCR", "UNIVERSAL_PDF_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    settings = Settings.from_env()
+    assert settings.ocr_enabled is True
+    assert settings.auto_ocr is True
+    assert settings.universal_pdf_mode is True
+    assert settings.answer_verification_enabled is True
