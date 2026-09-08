@@ -21,10 +21,11 @@ data/**/*.sqlite3-*
 *.db-journal
 *.db-wal
 *.db-shm
-*.lock
-.cache/
 *.tmp
 *.temp
+.cache/
+# Keep the resolved dependency lockfile under source control.
+!requirements.lock
 # Runtime OCR/extraction/cache artifacts
 *.png
 *.jpg
