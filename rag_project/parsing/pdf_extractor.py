@@ -196,21 +196,21 @@ class PDFExtractor:
             } if self.state_store else {}
             last_progress_page = 0
             for index in range(pdf.page_count):
-                page_number = index + 1
+                physical_page = index + 1
                 if self.state_store:
-                    cached = cached_pages.get(page_number)
+                    cached = cached_pages.get(physical_page)
                     if cached and cached["extraction_status"] == "COMPLETED" and cached.get("text"):
                         text = cached["text"]
-                        if page_number % 4 == 0 or page_number == pdf.page_count:
+                        if physical_page % 4 == 0 or physical_page == pdf.page_count:
                             self.state_store.update_document(
-                                document_id, current_stage="EXTRACTING", current_page=page_number
+                                document_id, current_stage="EXTRACTING", current_page=physical_page
                             )
-                            last_progress_page = page_number
+                            last_progress_page = physical_page
                         yield PageExtraction(
                             document_id=document_id,
                             file_name=pdf_file.name,
                             page_index=index,
-                            page_number=page_number,
+                            page_number=physical_page,
                             text=text,
                             extraction_method=cached.get("extraction_method") or "cached",
                             ocr_status=cached.get("ocr_status", "not_required"),
@@ -237,7 +237,7 @@ class PDFExtractor:
                     image_coverage_threshold=self.ocr_image_coverage_threshold,
                     min_char_density=self.ocr_min_char_density,
                 )
-                page_number_from_text = extract_page_number(text) or page_number
+                printed_page_number = extract_page_number(text)
                 tables_text = self._extract_tables(page)
                 if tables_text:
                     text = clean_text(f"{text}\n\n{tables_text}")
@@ -254,7 +254,7 @@ class PDFExtractor:
                     document_id=document_id,
                     file_name=pdf_file.name,
                     page_index=index,
-                    page_number=page_number_from_text,
+                    page_number=physical_page,
                     text=text,
                     extraction_method="pdf_text",
                     ocr_required=ocr_required_flag,
@@ -271,6 +271,8 @@ class PDFExtractor:
                         "alpha_count": assessment["alpha_count"],
                         "image_coverage": round(assessment["image_coverage"], 4),
                         "char_density": round(assessment["char_density"], 6),
+                        "physical_page": physical_page,
+                        "printed_page_number": printed_page_number,
                     },
                     source_path=str(pdf_file),
                 )
@@ -289,7 +291,7 @@ class PDFExtractor:
                                 extraction.ocr_status = "skipped_no_result"
                                 extraction.ocr_required = False
                                 extraction.metadata["ocr_skipped"] = (
-                                    "Page already has a text layer above the OCR threshold or OCR produced no text."
+                                    "OCR produced no text for this page."
                                 )
                             elif confidence is not None and confidence < self.ocr_confidence_threshold:
                                 extraction.ocr_status = "skipped_low_confidence"
@@ -311,7 +313,7 @@ class PDFExtractor:
                                 extraction.ocr_confidence = confidence
                                 extraction.metadata["ocr_char_count"] = len(ocr_text)
                                 extraction.metadata["ocr_reasons"] = assessment["reasons"]
-                        except Exception as exc:  # pragma: no cover - fallback path
+                        except Exception as exc:
                             extraction.ocr_status = "failed"
                             extraction.metadata["ocr_error"] = str(exc)
                             extraction.metadata["quality_warning"] = (
@@ -321,7 +323,7 @@ class PDFExtractor:
                 if self.state_store and self.state_store.get_document(document_id):
                     self.state_store.upsert_page(
                         document_id,
-                        page_number,
+                        physical_page,
                         extraction_status="COMPLETED" if extraction.text else "FAILED",
                         ocr_status=extraction.ocr_status,
                         extraction_method=extraction.extraction_method,
@@ -330,12 +332,12 @@ class PDFExtractor:
                         checksum=hashlib.sha256(extraction.text.encode("utf-8")).hexdigest(),
                     )
                     if (
-                        page_number % 4 == 0 or page_number == pdf.page_count
-                    ) and page_number != last_progress_page:
+                        physical_page % 4 == 0 or physical_page == pdf.page_count
+                    ) and physical_page != last_progress_page:
                         self.state_store.update_document(
-                            document_id, current_stage="EXTRACTING", current_page=page_number
+                            document_id, current_stage="EXTRACTING", current_page=physical_page
                         )
-                        last_progress_page = page_number
+                        last_progress_page = physical_page
                 yield extraction
         except Exception as exc:
             if pdf is None:
@@ -366,9 +368,12 @@ class PDFExtractor:
         try:
             tables = find_tables()
             rendered: list[str] = []
-            for table in getattr(tables, "tables", []):
+            for table in getattr(tables, "tables", []) or []:
                 rows = table.extract()
-                lines = [" | ".join(clean_text(cell or "") for cell in row) for row in rows]
+                lines = [
+                    " | ".join(clean_text(str(cell) if cell is not None else "") for cell in row)
+                    for row in rows or []
+                ]
                 rendered.append("\n".join(line for line in lines if line.strip()))
             return "\n\n".join(item for item in rendered if item.strip())
         except (RuntimeError, ValueError, AttributeError):
