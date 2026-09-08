@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import requests
@@ -12,7 +11,8 @@ import requests
 _LEASE_CONTEXT = threading.local()
 
 
-def _set_lease(document_id: str, worker_id: str) -> None:
+def _set_lease(state_store: Any, document_id: str, worker_id: str) -> None:
+    _LEASE_CONTEXT.state_store = state_store
     _LEASE_CONTEXT.document_id = str(document_id)
     _LEASE_CONTEXT.worker_id = str(worker_id)
 
@@ -24,27 +24,29 @@ def _clear_lease(document_id: str | None = None, worker_id: str | None = None) -
         return
     if worker_id is not None and current_worker != str(worker_id):
         return
-    for name in ("document_id", "worker_id"):
+    for name in ("state_store", "document_id", "worker_id"):
         try:
             delattr(_LEASE_CONTEXT, name)
         except AttributeError:
             pass
 
 
-def _current_lease() -> tuple[str | None, str | None]:
+def _current_lease() -> tuple[Any | None, str | None, str | None]:
     return (
+        getattr(_LEASE_CONTEXT, "state_store", None),
         getattr(_LEASE_CONTEXT, "document_id", None),
         getattr(_LEASE_CONTEXT, "worker_id", None),
     )
 
 
 def _lease_matches(record: dict[str, Any] | None, document_id: str) -> bool:
-    expected_document, expected_worker = _current_lease()
+    _, expected_document, expected_worker = _current_lease()
     if expected_document != str(document_id) or not expected_worker or not record:
         return False
-    owner = str(record.get("lease_owner") or "")
+    if str(record.get("lease_owner") or "") != str(expected_worker):
+        return False
     expires = record.get("lease_expires_at")
-    if owner != str(expected_worker) or not expires:
+    if not expires:
         return False
     try:
         return datetime.fromisoformat(str(expires).replace("Z", "+00:00")) > datetime.now(timezone.utc)
@@ -55,7 +57,7 @@ def _lease_matches(record: dict[str, Any] | None, document_id: str) -> bool:
 def _safe_claim(self: Any, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
     result = self._original_runtime_final_claim(document_id, worker_id, lease_seconds)
     if result:
-        _set_lease(document_id, worker_id)
+        _set_lease(self, document_id, worker_id)
     return result
 
 
@@ -81,21 +83,24 @@ def _safe_transition(self: Any, document_id: str, new_stage: str, **values: Any)
         "FAILED_INDEXING",
         "QUARANTINED",
     }:
-        record = self.get_document(document_id)
-        if getattr(_LEASE_CONTEXT, "worker_id", None) is not None and not _lease_matches(record, document_id):
-            raise RuntimeError(
-                f"Lease ownership changed or expired for {document_id}; refusing {stage} transition."
-            )
+        _, expected_document, expected_worker = _current_lease()
+        if expected_worker is not None and expected_document == str(document_id):
+            record = self.get_document(document_id)
+            if not _lease_matches(record, document_id):
+                raise RuntimeError(
+                    f"Lease ownership changed or expired for {document_id}; refusing {stage} transition."
+                )
     return self._original_runtime_final_transition(document_id, new_stage, **values)
 
 
 def _safe_version_state(self: Any, document_id: str, version_id: str, state: str) -> None:
-    expected_document, expected_worker = _current_lease()
+    store, expected_document, expected_worker = _current_lease()
     if expected_worker is not None and expected_document == str(document_id):
-        # VectorStore has no state-store reference; require an active ingestion
-        # lease context before permitting visibility changes from this worker.
-        if not expected_worker:
-            raise RuntimeError("Cannot change index visibility without an active ingestion lease.")
+        record = store.get_document(document_id) if store is not None else None
+        if not _lease_matches(record, document_id):
+            raise RuntimeError(
+                f"Lease ownership changed or expired for {document_id}; refusing index visibility change."
+            )
     return self._original_runtime_final_version_state(document_id, version_id, state)
 
 
@@ -170,11 +175,3 @@ def install() -> None:
 
         identity_with_digest._runtime_final_wrapped = True
         EmbeddingService.identity = property(identity_with_digest)
-
-    if not hasattr(RAGSystem, "_original_runtime_final_ingest_file"):
-        RAGSystem._original_runtime_final_ingest_file = RAGSystem.ingest_file
-
-        def ingest_with_context(self: Any, pdf_path: str | Path):
-            return self._original_runtime_final_ingest_file(pdf_path)
-
-        RAGSystem.ingest_file = ingest_with_context
