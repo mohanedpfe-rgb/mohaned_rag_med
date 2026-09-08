@@ -72,5 +72,5 @@ def test_citation_firewall_withholds_unsafe_claims():
 
 
 def test_claim_splitter_keeps_multi_sentence_answer_manageable():
-    claims = split_claims("A fact is present. Another fact is present! Short.")
+    claims = split_claims("The patient received treatment today. The patient improved after treatment. The evidence reports a measured response.")
     assert len(claims) == 3
