@@ -87,12 +87,9 @@ def test_canva_geometry_contract_is_explicit() -> None:
 
 def test_no_bottom_panel_overlap_in_runtime_css() -> None:
     source = _source("app.py")
-    query = ".query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:74px"
-    health = ".health-panel{position:fixed!important;left:388px!important;top:694px!important;width:802px!important;height:236px"
-    inspector = ".inspector-panel{position:fixed!important;left:1210px!important;top:694px!important;width:573px!important;height:236px"
-    assert query in source
-    assert health in source
-    assert inspector in source
+    assert ".query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:74px" in source
+    assert ".health-panel{position:fixed!important;left:388px!important;top:694px!important;width:802px!important;height:236px" in source
+    assert ".inspector-panel{position:fixed!important;left:1210px!important;top:694px!important;width:573px!important;height:236px" in source
 
 
 def test_visual_system_matches_canva_style_language() -> None:
