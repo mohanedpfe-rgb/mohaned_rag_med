@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
 UI = (ROOT / "rag_project" / "app" / "canva_exact_ui.py").read_text(encoding="utf-8")
 SECURITY = (ROOT / "rag_project" / "security.py").read_text(encoding="utf-8")
+STATE_STORE = (ROOT / "rag_project" / "ingestion" / "state_store.py").read_text(encoding="utf-8")
 
 
 def test_entrypoint_is_thin_and_has_no_legacy_layout_css():
@@ -14,6 +15,14 @@ def test_entrypoint_is_thin_and_has_no_legacy_layout_css():
     assert "position:fixed" not in APP
     assert "width:1441px" not in APP
     assert "height:855px" not in APP
+
+
+def test_runtime_clock_guard_prevents_undefined_utc_now_failures():
+    assert "from datetime import datetime, timezone" in APP
+    assert "rag_system_module" in APP
+    assert "getattr(rag_system_module, \"utc_now\", None)" in APP
+    assert "datetime.now(timezone.utc).isoformat()" in APP
+    assert "def utc_now()" in STATE_STORE
 
 
 def test_ui_has_real_navigation_and_dispatch_for_every_page():
@@ -36,12 +45,29 @@ def test_shared_runtime_and_worker_state_are_explicit():
     assert "system.answer" in UI
 
 
-def test_workflow_is_connected_upload_index_documents_chat():
+def test_upload_is_the_primary_ingestion_trigger():
+    assert "accept_multiple_files=True" in UI
     assert "save_pdf(incoming, upload.name, payload)" in UI
-    assert "st.session_state[\"studio_last_job\"]" in UI
-    assert "_navigate(\"Ingestion\")" in UI
+    assert 'st.session_state["studio_auto_ingest"] = True' in UI
+    assert 'start_ingestion(system, str(incoming))' in UI
+    assert 'st.session_state["studio_last_job"] = job_id' in UI
+    assert 'st.session_state["studio_nav"] = "Ingestion"' in UI
+    assert "Retry pending / failed files" in UI
+
+
+def test_ingestion_worker_has_shared_lifecycle_and_results():
+    assert "trigger" in UI
+    assert "_set_job_state(job" in UI
+    assert 'job["status"]' not in UI or "status=state" in UI
+    assert "completed" in UI and "failed" in UI
+    assert "finished=time.time()" in UI
+
+
+def test_workflow_is_connected_documents_chat():
     assert "ready_docs(system)" in UI
     assert "metadata_filter" in UI
+    assert "system.answer" in UI
+    assert "system.verify_index" in UI
 
 
 def test_security_facade_still_guards_core_operations():
