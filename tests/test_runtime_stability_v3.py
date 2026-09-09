@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from rag_project.ingestion.state_store import IngestionStateStore
-from rag_project.runtime_stability_v3 import _enriched_document, _guard_transition
+from rag_project.runtime_stability_v3 import _guard_transition
 
 
 def test_state_transition_rejects_ready_regression(tmp_path):
@@ -23,10 +23,17 @@ def test_state_transition_rejects_ready_regression(tmp_path):
             "parser_version": "test",
         }
     )
-    store.transition_document_state = _guard_transition.__get__(store, IngestionStateStore)
-    store._runtime_v3_original_transition = IngestionStateStore.transition_document_state
+
+    class GuardHarness:
+        def get_document(self, document_id):
+            return store.get_document(document_id)
+
+        def _runtime_v3_original_transition(self, *args, **kwargs):
+            return None
+
+    harness = GuardHarness()
     with pytest.raises(RuntimeError, match="Invalid state regression"):
-        store.transition_document_state("doc-1", "EXTRACTING", current_page=0, total_pages=1)
+        _guard_transition(harness, "doc-1", "EXTRACTING", current_page=0, total_pages=1)
 
 
 def test_metric_enrichment_reads_persisted_json():
@@ -34,7 +41,6 @@ def test_metric_enrichment_reads_persisted_json():
         "document_id": "doc-1",
         "ingestion_metrics": json.dumps({"chunk_count": 7, "embedding_count": 7, "page_count": 3}),
     }
-    # Call the small contract directly instead of requiring Streamlit.
     from rag_project.runtime_stability_v3 import _merge_metrics
 
     result = _merge_metrics(dict(document))
