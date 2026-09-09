@@ -8,11 +8,10 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Install cross-cutting infrastructure policies exactly once.
+    """Install cross-cutting infrastructure safeguards exactly once.
 
-    Answer behavior is owned by ``ProductionRAGSystem`` and is never installed by
-    global monkey-patching.  The runtime layer is limited to ingestion/index
-    safety policies that existing low-level components depend on.
+    Application answer behavior is explicit composition in ``ProductionRAGSystem``.
+    This module deliberately does not install answer-method monkey patches.
     """
     global _INSTALLED
     with _INSTALL_LOCK:
