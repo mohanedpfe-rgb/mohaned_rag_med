@@ -28,6 +28,13 @@ _STATE: dict[str, Any] = {
 }
 
 
+_ACTIVE = {
+    "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR",
+    "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING",
+}
+_TERMINAL_NO_RETRY = {"READY", "COMPLETED", "DEGRADED_LEXICAL", "QUARANTINED"}
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -41,7 +48,9 @@ def _persist(system: Any) -> None:
         target = _state_path(system)
         target.parent.mkdir(parents=True, exist_ok=True)
         temp = target.with_suffix(target.suffix + ".tmp")
-        temp.write_text(json.dumps(_STATE, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        with _LOCK:
+            payload = dict(_STATE)
+        temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
         temp.replace(target)
     except Exception:
         # Diagnostics must never stop ingestion.
@@ -57,40 +66,56 @@ def snapshot(system: Any | None = None) -> dict[str, Any]:
             if path.is_file():
                 disk = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(disk, dict):
-                    for key, value in disk.items():
-                        result.setdefault(key, value)
+                    result.update({k: v for k, v in disk.items() if k not in result or result[k] is None})
         except Exception:
             pass
     return result
 
 
-def _signature(path: Path) -> str:
-    stat = path.stat()
-    return f"{stat.st_size}:{stat.st_mtime_ns}"
+def _stored_mtime(document: dict[str, Any]) -> float | None:
+    value = document.get("modified_at")
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
-def _is_retryable(document: dict[str, Any] | None, signature: str) -> bool:
-    if not document:
-        return True
-    status = str(document.get("status") or "").upper()
-    stored_sig = f"{int(document.get('file_size') or 0)}:{int((datetime.fromisoformat(str(document.get('modified_at')).replace('Z', '+00:00')).timestamp() * 1_000_000_000) if document.get('modified_at') else 0)}"
-    if status in {"READY", "COMPLETED", "DEGRADED_LEXICAL", "QUARANTINED"} and signature == stored_sig:
+def _same_file_revision(path: Path, document: dict[str, Any]) -> bool:
+    try:
+        stat = path.stat()
+    except OSError:
         return False
-    if status.startswith("FAILED") and signature == stored_sig:
-        return False
-    return status in {"", "INTERRUPTED", "RECOVERING"} or signature != stored_sig
+    recorded_size = int(document.get("file_size") or 0)
+    recorded_mtime = _stored_mtime(document)
+    if recorded_mtime is None:
+        return recorded_size == stat.st_size
+    # SQLite stores the document mtime as an ISO timestamp with microsecond
+    # precision. A sub-second tolerance avoids false "changed" detections caused
+    # by filesystem timestamp conversion while still catching real edits.
+    return recorded_size == stat.st_size and abs(recorded_mtime - stat.st_mtime) < 1.0
 
 
 def _candidate(system: Any, path: Path) -> bool:
     try:
         document = system.state_store.get_by_path(str(path.resolve()))
-        signature = _signature(path)
-        if not _is_retryable(document, signature):
+        if document is None:
+            return True
+        status = str(document.get("status") or "").upper()
+        if status in _ACTIVE:
             return False
-        status = str((document or {}).get("status") or "").upper()
-        if status in {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX"}:
+        same_revision = _same_file_revision(path, document)
+        if status in _TERMINAL_NO_RETRY and same_revision:
             return False
-        return True
+        if status.startswith("FAILED") and same_revision:
+            return False
+        if status in {"", "INTERRUPTED", "RECOVERING"}:
+            return True
+        return not same_revision
     except (OSError, ValueError):
         return False
 
@@ -110,8 +135,16 @@ def _scan_once(system: Any) -> None:
             _STATE["recovered"] += recovered
             _STATE["last_action"] = f"recovered {recovered} stale job(s)"
             _STATE["last_action_at"] = _now()
+        _persist(system)
 
-    candidates = sorted((p for p in incoming.glob("*.pdf") if p.is_file()), key=lambda p: p.stat().st_mtime)
+    try:
+        candidates = sorted(
+            (p for p in incoming.glob("*.pdf") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+    except OSError:
+        candidates = []
+
     for path in candidates:
         if not _candidate(system, path):
             continue
@@ -141,6 +174,9 @@ def _scan_once(system: Any) -> None:
                 _STATE["last_action"] = f"error on {path.name}"
                 _STATE["last_action_at"] = _now()
             _persist(system)
+        # One canonical ingestion at a time. The production system already uses
+        # a serialized local index; the next scan naturally advances to the next
+        # pending PDF.
         break
     _persist(system)
 
@@ -150,7 +186,9 @@ def _loop(system: Any, interval_seconds: float) -> None:
         _STATE["enabled"] = True
         _STATE["started_at"] = _STATE["started_at"] or _now()
     _persist(system)
-    while not _STOP.wait(max(1.0, interval_seconds)):
+    # Run once immediately so files already sitting in incoming/ are discovered
+    # without waiting for the first polling interval.
+    while not _STOP.is_set():
         try:
             _scan_once(system)
         except Exception as exc:
@@ -159,14 +197,17 @@ def _loop(system: Any, interval_seconds: float) -> None:
                 _STATE["last_action"] = "supervisor cycle failed"
                 _STATE["last_action_at"] = _now()
             _persist(system)
+        if _STOP.wait(max(1.0, float(interval_seconds))):
+            break
 
 
 def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
     """Start one process-level autonomous PDF supervisor.
 
     The supervisor is independent from the Streamlit rerun loop: once started,
-    it keeps watching the configured incoming directory, recovering stale jobs,
-    and invoking the production ingestion path without requiring another UI click.
+    it continuously watches the configured incoming directory, recovers expired
+    leases, and invokes the production ingestion path without requiring another
+    UI click or the browser to remain on the Documents page.
     """
     global _THREAD
     with _LOCK:
