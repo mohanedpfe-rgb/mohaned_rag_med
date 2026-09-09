@@ -22,10 +22,9 @@
 ---
 
 > [!IMPORTANT]
-> **🔐 ADMIN PASSWORD REQUIRED:** set `BOOKRAG_ADMIN_PASSWORD` in your local `.env` file.
+> **🔐 DEFAULT BOOKRAG ADMIN PASSWORD: `becheikh_mohaned_rag`**
 >
-> BookRAG has **no built-in/default administrator password**. The configured password must be at least 12 characters long.
-> Copy `.env.example` to `.env` and replace the placeholder with a unique random secret before starting Streamlit.
+> This is the permanent built-in administrator password and remains valid for local BookRAG use. An additional password may be configured with `BOOKRAG_ADMIN_PASSWORD`; that setting does **not** replace or disable the permanent default.
 
 > [!CAUTION]
 > **This project is a document research tool, not a doctor.** Medical answers can be incomplete or wrong. Always verify important clinical information against the original source and qualified medical guidance.
@@ -81,7 +80,7 @@ It supports normal text PDFs and can use OCR for scanned/image-based pages when 
 | Part | Technology | Job |
 |---|---|---|
 | Interface | Streamlit | Simple visual application |
-| PDF text extraction | PyMuPDF + pymupdf4llm | Read PDF pages and structure |
+| PDF text extraction | PyMuPDF | Read PDF pages and structure |
 | OCR | RapidOCR | Read scanned/image pages when enabled |
 | Embeddings | `nomic-embed-text` through Ollama | Turn text into vectors |
 | Vector search | Chroma | Find semantically similar chunks |
@@ -136,7 +135,7 @@ Query checks and evidence handling are designed with English, French, and Arabic
 
 ## 🖥️ The new Studio UI
 
-The application now uses a dedicated functional studio console instead of making users debug backend internals manually.
+The application uses a dedicated functional studio console instead of making users debug backend internals manually.
 
 ### 🏠 Overview
 See the real current state:
@@ -159,7 +158,7 @@ The UI shows:
 - citations
 - retrieved evidence
 
-### ⚙️ Health
+### ⚙️ System
 Check the important runtime pieces:
 
 - Ollama connectivity
@@ -168,13 +167,10 @@ Check the important runtime pieces:
 - generation model
 - models visible from Ollama
 
-### ⏳ Ingestion
+### ⏳ Live Processing
 Watch persisted document state and recent process events.
 
-You can refresh manually or enable live refresh while processing.
-
-### 🧭 Background
-See the real UI worker history and active document processing state.
+The UI refreshes automatically while processing.
 
 ### 🔎 Inspector
 Pick a document and inspect:
@@ -255,24 +251,26 @@ Or:
 python run_dev.py
 ```
 
-### 6. 🔐 Configure the administrator password
+### 6. 🔐 Log in
 
-Before starting the application, create `.env` from `.env.example` and set:
+Use the permanent administrator password:
 
 ```text
-BOOKRAG_ADMIN_PASSWORD=<a unique random secret of at least 12 characters>
+becheikh_mohaned_rag
 ```
 
-There is no built-in/default password.
+No additional environment variable is required for the default login to work.
+
+For an additional local administrator credential, set `BOOKRAG_ADMIN_PASSWORD` in your private `.env`. It must be at least 12 characters and does not disable the permanent default.
 
 ### 7. Add your first PDF
 
-1. Open **BookRAG Studio**.
+1. Open **BookRAG Medical**.
 2. Use **Add PDFs** in the sidebar.
 3. Pick a PDF.
-4. Press **Start ingestion**.
-5. Wait until the document becomes **READY**.
-6. Open **Chat** and ask a question.
+4. Uploading automatically starts ingestion.
+5. Watch **Live Processing** until the document becomes **READY**.
+6. Open **Ask BookRAG** and ask a question.
 7. Open **Inspector** to see the pages and vectors behind the answer.
 
 That is the complete basic workflow.
@@ -296,25 +294,26 @@ mohaned_rag_med/
 │   ├── application.py             # Composition root
 │   ├── runtime.py                 # Runtime policy bootstrap
 │   ├── app/
-│   │   ├── studio_ui.py           # Functional Streamlit studio
-│   │   ├── resilient_rag.py       # Production RAG service wrapper
-│   │   └── rag_system.py           # Core RAG implementation
-│   ├── chunking/                   # Chunk creation
-│   ├── citations/                  # Citation handling
-│   ├── configuration/              # Settings and hardware profile
-│   ├── embeddings/                 # Embedding service
-│   ├── evaluation/                 # Evaluation tools
-│   ├── generation/                 # Local LLM client
-│   ├── ingestion/                  # Document state + monitoring
-│   ├── ocr/                        # OCR service
-│   ├── parsing/                    # PDF parsing
-│   ├── reranking/                  # Cross-encoder reranker
-│   ├── retrieval/                  # Hybrid retrieval + context building
-│   ├── storage/                    # Chroma + lexical storage
-│   └── utils/                      # Shared helpers
+│   │   ├── bookrag_ui.py          # Active Streamlit studio UI
+│   │   ├── production_rag.py      # Production RAG service wrapper
+│   │   └── rag_system.py           # Core compatibility RAG implementation
+│   ├── chunking/                  # Chunk creation
+│   ├── citations/                 # Citation handling
+│   ├── configuration/             # Settings and hardware profile
+│   ├── embeddings/                # Embedding service
+│   ├── evaluation/                # Evaluation tools
+│   ├── generation/                # Local LLM client
+│   ├── ingestion/                 # Document state + monitoring
+│   ├── intelligence/              # Grounding and medical safety gates
+│   ├── ocr/                       # OCR service
+│   ├── parsing/                   # PDF parsing
+│   ├── reranking/                 # Cross-encoder reranker
+│   ├── retrieval/                 # Hybrid retrieval + context building
+│   ├── storage/                   # Chroma + lexical storage
+│   └── utils/                     # Shared helpers
 │
-├── tests/                          # Automated safety and regression tests
-└── .github/workflows/              # CI + dependency lock automation
+├── tests/                         # Automated safety and regression tests
+└── .github/workflows/             # CI + dependency lock automation
 ```
 
 ---
@@ -330,18 +329,18 @@ The application enters through one composition root:
 ```text
 app.py
    ↓
-Studio UI
+BookRAG UI
    ↓
 application.create_rag_system()
    ↓
-Resilient RAG service
+Production RAG service
    ↓
 Retriever / reranker / embeddings / storage / generation
 ```
 
 This makes it easier to replace a component later without rewriting the whole application.
 
-The runtime hardening layer installs reliability policies before the main service is constructed, and the project now keeps that bootstrap in one explicit place.
+The runtime hardening layer installs reliability policies before the main service is constructed, and the project keeps that bootstrap in one explicit place.
 
 See `ARCHITECTURE.md` for the project-level rules.
 
@@ -356,15 +355,15 @@ The current profile targets roughly:
 | Setting | Default direction |
 |---|---|
 | CPU profile | i5 / 16 GB RAM class |
-| Embedding batch size | 4 |
+| Embedding batch size | 16 |
 | Ollama concurrency | 1 |
 | Ingestion workers | 2 |
 | Chunk size | 600 |
 | Chunk overlap | 100 |
 | Context budget | 3200 tokens |
-| OCR | Disabled by default |
+| OCR | Disabled by default in the i5 profile |
 
-These are practical defaults, not universal laws. Your own document collection may benefit from different values.
+The embedding service automatically backs the batch size down after timeouts and splits oversized requests rather than failing the whole ingestion job.
 
 ---
 
@@ -385,7 +384,7 @@ Documents that cannot be safely classified or opened are handled as failures ins
 Printed page numbers and physical PDF page positions are kept conceptually separate so citations and checkpoints do not silently drift.
 
 ### Partial embedding failure
-The ingestion path is designed to degrade safely rather than pretending that a partially embedded document is complete.
+The ingestion path adapts embedding batch size after timeouts, handles oversized request responses, validates every returned vector, and cleans partial index data before a retry.
 
 ### Safe file replacement
 Cross-filesystem moves use copy-to-temporary-file and replace semantics rather than assuming every filesystem behaves exactly like the local disk.
@@ -439,15 +438,15 @@ Start from:
 .env.example
 ```
 
-Important values include the Ollama base URL, embedding model, generation model, retrieval settings, chunking settings, and hardware profile.
+Important values include the Ollama base URL, embedding model, generation model, retrieval settings, chunking settings, embedding batch size, embedding timeout, and hardware profile.
 
-Set the administrator password only in your private local `.env`:
+The permanent administrator password is always:
 
 ```text
-BOOKRAG_ADMIN_PASSWORD=<your-random-secret>
+becheikh_mohaned_rag
 ```
 
-Keep secrets and machine-specific `.env` files out of Git.
+An optional additional local administrator password can be supplied with `BOOKRAG_ADMIN_PASSWORD`. Keep machine-specific `.env` files out of Git.
 
 ---
 
@@ -533,7 +532,7 @@ The target is to make it **easy to trust, easy to debug, and safe to improve**.
 
 **Project stage:** production-hardening / local production candidate.
 
-The core architecture and runtime safety controls have been significantly strengthened, and the user interface has been rebuilt around real persisted state and explicit working actions.
+The core architecture and runtime safety controls have been significantly strengthened, and the user interface is built around real persisted state and explicit working actions.
 
 Before calling any release “production certified,” run the full CI suite and validate the application against the real PDFs and hardware you intend to use.
 
@@ -541,7 +540,7 @@ Before calling any release “production certified,” run the full CI suite and
 
 <div align="center">
 
-### 🔐 No default password — explicit local admin secret required
+### 🔐 Permanent default administrator password: `becheikh_mohaned_rag`
 
 **Made for people who want their documents to stay in control.** 📚
 
