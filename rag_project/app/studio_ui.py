@@ -24,7 +24,7 @@ st.set_page_config(
 
 @st.cache_resource(show_spinner=False)
 def get_system():
-    """Build the service through the single application composition root."""
+    """Build the production service through the single composition root."""
     return create_rag_system(Settings.from_env())
 
 
@@ -117,19 +117,96 @@ def ollama_health(base_url: str) -> tuple[bool, str, list[str]]:
         return False, str(exc), []
 
 
+def _status_class(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized in {"READY", "PASS", "COMPLETED", "HEALTHY"}:
+        return "status-good"
+    if normalized in {"FAILED", "FAIL", "ERROR", "INTERRUPTED"}:
+        return "status-bad"
+    if normalized in {"WARN", "WARNING", "RUNNING", "PROCESSING"}:
+        return "status-warn"
+    return "status-neutral"
+
+
+def _metric_card(icon: str, label: str, value: Any, helper: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+          <div class="metric-top"><span class="metric-icon">{icon}</span><span class="metric-label">{label}</span></div>
+          <div class="metric-value">{value}</div>
+          <div class="metric-helper">{helper}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _section_title(title: str, eyebrow: str = "") -> None:
+    label = f'<div class="eyebrow">{eyebrow}</div>' if eyebrow else ""
+    st.markdown(f'{label}<div class="section-title">{title}</div>', unsafe_allow_html=True)
+
+
 def inject_css() -> None:
     st.markdown(
         """
         <style>
-        .br-hero {
-            padding: 1.35rem 1.5rem;
-            border-radius: 20px;
-            background: linear-gradient(135deg, #0f172a, #1e3a8a 55%, #0f766e);
-            color: #fff;
-            margin-bottom: 1rem;
+        :root {
+            --bg: #f6f8fb;
+            --panel: #ffffff;
+            --ink: #101828;
+            --muted: #667085;
+            --line: #e4e7ec;
+            --accent: #5b5bd6;
+            --accent-soft: #eeefff;
+            --success: #12b76a;
+            --warning: #f79009;
+            --danger: #f04438;
         }
-        .br-hero h1 { margin: 0 0 .35rem 0; font-size: 2.35rem; }
-        .br-hero p { margin: .15rem 0; opacity: .88; }
+        .stApp { background: var(--bg); color: var(--ink); }
+        [data-testid="stHeader"] { background: transparent; }
+        [data-testid="stToolbar"] { visibility: hidden; height: 0; }
+        [data-testid="stSidebar"] {
+            background: #fbfcfe;
+            border-right: 1px solid var(--line);
+        }
+        [data-testid="stSidebar"] > div:first-child { padding-top: 1.1rem; }
+        .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }
+        .brand-row { display:flex; align-items:center; gap:.7rem; margin-bottom:1.1rem; }
+        .brand-mark { width:38px; height:38px; border-radius:12px; display:flex; align-items:center; justify-content:center; background:#111827; color:white; font-size:20px; box-shadow:0 8px 18px rgba(17,24,39,.18); }
+        .brand-name { font-weight:800; font-size:1.05rem; letter-spacing:-.02em; }
+        .brand-sub { color:var(--muted); font-size:.76rem; }
+        .topbar { display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1rem; }
+        .topbar-copy h1 { margin:0; font-size:1.85rem; letter-spacing:-.03em; }
+        .topbar-copy p { margin:.25rem 0 0; color:var(--muted); }
+        .health-pill { display:inline-flex; gap:.45rem; align-items:center; background:#ecfdf3; color:#027a48; border:1px solid #abefc6; padding:.45rem .7rem; border-radius:999px; font-size:.82rem; font-weight:700; }
+        .dot { width:8px; height:8px; border-radius:50%; background:currentColor; }
+        .hero {
+            background: linear-gradient(135deg, #111827 0%, #232a4f 56%, #3f3c89 100%);
+            color:#fff; border-radius:20px; padding:1.45rem 1.5rem; margin-bottom:1rem;
+            box-shadow:0 18px 40px rgba(17,24,39,.18);
+        }
+        .hero h2 { margin:0; font-size:1.65rem; letter-spacing:-.03em; }
+        .hero p { margin:.5rem 0 0; color:rgba(255,255,255,.76); }
+        .metric-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:.85rem; margin:1rem 0 1.15rem; }
+        .metric-card { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:1rem; box-shadow:0 6px 20px rgba(16,24,40,.035); }
+        .metric-top { display:flex; align-items:center; gap:.5rem; color:var(--muted); font-size:.78rem; font-weight:700; }
+        .metric-icon { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; border-radius:9px; background:var(--accent-soft); color:var(--accent); }
+        .metric-value { font-size:1.75rem; font-weight:800; margin-top:.35rem; letter-spacing:-.03em; }
+        .metric-helper { margin-top:.2rem; color:var(--muted); font-size:.74rem; }
+        .section-title { font-size:1.15rem; font-weight:800; letter-spacing:-.02em; margin-bottom:.2rem; }
+        .eyebrow { text-transform:uppercase; letter-spacing:.11em; font-size:.68rem; color:var(--muted); font-weight:800; margin-bottom:.2rem; }
+        .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:1rem; margin-bottom:.85rem; }
+        .status-chip { display:inline-flex; align-items:center; border-radius:999px; padding:.25rem .55rem; font-size:.72rem; font-weight:800; border:1px solid currentColor; }
+        .status-good { color:#027a48; background:#ecfdf3; }
+        .status-bad { color:#b42318; background:#fef3f2; }
+        .status-warn { color:#b54708; background:#fffaeb; }
+        .status-neutral { color:#475467; background:#f2f4f7; }
+        .answer-box { background:#fcfcff; border:1px solid #dddfff; border-radius:16px; padding:1rem 1.1rem; }
+        .answer-label { color:#5b5bd6; text-transform:uppercase; letter-spacing:.09em; font-size:.67rem; font-weight:900; margin-bottom:.4rem; }
+        .empty-state { padding:2.4rem 1rem; text-align:center; color:var(--muted); background:#fff; border:1px dashed #d0d5dd; border-radius:16px; }
+        .sidebar-divider { margin:.9rem 0; border-top:1px solid var(--line); }
+        div[data-testid="stMetric"] { background:transparent; }
+        @media (max-width: 900px) { .metric-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
         </style>
         """,
         unsafe_allow_html=True,
@@ -138,8 +215,11 @@ def inject_css() -> None:
 
 def render_sidebar(system) -> None:
     with st.sidebar:
-        st.markdown("## 📚 BookRAG Studio")
-        st.caption("Simple controls for uploading, indexing, searching, and diagnosing your local RAG system.")
+        st.markdown(
+            '<div class="brand-row"><div class="brand-mark">📚</div><div><div class="brand-name">BookRAG Studio</div><div class="brand-sub">Local document intelligence</div></div></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("<div class='sidebar-divider'></div>", unsafe_allow_html=True)
 
         st.markdown("### Add PDFs")
         uploads = st.file_uploader(
@@ -147,6 +227,7 @@ def render_sidebar(system) -> None:
             type=["pdf"],
             accept_multiple_files=True,
             key="studio_uploads",
+            label_visibility="collapsed",
         )
         if uploads:
             seen: set[str] = st.session_state.setdefault("saved_pdf_hashes", set())
@@ -170,22 +251,25 @@ def render_sidebar(system) -> None:
             "Incoming folder",
             value=str(system.settings.incoming_dir),
             key="studio_source_dir",
+            help="Folder scanned by the ingestion service.",
         )
         job_id, _ = active_job()
         disabled = job_id is not None or active_document_count(system) > 0
-        if st.button("▶ Start ingestion", type="primary", use_container_width=True, disabled=disabled):
+        if st.button("▶ Start all chunks", type="primary", use_container_width=True, disabled=disabled):
             try:
                 started_id = start_ingestion(system, source_dir)
                 st.session_state["studio_last_job"] = started_id
+                st.session_state["studio_nav"] = "Ingestion"
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
 
         if job_id:
-            st.info(f"Worker `{job_id}` is running")
+            st.markdown(f'<span class="status-chip status-warn">● Worker running · {job_id}</span>', unsafe_allow_html=True)
 
+        st.markdown("<div class='sidebar-divider'></div>", unsafe_allow_html=True)
         st.markdown("### Maintenance")
-        if st.button("🔄 Recreate runtime", use_container_width=True):
+        if st.button("↻ Recreate runtime", use_container_width=True):
             get_system.clear()
             st.rerun()
 
@@ -202,9 +286,37 @@ def render_sidebar(system) -> None:
                 st.error(f"Cleanup failed: {exc}")
 
 
+def render_topbar(system, active_page: str) -> str:
+    items = docs(system)
+    ready = sum(str(d.get("status") or "").upper() == "READY" for d in items)
+    st.markdown(
+        f"""
+        <div class="topbar">
+          <div class="topbar-copy">
+            <h1>BookRAG Studio</h1>
+            <p>Upload PDFs, index them, ask questions, inspect evidence.</p>
+          </div>
+          <div class="health-pill"><span class="dot"></span>{ready} ready</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    nav = st.radio(
+        "Studio navigation",
+        ["Overview", "Ingestion", "Inspector", "Settings", "Chat", "Health", "Background"],
+        index=["Overview", "Ingestion", "Inspector", "Settings", "Chat", "Health", "Background"].index(active_page),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="studio_nav_control",
+    )
+    st.session_state["studio_nav"] = nav
+    return nav
+
+
 def render_overview(system) -> None:
     items = docs(system)
     ready = sum(str(d.get("status") or "").upper() == "READY" for d in items)
+    processing = active_document_count(system)
     failed = sum(str(d.get("status") or "").upper() in {"FAILED", "INTERRUPTED"} for d in items)
     try:
         vectors = int(system.vector_store.count())
@@ -214,54 +326,60 @@ def render_overview(system) -> None:
 
     st.markdown(
         """
-        <div class="br-hero">
-          <h1>📚 BookRAG Studio</h1>
-          <p><b>Upload</b> your PDFs → <b>index</b> them → <b>ask</b> questions → <b>inspect</b> the evidence.</p>
-          <p>Designed for local, transparent, beginner-friendly RAG work.</p>
+        <div class="hero">
+          <h2>Ask your documents with confidence.</h2>
+          <p>Local-first RAG with citations, resilient ingestion, hybrid retrieval, and transparent evidence inspection.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Documents", len(items))
-    c2.metric("Ready", ready)
-    c3.metric("Processing", active_document_count(system))
-    c4.metric("Vector chunks", vectors)
-    c5.metric("Lexical chunks", lexical)
-
-    if failed:
-        st.warning(f"{failed} document(s) need attention. Open **Ingestion** for details.")
-    elif not items:
-        st.info("No documents yet. Add a PDF from the sidebar to begin.")
-    else:
-        st.success("Storage, ingestion state, and search indexes are connected.")
-
-
-def render_health(system) -> None:
-    st.subheader("System health")
-    ok, message, models = ollama_health(system.settings.ollama_base_url)
-    try:
-        compatibility = system.vector_store.compatibility_report(system.embedding_service.identity)
-    except Exception as exc:
-        compatibility = {"status": "ERROR", "message": str(exc)}
-    rows = [
-        {"Component": "Ollama", "Status": "PASS" if ok else "FAIL", "Details": message},
-        {"Component": "Embedding", "Status": "PASS" if system.embedding_startup_error is None else "WARN", "Details": system.embedding_startup_error or system.settings.embedding_model},
-        {"Component": "Vector index", "Status": "PASS" if compatibility.get("status") == "READY" else "WARN", "Details": compatibility.get("message", compatibility.get("status", "UNKNOWN"))},
-        {"Component": "Generation", "Status": "INFO", "Details": system.settings.generation_model},
+    st.markdown('<div class="metric-grid">', unsafe_allow_html=True)
+    cols = st.columns(5)
+    cards = [
+        ("📄", "Documents", len(items), "Tracked in SQLite"),
+        ("✓", "Ready", ready, "Available for chat"),
+        ("◌", "Processing", processing, "Active pipeline"),
+        ("⌘", "Vector chunks", vectors, "Semantic index"),
+        ("≡", "Lexical chunks", lexical, "BM25 index"),
     ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-    with st.expander("Ollama models", expanded=False):
-        st.write(models or "No models reported by Ollama.")
+    for col, (icon, label, value, helper) in zip(cols, cards):
+        with col:
+            _metric_card(icon, label, value, helper)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    left, right = st.columns([1.35, 1])
+    with left:
+        _section_title("Workspace", "Studio")
+        with st.container(border=True):
+            st.markdown("**Upload → Index → Ask → Inspect**")
+            st.caption("The interface is backed by the real ingestion state, vector store, lexical index, and production RAG answer service.")
+            if not items:
+                st.info("No documents yet. Add a PDF from the sidebar, then start the ingestion queue.")
+            elif failed:
+                st.warning(f"{failed} document(s) need attention. Open Ingestion for persistent error details.")
+            else:
+                st.success("Your workspace is connected and ready for document research.")
+    with right:
+        _section_title("System snapshot", "Status")
+        with st.container(border=True):
+            ok, message, models = ollama_health(system.settings.ollama_base_url)
+            st.markdown(f"**Ollama** · <span class='status-chip {_status_class('PASS' if ok else 'FAIL')}'>{'PASS' if ok else 'FAIL'}</span>", unsafe_allow_html=True)
+            st.caption(message)
+            st.markdown(f"**Generation** · `{system.settings.generation_model}`")
+            st.markdown(f"**Embedding** · `{system.settings.embedding_model}`")
+            st.caption(f"{len(models)} model(s) visible from Ollama")
 
 
 def render_chat(system) -> None:
-    st.subheader("💬 Ask your documents")
+    _section_title("Ask your documents", "Chat")
+    st.caption("Answers are generated from retrieved evidence and the final result carries grounding and citation metadata.")
+
     question = st.text_area(
         "Question",
         placeholder="Example: What methodology does the document describe?",
         key="studio_question",
-        height=120,
+        height=110,
+        label_visibility="collapsed",
     )
     if st.button("🔎 Search and answer", type="primary", use_container_width=True):
         if not question.strip():
@@ -276,46 +394,93 @@ def render_chat(system) -> None:
 
     result = st.session_state.get("console_answer")
     if not result:
-        st.info("Ask a question to start.")
+        st.markdown('<div class="empty-state">Ask a question to see a grounded answer, confidence, and citations.</div>', unsafe_allow_html=True)
         return
     if result.get("error"):
         st.error(result["error"])
         return
 
-    st.markdown("### Answer")
+    st.markdown('<div class="answer-box"><div class="answer-label">Answer</div>', unsafe_allow_html=True)
     st.write(result.get("answer") or "No answer was produced.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
     confidence = result.get("confidence") or {}
     alignment = result.get("evidence_alignment") or {}
     analysis = result.get("query_analysis") or {}
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Confidence", str(confidence.get("level", "unknown")).upper())
-    c2.metric("Answerability", f"{float(alignment.get('answerability', 0.0)):.2f}")
-    c3.metric("Query quality", str(analysis.get("query_quality", "unknown")))
-    c4.metric("Citations", len(result.get("citations", [])))
+    metrics = st.columns(4)
+    metrics[0].metric("Confidence", str(confidence.get("level", "unknown")).upper())
+    metrics[1].metric("Answerability", f"{float(alignment.get('answerability', 0.0)):.2f}")
+    metrics[2].metric("Query quality", str(analysis.get("query_quality", "unknown")))
+    metrics[3].metric("Citations", len(result.get("citations", [])))
+
     if result.get("degraded_mode"):
         st.warning(f"Degraded retrieval mode: {result.get('retrieval_mode', 'unknown')}")
+    if result.get("status") == "MEDICAL_SAFETY_ABSTAIN":
+        st.warning("This query crossed the high-risk medical safety boundary. The system withheld a definitive answer because the retrieved support was not strong enough.")
 
-    st.markdown("### Citations")
-    citations = result.get("citations", [])
-    if citations:
-        for citation in citations:
-            st.write(f"📌 {citation}")
-    else:
-        st.caption("No citations were returned.")
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.container(border=True):
+            st.markdown("**Citations**")
+            citations = result.get("citations", [])
+            if citations:
+                for citation in citations:
+                    st.write(f"📌 {citation}")
+            else:
+                st.caption("No citations were returned.")
+    with col2:
+        with st.container(border=True):
+            st.markdown("**Answer safety**")
+            grounding = result.get("grounding") or {}
+            contradictions = result.get("contradictions") or {}
+            st.write(f"Grounding: **{grounding.get('status', 'unknown')}**")
+            st.write(f"Contradictions: **{contradictions.get('status', 'unknown')}**")
+            st.write(f"Degraded mode: **{bool(result.get('degraded_mode'))}**")
 
     with st.expander("Evidence used", expanded=False):
-        for index, hit in enumerate(result.get("hits", []), start=1):
+        hits = result.get("hits", []) or []
+        if not hits:
+            st.caption("No evidence hits were returned.")
+        for index, hit in enumerate(hits, start=1):
             st.markdown(f"**Evidence {index}**")
             st.caption(json.dumps(hit.metadata or {}, sort_keys=True, default=str))
             st.write(hit.text[:1600])
 
+    with st.expander("Query trace", expanded=False):
+        trace = result.get("query_trace") or result.get("trace") or {}
+        st.json(trace)
+
+
+def render_health(system) -> None:
+    _section_title("System health", "Health")
+    ok, message, models = ollama_health(system.settings.ollama_base_url)
+    try:
+        compatibility = system.vector_store.compatibility_report(system.embedding_service.identity)
+    except Exception as exc:
+        compatibility = {"status": "ERROR", "message": str(exc)}
+
+    rows = [
+        {"Component": "Ollama", "Status": "PASS" if ok else "FAIL", "Details": message},
+        {"Component": "Embedding", "Status": "PASS" if system.embedding_startup_error is None else "WARN", "Details": system.embedding_startup_error or system.settings.embedding_model},
+        {"Component": "Vector index", "Status": "PASS" if compatibility.get("status") == "READY" else "WARN", "Details": compatibility.get("message", compatibility.get("status", "UNKNOWN"))},
+        {"Component": "Generation", "Status": "INFO", "Details": system.settings.generation_model},
+    ]
+    with st.container(border=True):
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    with st.container(border=True):
+        st.markdown("**Ollama models**")
+        st.write(models or "No models reported by Ollama.")
+
 
 def render_ingestion(system) -> None:
-    st.subheader("⏳ Ingestion")
-    st.caption("The table below reads the real persistent SQLite document state.")
-    if st.button("↻ Refresh", use_container_width=True):
-        st.rerun()
-    live = st.checkbox("Live refresh while processing", value=False)
+    _section_title("Ingestion", "Pipeline")
+    st.caption("This view reads persisted SQLite state while the worker operates in the background.")
+    top = st.columns([1, 1, 4])
+    with top[0]:
+        if st.button("↻ Refresh", use_container_width=True):
+            st.rerun()
+    with top[1]:
+        live = st.checkbox("Live refresh", value=False)
 
     rows = []
     for d in docs(system)[:100]:
@@ -337,7 +502,11 @@ def render_ingestion(system) -> None:
                 "Error": str(d.get("error") or "")[:180],
             }
         )
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    if rows:
+        with st.container(border=True):
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.markdown('<div class="empty-state">No ingestion records yet.</div>', unsafe_allow_html=True)
 
     with st.expander("Recent process events", expanded=False):
         try:
@@ -371,7 +540,7 @@ def render_ingestion(system) -> None:
 
 
 def render_background(system) -> None:
-    st.subheader("🧭 Background state")
+    _section_title("Background state", "Operations")
     items = docs(system)
     job_id, _ = active_job()
     c1, c2, c3 = st.columns(3)
@@ -383,32 +552,33 @@ def render_background(system) -> None:
     with registry["lock"]:
         history = list(registry["items"].items())[-20:]
     if history:
-        st.dataframe(
-            [
-                {
-                    "Job": jid,
-                    "Status": job.get("status"),
-                    "Folder": job.get("source_dir"),
-                    "Duration (s)": round(max(0.0, float(job.get("finished") or time.time()) - float(job.get("started") or time.time())), 1),
-                    "Error": job.get("error") or "",
-                }
-                for jid, job in history
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        with st.container(border=True):
+            st.dataframe(
+                [
+                    {
+                        "Job": jid,
+                        "Status": job.get("status"),
+                        "Folder": job.get("source_dir"),
+                        "Duration (s)": round(max(0.0, float(job.get("finished") or time.time()) - float(job.get("started") or time.time())), 1),
+                        "Error": job.get("error") or "",
+                    }
+                    for jid, job in history
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
     else:
-        st.info("No UI worker history yet.")
+        st.markdown('<div class="empty-state">No UI worker history yet.</div>', unsafe_allow_html=True)
 
     if st.button("↻ Refresh background state", use_container_width=True):
         st.rerun()
 
 
 def render_inspector(system) -> None:
-    st.subheader("🔎 Document inspector")
+    _section_title("Document inspector", "Inspector")
     items = docs(system)
     if not items:
-        st.info("No documents yet.")
+        st.markdown('<div class="empty-state">No documents yet. Upload and index a PDF first.</div>', unsafe_allow_html=True)
         return
     labels = [f"{d.get('file_name')} — {str(d.get('document_id') or '')[:12]}" for d in items]
     selected = st.selectbox("Document", labels, key="studio_inspector_document")
@@ -476,8 +646,8 @@ def render_inspector(system) -> None:
 
 
 def render_settings(system) -> None:
-    st.subheader("🛠️ Runtime settings")
-    st.caption("These values apply to the current process. Permanent defaults remain in configuration/environment files.")
+    _section_title("Runtime settings", "Settings")
+    st.caption("Live settings are applied to the current process; persistent defaults remain in configuration/environment files.")
     current = system.settings
     with st.form("studio_settings"):
         host = st.text_input("Ollama host", value=str(current.ollama_base_url))
@@ -489,7 +659,7 @@ def render_settings(system) -> None:
         temperature = st.slider("Temperature", 0.0, 1.0, value=float(current.temperature), step=0.1)
         vector_weight = st.slider("Vector weight", 0.0, 1.0, value=float(current.vector_weight), step=0.1)
         neighbor_expansion = st.checkbox("Expand neighboring chunks", value=bool(current.neighbor_expansion))
-        submitted = st.form_submit_button("Apply live settings", type="primary")
+        submitted = st.form_submit_button("Apply live settings", type="primary", use_container_width=True)
 
     if submitted:
         success, warnings = system.apply_settings_in_place(
@@ -520,24 +690,23 @@ def main() -> None:
     inject_css()
     system = get_system()
     render_sidebar(system)
-    tabs = st.tabs([
-        "🏠 Overview", "💬 Chat", "⚙️ Health", "⏳ Ingestion",
-        "🧭 Background", "🔎 Inspector", "🛠️ Settings",
-    ])
-    with tabs[0]:
+    requested = st.session_state.get("studio_nav", "Overview")
+    page = render_topbar(system, requested)
+
+    if page == "Overview":
         render_overview(system)
-    with tabs[1]:
-        render_chat(system)
-    with tabs[2]:
-        render_health(system)
-    with tabs[3]:
+    elif page == "Ingestion":
         render_ingestion(system)
-    with tabs[4]:
-        render_background(system)
-    with tabs[5]:
+    elif page == "Inspector":
         render_inspector(system)
-    with tabs[6]:
+    elif page == "Settings":
         render_settings(system)
+    elif page == "Chat":
+        render_chat(system)
+    elif page == "Health":
+        render_health(system)
+    else:
+        render_background(system)
 
 
 if __name__ == "__main__":
