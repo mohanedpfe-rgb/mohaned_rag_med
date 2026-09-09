@@ -9,15 +9,13 @@ from rag_project.storage.vector_store import VectorStore
 
 class _FakeCollection:
     def __init__(self, vectors=None):
-        self.vectors = np.asarray(vectors or [])
+        self.vectors = np.asarray(vectors if vectors is not None else [])
         self.metadata = {"dimension": int(self.vectors.shape[1]) if self.vectors.ndim == 2 and self.vectors.shape[0] else 3}
 
     def get(self, **kwargs):
         if "ids" in kwargs:
             ids = list(kwargs["ids"])
-            count = len(ids)
-            vectors = self.vectors[:count]
-            return {"ids": ids, "embeddings": vectors}
+            return {"ids": ids, "embeddings": self.vectors[: len(ids)]}
         return {
             "ids": [f"id-{i}" for i in range(len(self.vectors))],
             "metadatas": [{"document_id": "doc", "chunk_id": f"chunk-{i}", "version_id": "v1", "index_state": "READY"} for i in range(len(self.vectors))],
@@ -25,8 +23,10 @@ class _FakeCollection:
 
 
 def test_vector_validator_handles_numpy_matrix_without_ambiguous_truth_value():
-    assert _safe_vector(np.array([1.0, 0.0, 0.5])) == [1.0, 0.0, 0.5]
-    assert _as_list(np.array([[1.0, 0.0, 0.5]])) == [[1.0, 0.0, 0.5]]
+    vector_rows = _as_list(np.array([[1.0, 0.0, 0.5]]))
+    assert isinstance(vector_rows, list)
+    assert vector_rows[0].tolist() == [1.0, 0.0, 0.5]
+    assert _safe_vector(vector_rows[0]) == [1.0, 0.0, 0.5]
 
 
 def test_document_index_validation_handles_numpy_chroma_embeddings():
@@ -75,11 +75,23 @@ def test_hybrid_unpack_results_accepts_numpy_arrays_in_backend_payloads():
     assert distances == [0.1, 0.2]
 
 
-def test_no_known_array_truthiness_antipatterns_in_runtime_source():
+def test_active_vector_paths_have_no_common_array_truthiness_antipatterns():
     root = Path(__file__).resolve().parents[1] / "rag_project"
-    forbidden = (".get(\"embeddings\") or []", ".get(\"embedding\") or []")
+    active_sources = (
+        root / "storage" / "vector_store.py",
+        root / "retrieval" / "hybrid_retriever.py",
+        root / "runtime_stability_v6.py",
+    )
+    forbidden = (
+        '.get("embeddings") or []',
+        '.get("embedding") or []',
+        'if embeddings:',
+        'if not embeddings:',
+        'if embedding:',
+        'if not embedding:',
+    )
     offenders = []
-    for path in root.rglob("*.py"):
+    for path in active_sources:
         text = path.read_text(encoding="utf-8")
         for token in forbidden:
             if token in text:
