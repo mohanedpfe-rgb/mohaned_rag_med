@@ -9,12 +9,15 @@ from typing import Any
 
 import streamlit as st
 
+from rag_project.security import require_auth
+
 st.set_page_config(
     page_title="BookRAG Medical",
     page_icon="BR",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+require_auth()
 
 
 def _load_local_env() -> None:
@@ -54,7 +57,6 @@ _LAZY_SYSTEM: Any | None = None
 
 
 def _clamp_local_embedding_profile() -> None:
-    """Prevent stale local .env values from forcing tiny batches or very short embedding waits."""
     try:
         retries = max(1, min(int(os.getenv("EMBEDDING_RETRIES", "2")), 3))
     except ValueError:
@@ -73,7 +75,6 @@ def _clamp_local_embedding_profile() -> None:
 
 
 def _write_bootstrap_diagnostic(exc: BaseException) -> None:
-    """Persist the full bootstrap traceback locally while keeping secrets out of the UI."""
     try:
         log_dir = Path(os.getenv("LOG_DIR", "logs")).expanduser().resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -97,8 +98,6 @@ def _get_lazy_system() -> Any:
         _LAZY_STATE_STORE = IngestionStateStore(_LAZY_SETTINGS.ingestion_db_path)
 
         class LazySystem:
-            """Lightweight UI facade used until the heavy RAG runtime is ready."""
-
             def _real(self) -> Any | None:
                 with _BOOT_LOCK:
                     runtime = _BOOT.get("system")

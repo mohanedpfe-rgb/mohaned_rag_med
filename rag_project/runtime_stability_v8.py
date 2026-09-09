@@ -11,7 +11,6 @@ _MAX_UI_JOBS = 256
 
 
 def _as_list(value: Any) -> list[Any]:
-    """Normalize sequence-like UI results without implicit array truth evaluation."""
     if value is None:
         return []
     if isinstance(value, list):
@@ -39,8 +38,8 @@ def _safe_ollama_health(original, base_url: str):
     from rag_project.security import validate_ollama_url
     import requests
 
-    validated = validate_ollama_url(base_url)
     try:
+        validated = validate_ollama_url(base_url)
         response = requests.get(
             f"{validated.rstrip('/')}/api/tags",
             timeout=(2.5, 5),

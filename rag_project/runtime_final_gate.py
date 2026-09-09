@@ -133,7 +133,11 @@ def _model_digest(self: Any) -> str | None:
     if not base_url or not model or getattr(self, "test_mode", False):
         return None
     try:
-        response = requests.get(f"{base_url}/api/tags", timeout=(1.5, 4.0))
+        response = requests.get(
+            f"{base_url}/api/tags",
+            timeout=(1.5, 4.0),
+            allow_redirects=False,
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
@@ -141,13 +145,14 @@ def _model_digest(self: Any) -> str | None:
         for item in payload.get("models", []) or []:
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name") or item.get("model") or "")
-            if name == model or name.split(":", 1)[0] == model.split(":", 1)[0]:
-                digest = str(item.get("digest") or "").strip()
-                if digest:
-                    self._runtime_final_model_digest = digest
-                    self._runtime_final_model_digest_checked_at = time.monotonic()
-                    return digest
+            name = str(item.get("name") or item.get("model") or "").strip()
+            if name != model:
+                continue
+            digest = str(item.get("digest") or "").strip()
+            if digest:
+                self._runtime_final_model_digest = digest
+                self._runtime_final_model_digest_checked_at = time.monotonic()
+                return digest
     except (requests.RequestException, ValueError, TypeError, AttributeError):
         pass
     self._runtime_final_model_digest_checked_at = time.monotonic()
@@ -178,11 +183,19 @@ def install() -> None:
         VectorStore.set_version_index_state = _safe_version_state
 
     current_property = getattr(EmbeddingService, "identity", None)
-    original_getter = getattr(current_property, "fget", None) if isinstance(current_property, property) else None
+    original_getter = (
+        getattr(current_property, "fget", None)
+        if isinstance(current_property, property)
+        else None
+    )
     if callable(original_getter) and not getattr(original_getter, "_runtime_final_wrapped", False):
         def identity_with_digest(self: Any):
             profile = original_getter(self)
-            if profile is None or getattr(self, "test_mode", False) or getattr(self, "provider", "") != "ollama":
+            if (
+                profile is None
+                or getattr(self, "test_mode", False)
+                or getattr(self, "provider", "") != "ollama"
+            ):
                 return profile
             digest = _model_digest(self)
             if not digest:
