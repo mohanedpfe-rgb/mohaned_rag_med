@@ -24,7 +24,7 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _safe_vector(value: Any) -> list[float] | None:
-    """Return a finite Python list for any array-like vector."""
+    """Return a finite Python vector for any array-like value."""
     values = _as_list(value)
     if not values:
         return None
@@ -114,6 +114,11 @@ def _safe_search(self: Any, embedding: Any, n_results: int = 5, where: dict[str,
     return self._runtime_v6_original_search(normalized, n_results=n_results, where=where)
 
 
+def _ui_list_value(value: Any) -> list[Any]:
+    """Normalize UI payload collections before any code can test their truthiness."""
+    return _as_list(value)
+
+
 def install() -> None:
     global _INSTALLED
     with _LOCK:
@@ -129,4 +134,18 @@ def install() -> None:
         if not hasattr(VectorStore, "_runtime_v6_original_search"):
             VectorStore._runtime_v6_original_search = VectorStore.search
             VectorStore.search = _safe_search
+        try:
+            from rag_project.app import bookrag_ui
+
+            def safe_evidence(result: dict[str, Any]) -> list[Any]:
+                for key in ("evidence", "hits", "citations"):
+                    value = result.get(key)
+                    if value is not None:
+                        return _ui_list_value(value)
+                return []
+
+            bookrag_ui._evidence = safe_evidence
+        except Exception:
+            # UI hardening is optional; backend hardening above remains authoritative.
+            pass
         _INSTALLED = True
