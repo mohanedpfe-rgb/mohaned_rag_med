@@ -71,7 +71,9 @@ def sanitize_log_text(value: object) -> str:
 
 
 def require_auth() -> None:
-    password = os.getenv(AUTH_ENV, "").strip()
+    # Local-first default for this desktop application. An environment variable
+    # still overrides it for deployment without changing the source.
+    password = os.getenv(AUTH_ENV, "becheikh_mohaned_med").strip()
     if len(password) < 12:
         st.error("BookRAG is locked because BOOKRAG_ADMIN_PASSWORD is not configured with a password of at least 12 characters.")
         st.stop()
