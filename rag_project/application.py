@@ -1,4 +1,4 @@
-"""Application composition root for production-facing services."""
+"""Canonical application composition root for production-facing services."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ _FACTORY_LOCK = threading.RLock()
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
-    """Apply non-negotiable local embedding bounds before any client is constructed."""
+    """Apply non-negotiable local runtime bounds before any client is constructed."""
     resolved = settings or Settings.from_env()
     resolved.embedding_batch_size = max(16, min(int(resolved.embedding_batch_size), 32))
     resolved.embedding_retries = max(1, min(int(resolved.embedding_retries), 3))
@@ -25,7 +25,7 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
 
 
 def create_rag_system(settings: Settings | None = None):
-    """Construct the production RAG pipeline and validate its persistent indexes before use."""
+    """Construct the one canonical production system and validate its persistent indexes."""
     with _FACTORY_LOCK:
         install()
         from rag_project.app.production_rag import ProductionRAGSystem
@@ -36,7 +36,10 @@ def create_rag_system(settings: Settings | None = None):
         try:
             system.startup_quality = run_quality_gate(system, repair_drift=True)
             if not system.startup_quality.get("ready", False):
-                system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
+                system.logger.warning(
+                    "Runtime quality gate reported a non-ready state: %s",
+                    system.startup_quality,
+                )
         except Exception as exc:
             system.startup_quality = {
                 "ready": False,
@@ -47,18 +50,21 @@ def create_rag_system(settings: Settings | None = None):
 
 
 def create_default_rag_system():
-    """Construct the application from environment-backed settings."""
+    """Construct the canonical application from environment-backed settings."""
     return create_rag_system()
 
 
 def runtime_contract() -> dict[str, Any]:
     return {
         "composition_root": "rag_project.application.create_rag_system",
-        "runtime_policy": "infrastructure_installed_before_service_construction",
-        "security_policy": "core_guards_installed_at_composition_root",
-        "quality_policy": "persistent_index_contract_checked_and_repaired_at_startup",
+        "canonical_service": "rag_project.app.production_rag.ProductionRAGSystem",
+        "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
+        "runtime_policy": "rag_project.runtime.install",
+        "storage_policy": "rag_project.storage.vector_store_runtime.install",
+        "security_policy": "rag_project.security.harden_system",
+        "authentication_policy": "rag_project.auth.require_auth",
+        "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "service": "ProductionRAGSystem",
         "answer_pipeline": "explicit_delegation",
         "answer_monkey_patch": False,
         "medical_safety_gate": True,
