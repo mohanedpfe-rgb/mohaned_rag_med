@@ -50,6 +50,7 @@ _BOOT: dict[str, object] = {
 }
 _LAZY_SETTINGS: Any | None = None
 _LAZY_STATE_STORE: Any | None = None
+_LAZY_SYSTEM: Any | None = None
 
 
 def _clamp_local_embedding_profile() -> None:
@@ -71,69 +72,72 @@ def _clamp_local_embedding_profile() -> None:
     os.environ["EMBEDDING_BATCH_SIZE"] = str(batch_size)
 
 
-def _get_lazy_resources() -> tuple[Any, Any]:
-    global _LAZY_SETTINGS, _LAZY_STATE_STORE
+def _get_lazy_system() -> Any:
+    global _LAZY_SETTINGS, _LAZY_STATE_STORE, _LAZY_SYSTEM
     with _BOOT_LOCK:
-        if _LAZY_SETTINGS is None:
-            from rag_project.configuration.settings import Settings
-            _LAZY_SETTINGS = Settings.from_env()
-        if _LAZY_STATE_STORE is None:
-            from rag_project.ingestion.state_store import IngestionStateStore
-            _LAZY_STATE_STORE = IngestionStateStore(_LAZY_SETTINGS.ingestion_db_path)
-        return _LAZY_SETTINGS, _LAZY_STATE_STORE
+        if _LAZY_SYSTEM is not None:
+            return _LAZY_SYSTEM
+        from rag_project.configuration.settings import Settings
+        from rag_project.ingestion.state_store import IngestionStateStore
+        _LAZY_SETTINGS = Settings.from_env()
+        _LAZY_STATE_STORE = IngestionStateStore(_LAZY_SETTINGS.ingestion_db_path)
+
+        class LazySystem:
+            """Lightweight UI facade used until the heavy RAG runtime is ready."""
+            def _real(self) -> Any | None:
+                with _BOOT_LOCK:
+                    runtime = _BOOT.get("system")
+                if isinstance(runtime, tuple) and runtime:
+                    return runtime[0]
+                return None
+
+            @property
+            def settings(self) -> Any:
+                return _LAZY_SETTINGS
+
+            @property
+            def state_store(self) -> Any:
+                return _LAZY_STATE_STORE
+
+            @property
+            def ready(self) -> bool:
+                return self._real() is not None
+
+            def health_report(self) -> dict[str, Any]:
+                real = self._real()
+                if real is not None:
+                    return real.health_report()
+                with _BOOT_LOCK:
+                    status = str(_BOOT.get("status") or "starting")
+                    error = _BOOT.get("error")
+                if status == "error":
+                    return {"ready": False, "error": error or "Runtime bootstrap failed."}
+                return {
+                    "ready": False,
+                    "status": "BOOTSTRAPPING",
+                    "message": "BookRAG services are initializing in the background.",
+                    "embedding": {"ok": False, "error": "Runtime initializing"},
+                    "index": {"status": "STARTING"},
+                    "feature_contract": {"all_resolved": False},
+                }
+
+            def __getattr__(self, name: str) -> Any:
+                real = self._real()
+                if real is not None:
+                    return getattr(real, name)
+
+                def not_ready(*args: Any, **kwargs: Any) -> Any:
+                    raise RuntimeError("BookRAG services are still initializing. Please try that action again in a moment.")
+
+                return not_ready
+
+        _LAZY_SYSTEM = LazySystem()
+        return _LAZY_SYSTEM
 
 
-class _LazySystem:
-    """Lightweight UI facade used while the heavy RAG runtime initializes."""
-
-    def __init__(self) -> None:
-        self.settings, self.state_store = _get_lazy_resources()
-
-    def _real(self) -> Any | None:
-        with _BOOT_LOCK:
-            runtime = _BOOT.get("system")
-        if isinstance(runtime, tuple) and runtime:
-            return runtime[0]
-        return None
-
-    @property
-    def ready(self) -> bool:
-        return self._real() is not None
-
-    def health_report(self) -> dict[str, Any]:
-        real = self._real()
-        if real is not None:
-            return real.health_report()
-        with _BOOT_LOCK:
-            status = str(_BOOT.get("status") or "starting")
-            error = _BOOT.get("error")
-        if status == "error":
-            return {"ready": False, "error": error or "Runtime bootstrap failed."}
-        return {
-            "ready": False,
-            "status": "BOOTSTRAPPING",
-            "message": "BookRAG services are initializing in the background.",
-            "embedding": {"ok": False, "error": "Runtime initializing"},
-            "index": {"status": "STARTING"},
-            "feature_contract": {"all_resolved": False},
-        }
-
-    def __getattr__(self, name: str) -> Any:
-        real = self._real()
-        if real is not None:
-            return getattr(real, name)
-        if name == "settings":
-            return self.settings
-        if name == "state_store":
-            return self.state_store
-
-        def not_ready(*args: Any, **kwargs: Any) -> Any:
-            raise RuntimeError("BookRAG services are still initializing. Please try that action again in a moment.")
-
-        return not_ready
-
-
-_LAZY_SYSTEM = _LazySystem()
+def _clamped_settings_for_runtime() -> Any:
+    system = _get_lazy_system()
+    return system.settings
 
 
 def _boot_start() -> None:
@@ -154,7 +158,6 @@ def _boot_start() -> None:
             from rag_project.app.live_runtime import render_live_runtime
             from rag_project.ingestion.responsive_supervisor import start as start_auto_supervisor
             from rag_project.application import create_rag_system
-            from rag_project.configuration.settings import Settings
             from rag_project.security import (
                 register_session_upload,
                 require_clear_confirmation,
@@ -172,7 +175,7 @@ def _boot_start() -> None:
             original_start_ingestion = bookrag_ui.start_ingestion
             original_ollama_health = bookrag_ui.ollama_health
 
-            system = create_rag_system(Settings.from_env())
+            system = create_rag_system(_clamped_settings_for_runtime())
             if not getattr(system, "_bookrag_security_wrapped", False):
                 original_clear = system.clear_pdf_data
                 original_apply = system.apply_settings_in_place
@@ -203,7 +206,7 @@ def _boot_start() -> None:
                 system._bookrag_security_wrapped = True
 
             def secure_system():
-                return _LAZY_SYSTEM
+                return _get_lazy_system()
 
             def secure_save_pdf(incoming, name, content):
                 safe_incoming = validate_storage_path(system.settings.project_root, incoming, "incoming folder")
@@ -250,21 +253,20 @@ def main() -> None:
     if not require_auth():
         return
 
-    # Never gate the main UI on heavy runtime initialization. The workspace opens
-    # immediately after authentication and the runtime becomes progressively live.
+    # Authentication returns before any RAG/settings/database bootstrap.
+    _get_lazy_system()
     _boot_start()
 
     from rag_project.app import bookrag_ui
     from rag_project.app.bookrag_ui import main as ui_main
     from rag_project.app.live_runtime import render_live_runtime
 
-    # The module-level get_system() is intentionally replaced with the lazy facade
-    # before the UI renders, preventing a cache miss from constructing the RAG stack
-    # on the Streamlit script thread.
-    bookrag_ui.get_system = lambda: _LAZY_SYSTEM
+    # Navigation always receives the lightweight facade. It transparently delegates
+    # to the real service as soon as the background bootstrap publishes it.
+    bookrag_ui.get_system = lambda: _get_lazy_system()
 
     _render_boot_banner()
-    render_live_runtime(_LAZY_SYSTEM)
+    render_live_runtime(_get_lazy_system())
     ui_main()
 
     with _BOOT_LOCK:
