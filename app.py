@@ -27,8 +27,7 @@ html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{min-height:10
 /* Regression guards for the original fixed Canva layout. */
 .index-grid,.row-grid{display:grid!important;grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr)!important;gap:16px!important;width:100%!important}
 .index-panel,.settings-panel,.query-panel,.health-panel,.inspector-panel{width:100%!important;max-width:100%!important;height:auto!important}
-.data-wrap{max-width:100%!important;overflow:auto!important}
-.answer,.glass-note{max-width:100%!important;overflow-wrap:anywhere!important;word-break:break-word!important}
+.data-wrap{max-width:100%!important;overflow:auto!important}.answer,.glass-note{max-width:100%!important;overflow-wrap:anywhere!important;word-break:break-word!important}
 @media(max-width:1200px){:root{--bookrag-sidebar-width:220px}.block-container{padding:28px 22px 56px!important}.index-grid,.row-grid{grid-template-columns:minmax(0,1fr)!important}}
 @media(max-width:760px){.block-container{width:100%!important;max-width:100%!important;margin-left:0!important;padding:20px 14px 44px!important}.index-grid,.row-grid{grid-template-columns:1fr!important}}
 </style>
@@ -71,6 +70,12 @@ def _secure_system():
     return system
 
 
+# Preserve the Streamlit cache-resource control surface used by the UI's
+# "Recreate runtime" action after installing the security facade.
+_secure_system.clear = getattr(_ORIGINAL_GET_SYSTEM, "clear", lambda: None)
+canva_exact_ui.get_system = _secure_system
+
+
 def _secure_save_pdf(incoming, name, content):
     system = _secure_system()
     safe_incoming = validate_storage_path(system.settings.project_root, incoming, "incoming folder")
@@ -88,7 +93,6 @@ def _secure_ollama_health(base_url):
     return _ORIGINAL_OLLAMA_HEALTH(validate_ollama_url(base_url))
 
 
-canva_exact_ui.get_system = _secure_system
 canva_exact_ui.save_pdf = _secure_save_pdf
 canva_exact_ui.start_ingestion = _secure_start_ingestion
 canva_exact_ui.ollama_health = _secure_ollama_health
