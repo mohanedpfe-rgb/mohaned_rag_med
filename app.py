@@ -54,19 +54,19 @@ _LAZY_SYSTEM: Any | None = None
 
 
 def _clamp_local_embedding_profile() -> None:
-    """Bound local embedding waits so one Ollama stall cannot become a UI freeze."""
+    """Prevent stale local .env values from forcing tiny batches or very short embedding waits."""
     try:
-        retries = max(0, min(int(os.getenv("EMBEDDING_RETRIES", "1")), 1))
+        retries = max(1, min(int(os.getenv("EMBEDDING_RETRIES", "2")), 3))
     except ValueError:
-        retries = 1
+        retries = 2
     try:
-        timeout = max(5.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "20")), 20.0))
+        timeout = max(30.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "180")), 300.0))
     except ValueError:
-        timeout = 20.0
+        timeout = 180.0
     try:
-        batch_size = max(1, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "4")), 4))
+        batch_size = max(16, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "16")), 32))
     except ValueError:
-        batch_size = 4
+        batch_size = 16
     os.environ["EMBEDDING_RETRIES"] = str(retries)
     os.environ["EMBEDDING_TIMEOUT_SECONDS"] = str(timeout)
     os.environ["EMBEDDING_BATCH_SIZE"] = str(batch_size)
