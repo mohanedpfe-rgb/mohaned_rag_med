@@ -140,32 +140,22 @@ class IngestionStateStore:
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM documents WHERE document_id = ?",
-                (document_id,),
-            ).fetchone()
+            row = connection.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,)).fetchone()
         return dict(row) if row else None
 
     def get_all_documents(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM documents ORDER BY created_at DESC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM documents ORDER BY created_at DESC").fetchall()
         return [dict(row) for row in rows]
 
     def get_by_hash(self, content_hash: str) -> dict[str, Any] | None:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM documents WHERE content_hash = ?", (content_hash,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM documents WHERE content_hash = ?", (content_hash,)).fetchone()
         return dict(row) if row else None
 
     def get_by_path(self, file_path: str) -> dict[str, Any] | None:
         with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM documents WHERE file_path = ? ORDER BY modified_at DESC LIMIT 1",
-                (file_path,),
-            ).fetchone()
+            row = connection.execute("SELECT * FROM documents WHERE file_path = ? ORDER BY modified_at DESC LIMIT 1", (file_path,)).fetchone()
         return dict(row) if row else None
 
     def upsert_document(self, values: dict[str, Any]) -> None:
@@ -181,8 +171,7 @@ class IngestionStateStore:
             "created_at", "modified_at", "ingestion_started_at", "current_stage",
             "current_page", "total_pages", "status", "error", "parser_version",
             "ocr_config", "chunking_config", "embedding_model", "embedding_dimension",
-            "index_state", "version_id",
-            "lease_owner", "lease_expires_at", "heartbeat_at",
+            "index_state", "version_id", "lease_owner", "lease_expires_at", "heartbeat_at",
             "ingestion_metrics",
         ]
         values = {key: values[key] for key in columns if key in values}
@@ -202,13 +191,10 @@ class IngestionStateStore:
         values.setdefault("index_state", "READY" if self.is_ready_status(values.get("status")) else "PENDING")
         values.setdefault("version_id", values.get("content_hash", values.get("document_id")))
         placeholders = ", ".join("?" for _ in values)
-        assignments = ", ".join(
-            f"{key}=excluded.{key}" for key in values if key != "document_id"
-        )
+        assignments = ", ".join(f"{key}=excluded.{key}" for key in values if key != "document_id")
         with self._connect() as connection:
             connection.execute(
-                f"INSERT INTO documents ({', '.join(values)}) VALUES ({placeholders}) "
-                f"ON CONFLICT(document_id) DO UPDATE SET {assignments}",
+                f"INSERT INTO documents ({', '.join(values)}) VALUES ({placeholders}) ON CONFLICT(document_id) DO UPDATE SET {assignments}",
                 tuple(values.values()),
             )
 
@@ -225,190 +211,88 @@ class IngestionStateStore:
         values["modified_at"] = utc_now()
         assignments = ", ".join(f"{key} = ?" for key in values)
         with self._connect() as connection:
-            connection.execute(
-                f"UPDATE documents SET {assignments} WHERE document_id = ?",
-                (*values.values(), document_id),
-            )
+            cursor = connection.execute(f"UPDATE documents SET {assignments} WHERE document_id = ?", (*values.values(), document_id))
+            if cursor.rowcount != 1:
+                raise ValueError(f"Document {document_id!r} does not exist.")
 
-    def record_event(
-        self,
-        document_id: str,
-        *,
-        stage: str | None = None,
-        status: str | None = None,
-        event_type: str = "stage",
-        message: str = "",
-        details: dict[str, Any] | None = None,
-        current_page: int | None = None,
-        total_pages: int | None = None,
-        file_name: str | None = None,
-    ) -> dict[str, Any]:
+    def record_event(self, document_id: str, *, stage: str | None = None, status: str | None = None, event_type: str = "stage", message: str = "", details: dict[str, Any] | None = None, current_page: int | None = None, total_pages: int | None = None, file_name: str | None = None) -> dict[str, Any]:
         if not document_id:
             return {}
         record = self.get_document(document_id)
-        effective_stage = (str(stage or (record.get("current_stage") if record else "")).upper() or None) if stage or record else None
-        if file_name is None and record:
+        if record is None:
+            raise ValueError(f"Document {document_id!r} does not exist.")
+        effective_stage = str(stage or record.get("current_stage") or "").upper() or None
+        if file_name is None:
             file_name = record.get("file_name")
-        if current_page is None and record:
+        if current_page is None:
             current_page = int(record.get("current_page") or 0)
-        if total_pages is None and record:
+        if total_pages is None:
             total_pages = int(record.get("total_pages") or 0)
-        if status is None and record:
+        if status is None:
             status = record.get("status")
-        if status is None and effective_stage:
-            if effective_stage in {"READY", "COMPLETED"}:
-                status = "READY"
-            elif effective_stage.startswith("FAILED") or effective_stage == "DEGRADED_LEXICAL":
-                status = effective_stage
-            else:
-                status = "RUNNING"
         normalized_status = self.normalize_status(status) if status else None
         payload = json.dumps(details or {}, default=str, sort_keys=True)
         with self._connect() as connection:
             cursor = connection.execute(
-                """
-                INSERT INTO process_events (
-                    document_id, file_name, created_at, stage, status, event_type,
-                    message, details, current_page, total_pages
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    document_id,
-                    file_name,
-                    utc_now(),
-                    effective_stage,
-                    normalized_status,
-                    event_type,
-                    message,
-                    payload,
-                    int(current_page or 0),
-                    int(total_pages or 0),
-                ),
+                "INSERT INTO process_events (document_id, file_name, created_at, stage, status, event_type, message, details, current_page, total_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (document_id, file_name, utc_now(), effective_stage, normalized_status, event_type, message, payload, int(current_page or 0), int(total_pages or 0)),
             )
-        return {
-            "id": cursor.lastrowid,
-            "document_id": document_id,
-            "file_name": file_name,
-            "stage": effective_stage,
-            "status": normalized_status,
-            "event_type": event_type,
-            "message": message,
-            "details": details or {},
-        }
+        return {"id": cursor.lastrowid, "document_id": document_id, "file_name": file_name, "stage": effective_stage, "status": normalized_status, "event_type": event_type, "message": message, "details": details or {}}
 
     def get_events(self, document_id: str | None = None, limit: int = 250) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 5000))
         with self._connect() as connection:
             if document_id:
-                rows = connection.execute(
-                    "SELECT * FROM process_events WHERE document_id = ? ORDER BY created_at DESC LIMIT ?",
-                    (document_id, max(1, int(limit))),
-                ).fetchall()
+                rows = connection.execute("SELECT * FROM process_events WHERE document_id = ? ORDER BY created_at DESC LIMIT ?", (document_id, safe_limit)).fetchall()
             else:
-                rows = connection.execute(
-                    "SELECT * FROM process_events ORDER BY created_at DESC LIMIT ?",
-                    (max(1, int(limit)),),
-                ).fetchall()
+                rows = connection.execute("SELECT * FROM process_events ORDER BY created_at DESC LIMIT ?", (safe_limit,)).fetchall()
         events: list[dict[str, Any]] = []
         for row in rows:
             entry = dict(row)
             try:
                 entry["details"] = json.loads(entry.get("details") or "{}")
-            except Exception:
+            except (TypeError, ValueError, json.JSONDecodeError):
                 entry["details"] = {}
             events.append(entry)
         return list(reversed(events))
 
-    def claim_document(
-        self,
-        document_id: str,
-        worker_id: str,
-        lease_seconds: int = 900,
-    ) -> bool:
-        """Claim a document unless another live worker currently owns it."""
+    def claim_document(self, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
+        if not document_id or not worker_id:
+            return False
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
         with self._connect() as connection:
             cursor = connection.execute(
                 """
                 UPDATE documents
-                SET lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?,
-                    modified_at = ?
+                SET lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, modified_at = ?
                 WHERE document_id = ?
-                  AND (
-                    lease_owner IS NULL
-                    OR lease_owner = ?
-                    OR lease_expires_at IS NULL
-                    OR lease_expires_at <= ?
-                  )
+                  AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)
                 """,
-                (
-                    worker_id,
-                    expires_at.isoformat(),
-                    now.isoformat(),
-                    now.isoformat(),
-                    document_id,
-                    worker_id,
-                    now.isoformat(),
-                ),
+                (worker_id, expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id, now.isoformat()),
             )
         return cursor.rowcount == 1
 
-    def heartbeat_document(
-        self,
-        document_id: str,
-        worker_id: str,
-        lease_seconds: int = 900,
-    ) -> bool:
+    def heartbeat_document(self, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE documents
-                SET lease_expires_at = ?, heartbeat_at = ?, modified_at = ?
-                WHERE document_id = ? AND lease_owner = ?
-                """,
-                (
-                    expires_at.isoformat(),
-                    now.isoformat(),
-                    now.isoformat(),
-                    document_id,
-                    worker_id,
-                ),
-            )
+            cursor = connection.execute("UPDATE documents SET lease_expires_at = ?, heartbeat_at = ?, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id))
         return cursor.rowcount == 1
 
     def release_document(self, document_id: str, worker_id: str) -> bool:
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE documents
-                SET lease_owner = NULL, lease_expires_at = NULL,
-                    heartbeat_at = NULL, modified_at = ?
-                WHERE document_id = ? AND lease_owner = ?
-                """,
-                (utc_now(), document_id, worker_id),
-            )
+            cursor = connection.execute("UPDATE documents SET lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (utc_now(), document_id, worker_id))
         return cursor.rowcount == 1
 
     def recover_stale_documents(self) -> int:
-        """Make expired active jobs retryable without touching terminal records."""
         now = utc_now()
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                UPDATE documents
-                SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED',
-                    index_state = 'FAILED', lease_owner = NULL,
-                    lease_expires_at = NULL, heartbeat_at = NULL,
-                    modified_at = ?
-                WHERE status IN (
-                    'RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING',
-                    'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING',
-                    'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING'
-                )
-                AND lease_expires_at IS NOT NULL
-                AND lease_expires_at <= ?
+                UPDATE documents SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED', index_state = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ?
+                WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING')
+                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
                 """,
                 (now, now),
             )
@@ -420,13 +304,12 @@ class IngestionStateStore:
             raise ValueError(f"Document {document_id!r} does not exist.")
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
-
         terminal_states = {
             "READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR",
             "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL",
         }
         if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states:
-            pass
+            raise RuntimeError(f"Invalid terminal state regression: {current_stage} -> {new_stage_value}.")
 
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:
@@ -460,6 +343,9 @@ class IngestionStateStore:
         return bool(record and self.is_ready_status(record.get("status")))
 
     def upsert_page(self, document_id: str, page_number: int, **values: Any) -> None:
+        page_number = int(page_number)
+        if page_number < 1:
+            raise ValueError("Page number must be >= 1.")
         values.setdefault("extraction_status", "PENDING")
         values.setdefault("ocr_status", "not_required")
         values.setdefault("updated_at", utc_now())
@@ -467,18 +353,11 @@ class IngestionStateStore:
         placeholders = ", ".join("?" for _ in columns)
         assignments = ", ".join(f"{key}=excluded.{key}" for key in values)
         with self._connect() as connection:
-            connection.execute(
-                f"INSERT INTO pages ({', '.join(columns)}) VALUES ({placeholders}) "
-                f"ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}",
-                (document_id, page_number, *values.values()),
-            )
+            connection.execute(f"INSERT INTO pages ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}", (document_id, page_number, *values.values()))
 
     def get_pages(self, document_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM pages WHERE document_id = ? ORDER BY page_number",
-                (document_id,),
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM pages WHERE document_id = ? ORDER BY page_number", (document_id,)).fetchall()
         return [dict(row) for row in rows]
 
     def delete_pages(self, document_id: str) -> None:
@@ -486,18 +365,19 @@ class IngestionStateStore:
             connection.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))
 
     def clear_all(self) -> None:
-        """Remove every persisted ingestion and query record."""
+        """Remove persisted ingestion and query records safely."""
         with self._connect() as connection:
             connection.execute("DELETE FROM pages")
             connection.execute("DELETE FROM process_events")
             connection.execute("DELETE FROM query_traces")
             connection.execute("DELETE FROM documents")
             connection.commit()
+        # VACUUM must run outside an active write transaction.
+        with self._connect() as connection:
             connection.execute("VACUUM")
 
     def record_query_trace(self, query_id: str, payload: dict[str, Any]) -> None:
+        if not query_id:
+            raise ValueError("query_id cannot be empty")
         with self._connect() as connection:
-            connection.execute(
-                "INSERT OR REPLACE INTO query_traces(query_id, created_at, payload) VALUES (?, ?, ?)",
-                (query_id, utc_now(), json.dumps(payload, default=str)),
-            )
+            connection.execute("INSERT OR REPLACE INTO query_traces(query_id, created_at, payload) VALUES (?, ?, ?)", (query_id, utc_now(), json.dumps(payload, default=str)))
