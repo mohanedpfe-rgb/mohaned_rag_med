@@ -68,7 +68,8 @@ class EmbeddingService:
         if not force and self._ollama_available is not None and now-self._ollama_last_check<30: return self._ollama_available
         try:
             response=requests.get(f"{self.base_url}/api/tags",timeout=(1.5,3.0),allow_redirects=False)
-            if 300 <= response.status_code < 400: raise requests.RequestException("redirect rejected")
+            status_code=getattr(response,"status_code",200)
+            if 300 <= status_code < 400: raise requests.RequestException("redirect rejected")
             response.raise_for_status(); self._ollama_available=True
         except requests.RequestException:
             self._ollama_available=False; self.last_error="Ollama health probe failed"
@@ -110,7 +111,8 @@ class EmbeddingService:
                 half=max(1,len(attempt_texts)//2); return self._ollama_embed_batch(attempt_texts[:half])+self._ollama_embed_batch(attempt_texts[half:])
             try:
                 response=requests.post(f"{self.base_url}/api/embed",json={"model":self.model,"input":attempt_texts},timeout=(5,self.timeout_seconds),allow_redirects=False)
-                if 300 <= response.status_code < 400: raise RuntimeError("Ollama redirect rejected")
+                status_code=getattr(response,"status_code",200)
+                if 300 <= status_code < 400: raise RuntimeError("Ollama redirect rejected")
                 response.raise_for_status(); payload=response.json()
                 if not isinstance(payload,dict): raise ValueError("Embedding response was not an object.")
                 if "embeddings" in payload: result=payload["embeddings"]
