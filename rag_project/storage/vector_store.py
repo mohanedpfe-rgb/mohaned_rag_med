@@ -312,7 +312,10 @@ class VectorStore:
            include=["metadatas", "documents", "embeddings"],
        )
        ids = _as_list(records.get("ids"))
+       documents = _as_list(records.get("documents"))
        metadatas_all = _as_list(records.get("metadatas"))
+       embeddings = _as_list(records.get("embeddings"))
+
        if version_id is not None:
            keep = [
                index
@@ -320,15 +323,20 @@ class VectorStore:
                if self._coerce_metadata(metadata).get("version_id") == version_id
            ]
            records = {
-               key: [values[index] for index in keep]
-               for key, values in records.items()
-               if isinstance(values, (list, tuple))
+               "ids": [ids[index] for index in keep if index < len(ids)],
+               "documents": [documents[index] for index in keep if index < len(documents)],
+               "metadatas": [metadatas_all[index] for index in keep if index < len(metadatas_all)],
+               "embeddings": [embeddings[index] for index in keep if index < len(embeddings)],
            }
-           ids = _as_list(records.get("ids"))
-           metadatas_all = _as_list(records.get("metadatas"))
+           ids = records["ids"]
+           metadatas_all = records["metadatas"]
+           embeddings = records["embeddings"]
+
        metadatas = metadatas_all
        issues: list[str] = []
        seen_chunk_ids: set[str] = set()
+       if len(ids) != len(metadatas):
+           issues.append(f"metadata count mismatch: ids={len(ids)} metadata={len(metadatas)}")
        for metadata in metadatas:
            meta = self._coerce_metadata(metadata)
            chunk_id = str(meta.get("chunk_id") or meta.get("id") or "")
@@ -339,11 +347,22 @@ class VectorStore:
            seen_chunk_ids.add(chunk_id)
            if meta.get("index_state") not in {"READY", "BUILDING"}:
                issues.append(f"unexpected index_state: {meta.get('index_state')}")
-       embeddings = _as_list(records.get("embeddings"))
+
+       if len(embeddings) != len(ids):
+           issues.append(f"embedding count mismatch: ids={len(ids)} embeddings={len(embeddings)}")
+       expected_dimension = self._collection_dim()
+       if expected_dimension <= 0 and embeddings:
+           try:
+               expected_dimension = len(_as_list(embeddings[0]))
+           except Exception:
+               expected_dimension = 0
        for vector in embeddings:
-           if not self._valid_vector(vector, self._collection_dim()):
+           if not self._valid_vector(vector, expected_dimension):
                issues.append("invalid semantic embedding")
-       valid = not issues and bool(ids)
+
+       valid = not issues and bool(ids) and len(documents) == len(ids)
+       if len(documents) != len(ids):
+           issues.append(f"document count mismatch: ids={len(ids)} documents={len(documents)}")
        return {"document_id": document_id, "count": len(ids), "valid": valid, "issues": issues}
 
    @staticmethod
@@ -358,306 +377,3 @@ class VectorStore:
         and all(math.isfinite(value) for value in values)
         and math.sqrt(sum(value * value for value in values)) > 1e-12
      )
-
-   def _apply_collection_metadata(self, dim: int | None = None) -> None:
-       current = dict(self.collection.metadata or {})
-       metadata = {key: value for key, value in current.items() if key != "hnsw:space"}
-       if dim is not None:
-           metadata["dimension"] = int(dim)
-       if current.get("dimension") == metadata.get("dimension"):
-           return
-       self.collection.modify(metadata=metadata)
-
-   def add_documents(
-       self,
-       documents: Sequence[str],
-       metadatas: Sequence[Dict[str, Any]],
-       embeddings: Sequence[Sequence[float]],
-       ids: Sequence[str],
-   ) -> None:
-       documents_list = _as_list(documents)
-       metadata_list = _as_list(metadatas)
-       embedding_list = _as_list(embeddings)
-       ids_list = _as_list(ids)
-       if not documents_list:
-           return
-       if len(documents_list) != len(metadata_list) or len(documents_list) != len(embedding_list) or len(documents_list) != len(ids_list):
-           raise ValueError("documents, metadatas, embeddings, and ids must have the same length")
-       dim = self._resolve_dimension(embedding_list)
-       self._apply_collection_metadata(dim)
-       normalized = []
-       for index, item in enumerate(documents_list):
-           metadata = self._coerce_metadata(metadata_list[index])
-           metadata.setdefault("document_id", "unknown")
-           metadata.setdefault("chunk_id", ids_list[index])
-           metadata.setdefault("index_state", "READY")
-           metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
-           metadata.setdefault("page_numbers", [])
-           normalized.append(metadata)
-           if not self._valid_vector(embedding_list[index], dim):
-               raise ValueError(f"Invalid semantic embedding at index {index}.")
-       self.collection.add(
-           ids=[str(item) for item in ids_list],
-           documents=[str(item) for item in documents_list],
-           metadatas=normalized,
-           embeddings=[list(map(float, vector)) for vector in embedding_list],
-       )
-       self._update_collection_identity(self.expected_identity)
-       self._upsert_lexical_records(documents_list, normalized, ids_list)
-
-   def add_lexical_documents(
-       self,
-       documents: Sequence[str],
-       metadatas: Sequence[Dict[str, Any]],
-       ids: Sequence[str],
-   ) -> None:
-       documents_list = _as_list(documents)
-       metadata_list = _as_list(metadatas)
-       ids_list = _as_list(ids)
-       if not documents_list:
-           return
-       if len(documents_list) != len(metadata_list) or len(documents_list) != len(ids_list):
-           raise ValueError("documents, metadatas, and ids must have the same length")
-       normalized = []
-       for index, item in enumerate(documents_list):
-           metadata = self._coerce_metadata(metadata_list[index])
-           metadata.setdefault("document_id", "unknown")
-           metadata.setdefault("chunk_id", ids_list[index])
-           metadata.setdefault("index_state", "BUILDING")
-           metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
-           metadata.setdefault("page_numbers", [])
-           normalized.append(metadata)
-       self._upsert_lexical_records(documents_list, normalized, ids_list)
-
-   def compatibility_report(self, expected_identity: Any | None) -> Dict[str, Any]:
-       stored = self._read_collection_identity()
-       collection_dimension = self._collection_dim() or self._resolve_dimension()
-       expected_dimension = int(getattr(expected_identity, "dimension", 0) or 0) if expected_identity else collection_dimension
-       metadata_valid = True
-       issues: list[str] = []
-       is_empty = self.count() == 0
-       if not is_empty and expected_identity is not None and expected_dimension != 0 and collection_dimension != 0 and collection_dimension != expected_dimension:
-           metadata_valid = False
-           issues.append(f"dimension mismatch: expected {expected_dimension}, found {collection_dimension}")
-       if not is_empty and expected_identity is not None and stored is not None:
-           expected_fingerprint = getattr(expected_identity, "fingerprint", getattr(expected_identity, "configuration_fingerprint", None))
-           if expected_fingerprint and stored.get("fingerprint") != expected_fingerprint:
-               metadata_valid = False
-               issues.append("Index fingerprint does not match expected embedding profile.")
-       if not is_empty and expected_identity is not None and stored is None:
-           metadata_valid = False
-           issues.append("Index metadata missing expected embedding profile.")
-       valid = metadata_valid
-       status = "READY"
-       if not valid:
-           status = "INDEX_MIGRATION_REQUIRED"
-       if valid and is_empty:
-           message = "Index is ready for the expected embedding profile; no chunks have been indexed yet."
-       else:
-           message = "Index is compatible with the expected embedding profile." if valid else "; ".join(issues) or "Index compatibility check failed."
-       return {
-           "status": status,
-           "message": message,
-           "valid": valid,
-           "metadata_valid": metadata_valid,
-           "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(),
-           "stored_identity": stored,
-           "collection_dimension": collection_dimension,
-           "expected_dimension": expected_dimension,
-           "issues": issues,
-       }
-
-   def index_health_check(self, expected_identity: Any | None) -> Dict[str, Any]:
-       report = self.compatibility_report(expected_identity)
-       collection_count = self.count()
-       metadata_issues = report.get("issues", [])
-       issues = [*metadata_issues]
-       if collection_count == 0:
-           issues.append("Collection is empty.")
-       try:
-           records = self.collection.get(include=["embeddings"])
-           embeddings = _as_list(records.get("embeddings"))
-           invalid = sum(
-               1 for vector in embeddings
-               if not self._valid_vector(vector, report.get("collection_dimension") or 0)
-           )
-           if invalid:
-               issues.append(f"{invalid} invalid semantic embeddings.")
-       except Exception as exc:
-           issues.append(f"Unable to validate stored embeddings: {type(exc).__name__}: {exc}")
-       valid = not issues
-       return {
-           "valid": valid,
-           "metadata_valid": report.get("metadata_valid", False),
-           "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(),
-           "stored_identity": report.get("stored_identity"),
-           "collection_dimension": report.get("collection_dimension"),
-           "expected_dimension": report.get("expected_dimension"),
-           "metadata_issues": metadata_issues,
-           "issues": issues,
-           "vector_count": collection_count,
-       }
-
-   def _as_query_result(self, ids: list[str], documents: list[str], metadatas: list[dict], distances: list[float] | None = None) -> Dict[str, Any]:
-       if distances is None:
-           distances = [0.0] * len(ids)
-       return {
-           "ids": [ids],
-           "documents": [documents],
-           "metadatas": [metadatas],
-           "distances": [distances],
-       }
-
-   @staticmethod
-   def _metadata_matches(meta: Dict[str, Any], where: Dict[str, Any] | None) -> bool:
-       if not where:
-           return True
-       if "$and" in where:
-           return all(VectorStore._metadata_matches(meta, clause) for clause in where.get("$and") or [])
-       if "$or" in where:
-           return any(VectorStore._metadata_matches(meta, clause) for clause in where.get("$or") or [])
-       return all(meta.get(key) == value for key, value in where.items())
-
-   def search(self, embedding: Sequence[float], n_results: int = 5, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
-       expected = self.expected_identity
-       report = self.compatibility_report(expected)
-       if not report["valid"]:
-           raise IndexCompatibilityError(report["message"])
-       embedding_list = _as_list(embedding)
-       if not embedding_list:
-           return self._as_query_result([], [], [])
-       collection_dim = self._collection_dim()
-       if collection_dim and len(embedding_list) != collection_dim:
-           raise IndexCompatibilityError(f"dimension mismatch: expected {collection_dim}, got {len(embedding_list)}")
-       if not self._valid_vector(embedding_list, collection_dim or 0):
-           raise IndexCompatibilityError("query embedding is not a valid finite non-zero vector")
-       results = self.collection.query(
-           query_embeddings=[list(map(float, embedding_list))],
-           n_results=max(1, int(n_results)),
-           where=where,
-           include=["documents", "metadatas", "distances"],
-       )
-       raw_ids = _as_list(results.get("ids"))
-       raw_documents = _as_list(results.get("documents"))
-       raw_metadatas = _as_list(results.get("metadatas"))
-       raw_distances = _as_list(results.get("distances"))
-       ids = _as_list(raw_ids[0]) if raw_ids and isinstance(raw_ids[0], (list, tuple)) else raw_ids
-       documents = _as_list(raw_documents[0]) if raw_documents and isinstance(raw_documents[0], (list, tuple)) else raw_documents
-       metadatas = _as_list(raw_metadatas[0]) if raw_metadatas and isinstance(raw_metadatas[0], (list, tuple)) else raw_metadatas
-       distances = _as_list(raw_distances[0]) if raw_distances and isinstance(raw_distances[0], (list, tuple)) else raw_distances
-       return self._as_query_result(
-           [str(item) for item in ids],
-           [str(item) for item in documents],
-           [dict(item or {}) if isinstance(item, dict) else {} for item in metadatas],
-           [float(item) for item in distances],
-       )
-
-   def search_lexical(self, query: str, n_results: int = 5, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
-       query = (query or "").strip()
-       if not query:
-           return self._as_query_result([], [], [])
-       tokens = set(token for token in self._lexical_tokens(query) if token)
-       if not tokens:
-           return self._as_query_result([], [], [])
-       with sqlite3.connect(self.lexical_database) as connection:
-           records = connection.execute(
-               "SELECT id, document, metadata, tokens FROM lexical_documents "
-               "WHERE index_state = 'READY'"
-           ).fetchall()
-       corpus = [json.loads(row[3]) for row in records]
-       document_count = len(records)
-       document_frequency = {
-           token: sum(token in row_tokens for row_tokens in corpus) for token in tokens
-       }
-       rank: list[tuple[float, dict[str, Any]]] = []
-       for row, row_tokens in zip(records, corpus, strict=True):
-           meta = self._coerce_metadata(json.loads(row[2]))
-           if str(meta.get("index_state", "READY")).upper() != "READY":
-               continue
-           if not VectorStore._metadata_matches(meta, where):
-               continue
-           term_counts = {token: row_tokens.count(token) for token in tokens}
-           length = max(1, len(row_tokens))
-           average_length = max(1.0, sum(len(item) for item in corpus) / max(1, document_count))
-           score = 0.0
-           for token, frequency in term_counts.items():
-               if not frequency:
-                   continue
-               idf = math.log(1.0 + (document_count - document_frequency[token] + 0.5) / (document_frequency[token] + 0.5))
-               score += idf * (frequency * 2.2) / (frequency + 1.2 * (0.75 + 0.25 * length / average_length))
-           if score <= 0.0:
-               continue
-           rank.append((score, {"id": str(row[0]), "document": str(row[1]), "metadata": meta}))
-       if not rank:
-           return self._as_query_result([], [], [])
-       ranked = sorted(rank, key=lambda item: item[0], reverse=True)[: max(1, int(n_results))]
-       ids = [entry["id"] for _, entry in ranked]
-       documents = [entry["document"] for _, entry in ranked]
-       metadatas = [entry["metadata"] for _, entry in ranked]
-       distances = [1.0 / (1.0 + score) for score, _ in ranked]
-       return self._as_query_result(ids, documents, metadatas, distances)
-
-   def set_version_state(self, document_id: str, version_id: str, state: str) -> None:
-       self.set_version_index_state(document_id, version_id, state)
-
-   def verify_index(self, document_id: str | None = None) -> Dict[str, Any]:
-       if document_id:
-           return self.validate_document_index(document_id)
-       return self.index_health_check(self.expected_identity)
-
-   def rebuild_index(self, document_id: str | None = None) -> Dict[str, Any]:
-       reconciled = self.reconcile_index(document_id)
-       health = self.index_health_check(self.expected_identity)
-       return {
-           "status": "RECONCILED" if health.get("valid") else "NEEDS_ATTENTION",
-           "reconciled": reconciled,
-           "health": health,
-       }
-
-   def activate_staging_index(
-       self,
-       document_id: str | None = None,
-       *,
-       expected_identity: Any | None = None,
-       staging_directory: str | Path | None = None,
-   ) -> Dict[str, Any]:
-       if expected_identity is not None:
-           self.expected_identity = expected_identity
-       if staging_directory is not None:
-           staging_path = Path(staging_directory)
-       else:
-           parent = self.persist_directory.parent
-           candidates = sorted(
-               parent.glob(f"{self.persist_directory.name}.staging-*"),
-               key=lambda path: path.stat().st_mtime,
-           )
-           if not candidates:
-               raise RuntimeError(
-                   f"No staging directory matching {self.persist_directory.name}.staging-* was found."
-               )
-           staging_path = candidates[-1]
-       if not staging_path.exists():
-           raise RuntimeError(f"Staging directory {staging_path} does not exist.")
-       staging_store = VectorStore(staging_path)
-       health = staging_store.index_health_check(self.expected_identity)
-       if not health["valid"] or not health["metadata_valid"]:
-           raise RuntimeError(json.dumps(health, default=str))
-       active_path = self.persist_directory
-       backup_path = active_path.parent / f"{active_path.name}.backup-{int(time.time())}"
-       if active_path.exists():
-           shutil.move(str(active_path), str(backup_path))
-       shutil.move(str(staging_path), str(active_path))
-       self.client = chromadb.PersistentClient(path=str(active_path))
-       self.collection = self.client.get_or_create_collection(
-           name=self.collection_name,
-           metadata={"hnsw:space": "cosine"},
-       )
-       self.set_document_index_state(document_id or "*", "READY")
-       return {
-           "status": "ACTIVATED",
-           "staging_directory": str(staging_path),
-           "active_directory": str(active_path),
-           "vector_count": self.collection.count(),
-           "health": health,
-           "message": "Staged index validated and activated.",
-       }
