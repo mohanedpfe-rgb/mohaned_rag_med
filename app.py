@@ -168,15 +168,12 @@ def _boot_start() -> None:
             if not callable(getattr(rag_system_module, "utc_now", None)):
                 rag_system_module.utc_now = lambda: datetime.now(timezone.utc).isoformat()
 
+            # The composition root installs runtime hardening (including UI boundary
+            # wrappers). Capture the handlers only after that installation is complete.
+            system = create_rag_system(_clamped_settings_for_runtime())
             original_save_pdf = bookrag_ui.save_pdf
             original_start_ingestion = bookrag_ui.start_ingestion
             original_ollama_health = bookrag_ui.ollama_health
-
-            # The application composition root already installs the complete security
-            # facade around the production service. Avoid wrapping those methods twice:
-            # duplicate wrappers previously consumed rate/concurrency slots and emitted
-            # duplicate audit events on every request.
-            system = create_rag_system(_clamped_settings_for_runtime())
 
             def secure_system():
                 return _get_lazy_system()
