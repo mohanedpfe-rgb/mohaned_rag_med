@@ -8,11 +8,7 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Install cross-cutting infrastructure safeguards exactly once.
-
-    Application answer behavior is explicit composition in ``ProductionRAGSystem``.
-    This module deliberately does not install answer-method monkey patches.
-    """
+    """Install cross-cutting infrastructure safeguards exactly once."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
@@ -22,10 +18,14 @@ def install() -> None:
         from rag_project.runtime_recovery import install as install_recovery
         from rag_project.runtime_quality_gate import install as install_quality
         from rag_project.runtime_final_gate import install as install_final
+        from rag_project.runtime_stability import install as install_stability
 
         install_hardening()
         install_extra()
         install_recovery()
         install_quality()
         install_final()
+        # Final layer: replace stall-prone ingestion/extraction behaviors after all
+        # compatibility patches have been installed.
+        install_stability()
         _INSTALLED = True
