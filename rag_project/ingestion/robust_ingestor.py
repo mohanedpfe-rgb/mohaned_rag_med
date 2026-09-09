@@ -37,47 +37,23 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     previous_version = previous.get("content_hash") if previous and previous.get("content_hash") != content_hash else None
     current_chunking_config = json.dumps({"size": system.settings.chunk_size, "overlap": system.settings.chunk_overlap}, sort_keys=True)
     current_ocr_config = json.dumps({"engine": "rapidocr", "scale": 2}, sort_keys=True)
-    current_version_id = system._ingestion_version_id(
-        content_hash=content_hash,
-        parser_version="pdf-extractor-v2",
-        ocr_config=current_ocr_config,
-        chunking_config=current_chunking_config,
-        embedding_model=system.settings.embedding_model,
-        embedding_profile=None,
-        embedding_dimension=None,
-    )
+    current_version_id = system._ingestion_version_id(content_hash=content_hash, parser_version="pdf-extractor-v2", ocr_config=current_ocr_config, chunking_config=current_chunking_config, embedding_model=system.settings.embedding_model, embedding_profile=None, embedding_dimension=None)
 
     if existing and system.state_store.is_ready_status(existing.get("status")) and existing.get("version_id") == current_version_id:
         validation = system.vector_store.validate_document_index(existing["document_id"], content_hash)
         if validation.get("valid") and validation.get("count", 0) > 0:
-            return {
-                "status": "skipped",
-                "file_name": file_path.name,
-                "document_id": existing["document_id"],
-                "reason": "identical content already indexed and validated",
-            }
+            return {"status": "skipped", "file_name": file_path.name, "document_id": existing["document_id"], "reason": "identical content already indexed and validated"}
 
     document_id = existing["document_id"] if existing else (previous["document_id"] if previous else content_hash)
     stat = file_path.stat()
     document_values = {
-        "document_id": document_id,
-        "content_hash": content_hash,
-        "file_path": str(file_path.resolve()),
-        "file_name": file_path.name,
-        "file_size": stat.st_size,
-        "created_at": utc_now(),
-        "modified_at": datetime_from_mtime(file_path),
-        "ingestion_started_at": utc_now(),
-        "current_stage": "DISCOVERED",
-        "current_page": 0,
-        "total_pages": 0,
-        "status": "RUNNING",
-        "parser_version": "pdf-extractor-v2",
-        "ocr_config": current_ocr_config,
-        "chunking_config": current_chunking_config,
-        "embedding_model": system.settings.embedding_model,
-        "version_id": current_version_id,
-        "index_state": "PENDING",
+        "document_id": document_id, "content_hash": content_hash, "file_path": str(file_path.resolve()),
+        "file_name": file_path.name, "file_size": stat.st_size, "created_at": utc_now(),
+        "modified_at": datetime_from_mtime(file_path), "ingestion_started_at": utc_now(),
+        "current_stage": "DISCOVERED", "current_page": 0, "total_pages": 0, "status": "RUNNING",
+        "parser_version": "pdf-extractor-v2", "ocr_config": current_ocr_config,
+        "chunking_config": current_chunking_config, "embedding_model": system.settings.embedding_model,
+        "version_id": current_version_id, "index_state": "PENDING",
     }
     worker_id = str(uuid.uuid4())
     if not ensure_and_claim(system.state_store, document_values, worker_id, system.settings.ingestion_lease_seconds):
@@ -87,6 +63,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
     cancel_flag = system._new_cancel_flag(document_id)
     target = system.settings.processed_dir / file_path.name
+    previous_target_backup: Path | None = None
+    moved_into_processed = False
     try:
         if existing and not system.state_store.is_ready_status(existing.get("status")):
             try:
@@ -95,9 +73,6 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.logger.exception("Failed to clean partial retry index for %s", file_path.name)
         if previous and previous.get("content_hash") != content_hash:
             system.state_store.delete_pages(document_id)
-            # Keep the previous indexed version intact until the new version has
-            # passed validation and publication. This prevents a failed reindex
-            # from destroying a previously searchable document.
 
         if not system.state_store.heartbeat_document(document_id, worker_id, lease_seconds=system.settings.ingestion_lease_seconds):
             raise RuntimeError("Ingestion lease was lost before processing started.")
@@ -127,13 +102,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
         system.state_store.transition_document_state(document_id, "EXTRACTING", current_page=0, total_pages=total_pages)
         system.state_store.record_event(document_id, stage="EXTRACTING", status="RUNNING", event_type="extract", message=f"Reading {total_pages} PDF pages one by one", details={"file_path": str(file_path)}, current_page=0, total_pages=total_pages, file_name=file_path.name)
-        extractor = PDFExtractor(
-            system.state_store,
-            ocr_enabled=getattr(system.settings, "ocr_enabled", False),
-            ocr_confidence_threshold=getattr(system.settings, "ocr_confidence_threshold", 0.55),
-            ocr_min_char_density=getattr(system.settings, "ocr_min_char_density", 0.001),
-            ocr_image_coverage_threshold=getattr(system.settings, "ocr_image_coverage_threshold", 0.55),
-        )
+        extractor = PDFExtractor(system.state_store, ocr_enabled=getattr(system.settings, "ocr_enabled", False), ocr_confidence_threshold=getattr(system.settings, "ocr_confidence_threshold", 0.55), ocr_min_char_density=getattr(system.settings, "ocr_min_char_density", 0.001), ocr_image_coverage_threshold=getattr(system.settings, "ocr_image_coverage_threshold", 0.55))
         pages = extractor.extract_iter(file_path, document_id)
         chunker = SemanticChunker(system.settings.chunk_size, system.settings.chunk_overlap)
         chunk_batches = chunker.chunk_page_batches(pages, batch_size=system.settings.page_batch_size)
@@ -210,19 +179,13 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         if not validation.get("valid") or validation.get("count") != embedding_count:
             raise RuntimeError("FAILED_EMBEDDING: committed index validation failed: " + "; ".join(validation.get("issues", [])))
 
-        # Validate before any filesystem publication. Keep this version BUILDING
-        # until the document's durable state reaches READY.
         system.state_store.transition_document_state(document_id, "VALIDATING_INDEX", current_page=total_pages, total_pages=total_pages)
         system.state_store.record_event(document_id, stage="VALIDATING_INDEX", status="RUNNING", event_type="validation", message="Index integrity passed; preparing atomic publication", details={"version_id": content_hash, "chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         mark("validation")
         renew(force=True)
         check_cancel()
 
-        # Filesystem publication is reversible: retain the old processed file until
-        # the new source has been safely moved, and remember the final path so any
-        # later failure can still be quarantined.
         same_target = file_path.resolve() == target.resolve()
-        previous_target_backup: Path | None = None
         if target.exists() and not same_target:
             previous_target_backup = system.settings.archive_dir / target.name
             if previous_target_backup.exists():
@@ -231,9 +194,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             target.replace(previous_target_backup)
         if not same_target:
             file_path.replace(target)
+            moved_into_processed = True
 
-        # The database remains non-READY while the vector version is BUILDING.
-        # Publish the vector version only now, then promote the durable document.
         system.vector_store.set_version_index_state(document_id, content_hash, "READY")
         system.state_store.transition_document_state(
             document_id,
@@ -242,23 +204,9 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             current_page=total_pages,
             total_pages=total_pages,
             file_path=str(target.resolve()),
-            ingestion_metrics=json.dumps(
-                {
-                    **stage_timings,
-                    "embedding_ms": round(embedding_ms, 3),
-                    "indexing_ms": round(indexing_ms, 3),
-                    "total": round((time.perf_counter() - started) * 1000, 3),
-                    "page_count": total_pages,
-                    "chunk_count": chunk_count,
-                    "embedding_count": embedding_count,
-                },
-                sort_keys=True,
-            ),
+            ingestion_metrics=json.dumps({"embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total": round((time.perf_counter() - started) * 1000, 3), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count}, sort_keys=True),
         )
 
-        # Only after the new version is durably READY do we retire the previous
-        # indexed version. A failed re-ingestion therefore leaves the prior version
-        # recoverable instead of deleting it prematurely.
         if previous_version:
             try:
                 system.vector_store.set_version_index_state(document_id, previous_version, "FAILED")
@@ -271,19 +219,9 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             except OSError:
                 system.logger.exception("Failed to remove archived previous file for %s", file_path.name)
 
-        system.state_store.record_event(
-            document_id,
-            stage="READY",
-            status="READY",
-            event_type="completion",
-            message="Document ready for retrieval and grounded questions",
-            details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()},
-            current_page=total_pages,
-            total_pages=total_pages,
-            file_name=file_path.name,
-        )
+        system.state_store.record_event(document_id, stage="READY", status="READY", event_type="completion", message="Document ready for retrieval and grounded questions", details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         total_ms = round((time.perf_counter() - started) * 1000, 3)
-        metrics = {**stage_timings, "embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total": total_ms, "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count}
+        metrics = {"total": total_ms, "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3)}
         system.logger.info("Processed %s incrementally in %.2fs", file_path.name, total_ms / 1000.0)
         return {"status": "success", "document_id": document_id, "file_name": file_path.name, "document_type": classification.get("document_type", "unknown"), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid", "timings_ms": metrics}
     except Exception as exc:
@@ -301,14 +239,23 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.state_store.update_document(document_id, current_stage=failure_stage, status=failure_stage, error=str(exc))
             except Exception:
                 system.logger.exception("Failed to persist ingestion failure state for %s", file_path.name)
-        # Quarantine whichever physical file currently exists. The source may have
-        # been moved to processed before a late publication failure.
-        quarantine_source = file_path if file_path.exists() else (target if target.exists() else None)
+
+        # Restore the previous processed file when a publication step failed.
+        if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
+            try:
+                previous_target_backup.replace(target)
+            except OSError:
+                system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
+
+        quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
         failed_path = system.settings.failed_dir / file_path.name
         if quarantine_source is not None and quarantine_source.exists() and quarantine_source.resolve() != failed_path.resolve():
             try:
                 failed_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(quarantine_source, failed_path)
+                if target.exists() and quarantine_source.resolve() == target.resolve():
+                    target.replace(failed_path)
+                else:
+                    shutil.copy2(quarantine_source, failed_path)
             except OSError:
                 system.logger.exception("Failed to quarantine %s", file_path.name)
         return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": str(exc)}
