@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import re
 import threading
 import time
@@ -8,13 +9,8 @@ from typing import Any, Callable, Sequence
 from rag_project.intelligence.advanced_reasoning import (
     abstention_ladder,
     adversarial_probe,
-    build_parent_child_context,
-    document_router,
-    expand_neighbors,
-    extract_evidence_structures,
     full_reasoning_pass,
     grounded_evidence_gate,
-    multi_hop_expand,
     normalize_numeric_measurements,
     resolve_conflicts,
     sentence_compress,
@@ -28,7 +24,6 @@ from rag_project.intelligence.evidence_guard import (
 )
 from rag_project.intelligence.pdf_intelligence import score_page_quality
 from rag_project.intelligence.query_intelligence import plan_query
-
 
 FEATURE_IMPLEMENTATIONS: dict[str, str] = {
     "universal_pdf_routing": "rag_project.intelligence.pdf_intelligence:classify_document_pages",
@@ -80,8 +75,23 @@ _INSTALL_LOCK = threading.RLock()
 _INSTALLED = False
 
 
+def validate_feature_registry() -> dict[str, Any]:
+    """Resolve every declared feature target so the 44-feature claim is executable."""
+    errors: dict[str, str] = {}
+    for feature, target in FEATURE_IMPLEMENTATIONS.items():
+        try:
+            module_name, attribute = target.split(":", 1)
+            obj: Any = importlib.import_module(module_name)
+            for part in attribute.split("."):
+                obj = getattr(obj, part)
+            if not callable(obj) and not isinstance(obj, type):
+                raise TypeError(f"target is not callable/type: {target}")
+        except Exception as exc:
+            errors[feature] = f"{type(exc).__name__}: {exc}"
+    return {"count": len(FEATURE_IMPLEMENTATIONS), "expected": 44, "ok": len(FEATURE_IMPLEMENTATIONS) == 44 and not errors, "errors": errors}
+
+
 def validate_citations(answer: str, selected_hits: Sequence[Any]) -> tuple[str, dict[str, Any]]:
-    """Keep only citation markers that map to actual evidence blocks."""
     count = len(selected_hits)
     valid = {int(x) for x in re.findall(r"\[S(\d+)\]", answer or "") if 1 <= int(x) <= count}
     invalid = {int(x) for x in re.findall(r"\[S(\d+)\]", answer or "") if int(x) > count or int(x) < 1}
@@ -90,33 +100,18 @@ def validate_citations(answer: str, selected_hits: Sequence[Any]) -> tuple[str, 
 
 
 def fail_closed(*, query_ok: bool, retrieval_ok: bool, evidence_score: float, grounding_ok: bool, contradiction: bool, generation_ok: bool) -> dict[str, Any]:
-    stage = abstention_ladder(
-        query_ok=query_ok,
-        retrieval_ok=retrieval_ok,
-        evidence_score=evidence_score,
-        grounding_ok=grounding_ok,
-        contradiction=contradiction,
-        generation_ok=generation_ok,
-    )
+    stage = abstention_ladder(query_ok=query_ok, retrieval_ok=retrieval_ok, evidence_score=evidence_score, grounding_ok=grounding_ok, contradiction=contradiction, generation_ok=generation_ok)
     return {"allow": stage == "ANSWER", "stage": stage}
 
 
 def build_final_trace(question: str, plan: Any, reasoning: dict[str, Any], decision: dict[str, Any], generation_path: str, timings: dict[str, float]) -> dict[str, Any]:
     return {
-        "version": "44.0",
+        "version": "44.1",
         "question": question,
         "query_plan": plan.to_dict() if hasattr(plan, "to_dict") else plan,
         "route": [{"document_id": r.document_id, "score": r.score, "reasons": list(r.reasons)} for r in reasoning.get("route", ())],
-        "structures": {
-            "tables": len(reasoning.get("structures", {}).get("tables", ())),
-            "figures": len(reasoning.get("structures", {}).get("figures", ())),
-        },
-        "context": {
-            "parent_child": len(reasoning.get("parent_child_hits", ())),
-            "neighbors": len(reasoning.get("neighbor_hits", ())),
-            "hops": len(reasoning.get("hop_evidence", ())),
-            "compression": reasoning.get("compression", []),
-        },
+        "structures": {"tables": len(reasoning.get("structures", {}).get("tables", ())), "figures": len(reasoning.get("structures", {}).get("figures", ()))},
+        "context": {"parent_child": len(reasoning.get("parent_child_hits", ())), "neighbors": len(reasoning.get("neighbor_hits", ())), "hops": len(reasoning.get("hop_evidence", ())), "compression": reasoning.get("compression", [])},
         "decision": decision,
         "generation_path": generation_path,
         "timings_ms": {k: round(v, 2) for k, v in timings.items()},
@@ -133,38 +128,26 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
         answer = str(base.get("answer") or "")
         base_hits = list(base.get("hits") or [])
         if not base_hits:
-            fail = fail_closed(query_ok=bool(plan.normalized), retrieval_ok=False, evidence_score=0.0, grounding_ok=False, contradiction=False, generation_ok=False)
             base["status"] = base.get("status") or "RETRIEVAL_ABSTAIN"
-            base["certification"] = {"fail_closed": fail, "feature_count": len(FEATURE_IMPLEMENTATIONS)}
+            base["certification"] = {"fail_closed": fail_closed(query_ok=bool(plan.normalized), retrieval_ok=False, evidence_score=0.0, grounding_ok=False, contradiction=False, generation_ok=False), "feature_registry": validate_feature_registry()}
             return base
-
         reasoning_start = time.perf_counter()
         try:
             all_hits = self.retriever.retrieve(plan.normalized, top_k=max(self.settings.top_k * 5, 30), where=None)
         except Exception:
             all_hits = list(base_hits)
-        reasoning = full_reasoning_pass(
-            plan.normalized,
-            base_hits,
-            all_hits,
-            max_context_chars=max(4000, int(getattr(self.settings, "context_token_budget", 3200)) * 4),
-        )
+        reasoning = full_reasoning_pass(plan.normalized, base_hits, all_hits, max_context_chars=max(4000, int(getattr(self.settings, "context_token_budget", 3200)) * 4))
         timings["advanced_reasoning"] = (time.perf_counter() - reasoning_start) * 1000
-
         route = reasoning.get("route", ())
         evidence_hits = list(base_hits)
         evidence_hits.extend(h for h in reasoning.get("parent_child_hits", ()) if h not in evidence_hits)
         evidence_hits.extend(h for h in reasoning.get("neighbor_hits", ()) if h not in evidence_hits)
         evidence_hits = evidence_hits[: max(self.settings.top_k * 4, 16)]
-
-        evidence_blocks = [str(getattr(h, "text", "")) for h in evidence_hits]
+        blocks = [str(getattr(h, "text", "")) for h in evidence_hits]
         source_ids = [f"S{i + 1}" for i in range(len(evidence_hits))]
-        prompt_signal = adversarial_probe("\n".join(evidence_blocks))
-        claims = verify_claims(answer, evidence_blocks, source_ids)
-        evidence_quality = {
-            source: max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
-            for source, hit in zip(source_ids, evidence_hits)
-        }
+        prompt_signal = adversarial_probe("\n".join(blocks))
+        claims = verify_claims(answer, blocks, source_ids)
+        evidence_quality = {source: max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))) for source, hit in zip(source_ids, evidence_hits)}
         conflict = resolve_conflicts(claims, evidence_quality)
         contradiction = contradiction_report(claims)
         advanced_ground = grounded_evidence_gate(claims, min_ratio=0.75)
@@ -172,14 +155,7 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
         safe_answer, firewall_used = citation_firewall(answer, claims)
         safe_answer, citation_state = validate_citations(safe_answer, evidence_hits)
         numeric = normalize_numeric_measurements(reasoning.get("compressed_context", ""))
-        compression_preview, compression_state = sentence_compress(
-            reasoning.get("compressed_context", ""), plan.normalized,
-            max(1200, int(getattr(self.settings, "context_token_budget", 3200)) * 3),
-        )
-        _ = compression_preview
-        _ = numeric
-        _ = route
-
+        _, compression_state = sentence_compress(reasoning.get("compressed_context", ""), plan.normalized, max(1200, int(getattr(self.settings, "context_token_budget", 3200)) * 3))
         generation_ok = base.get("status") not in {"GENERATION_ERROR", "INTERNAL_ERROR", "GENERATION_ABSTAIN"} and bool(answer)
         evidence_score = float((base.get("confidence") or {}).get("evidence_confidence", 0.0) or 0.0)
         if not evidence_score:
@@ -190,77 +166,38 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
                 quality=sum(score_page_quality(str(getattr(h, "text", "")), page_number=1, image_count=0).quality for h in evidence_hits) / max(len(evidence_hits), 1),
                 contradiction=1.0 if contradiction["has_contradiction"] else 0.0,
             )
-        decision = fail_closed(
-            query_ok=bool(plan.normalized),
-            retrieval_ok=bool(evidence_hits),
-            evidence_score=evidence_score,
-            grounding_ok=bool(advanced_ground.allow and basic_ground.get("allow")),
-            contradiction=bool(contradiction.get("has_contradiction") or conflict.get("has_unresolved")),
-            generation_ok=generation_ok,
-        )
-
-        if prompt_signal["flagged"]:
+        decision = fail_closed(query_ok=bool(plan.normalized), retrieval_ok=bool(evidence_hits), evidence_score=evidence_score, grounding_ok=bool(advanced_ground.allow and basic_ground.get("allow")), contradiction=bool(contradiction.get("has_contradiction") or conflict.get("has_unresolved")), generation_ok=generation_ok)
+        if not decision["allow"] or contradiction.get("has_contradiction"):
+            safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
+        if prompt_signal.get("flagged"):
             base["status"] = "EVIDENCE_SANITIZED"
-        if not decision["allow"]:
-            base["status"] = decision["stage"]
-            if not (basic_ground.get("allow") and not contradiction["has_contradiction"]):
-                safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
         base["answer"] = safe_answer
+        registry = validate_feature_registry()
         base["certification"] = {
-            "feature_count": len(FEATURE_IMPLEMENTATIONS),
-            "all_features_wired": len(FEATURE_IMPLEMENTATIONS) == 44,
-            "fail_closed": decision,
-            "citation_validation": citation_state,
-            "firewall_used": firewall_used,
-            "grounding": advanced_ground.__dict__,
-            "grounding_legacy": basic_ground,
-            "contradiction": contradiction,
-            "conflict_resolution": {"resolved": len(conflict.get("resolved", [])), "unresolved": len(conflict.get("unresolved", []))},
-            "adversarial": prompt_signal,
-            "numeric_evidence": numeric[:32],
-            "compression": compression_state,
+            "feature_count": len(FEATURE_IMPLEMENTATIONS), "all_features_wired": registry["ok"], "feature_registry": registry,
+            "fail_closed": decision, "citation_validation": citation_state, "firewall_used": firewall_used,
+            "grounding": advanced_ground.__dict__, "grounding_legacy": basic_ground,
+            "contradiction": contradiction, "conflict_resolution": {"resolved": len(conflict.get("resolved", [])), "unresolved": len(conflict.get("unresolved", []))},
+            "adversarial": prompt_signal, "numeric_evidence": numeric[:32], "compression": compression_state,
             "document_routes": [{"document_id": r.document_id, "score": r.score} for r in route],
         }
-        base["query_trace"] = build_final_trace(
-            question, plan, reasoning, decision,
-            str(base.get("generation_path", "unknown")),
-            timings,
-        )
+        base["query_trace"] = build_final_trace(question, plan, reasoning, decision, str(base.get("generation_path", "unknown")), timings)
         base["query_trace"]["certification"] = base["certification"]
         return base
-
     return certified_answer
 
 
 def install() -> None:
+    """Compatibility no-op: production answer composition is explicit."""
     global _INSTALLED
     with _INSTALL_LOCK:
-        if _INSTALLED:
-            return
-        from rag_project.app.rag_system import RAGSystem
-        current = getattr(RAGSystem, "answer")
-        if not getattr(current, "_final_44_wrapped", False):
-            wrapped = _wrap_answer(current)
-            wrapped._final_44_wrapped = True
-            RAGSystem.answer = wrapped
-        if getattr(RAGSystem, "final_44_report", None) is None:
-            def final_44_report(self: Any) -> dict[str, Any]:
-                return {
-                    "feature_count": len(FEATURE_IMPLEMENTATIONS),
-                    "all_features_wired": len(FEATURE_IMPLEMENTATIONS) == 44,
-                    "fail_closed": True,
-                    "universal_pdf_mode": True,
-                    "implementations": dict(FEATURE_IMPLEMENTATIONS),
-                }
-            RAGSystem.final_44_report = final_44_report
         _INSTALLED = True
 
 
 def report() -> dict[str, Any]:
+    registry = validate_feature_registry()
     return {
-        "feature_count": len(FEATURE_IMPLEMENTATIONS),
-        "all_features_wired": len(FEATURE_IMPLEMENTATIONS) == 44,
-        "fail_closed": True,
-        "universal_pdf_mode": True,
+        "feature_count": len(FEATURE_IMPLEMENTATIONS), "all_features_wired": registry["ok"], "fail_closed": True,
+        "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "feature_registry": registry,
         "implementations": dict(FEATURE_IMPLEMENTATIONS),
     }
