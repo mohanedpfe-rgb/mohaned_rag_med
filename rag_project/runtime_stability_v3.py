@@ -22,6 +22,16 @@ def _stable_production_ingest(self: Any, pdf_path: str | Path) -> dict[str, Any]
         return _safe_ingest_file(self, pdf_path)
 
 
+def _safe_clear(self: Any) -> None:
+    """Do not clear storage while a production ingestion owns the process lock."""
+    if not _PROCESS_INGEST_LOCK.acquire(timeout=0.25):
+        raise RuntimeError("Cannot clear PDF data while ingestion is running. Wait until processing finishes and try again.")
+    try:
+        return self._runtime_v3_original_clear()
+    finally:
+        _PROCESS_INGEST_LOCK.release()
+
+
 def _health_report_fast(self: Any) -> dict[str, Any]:
     """Non-blocking health snapshot; never load a model or make an embedding request."""
     embedding_service = self.embedding_service
@@ -231,6 +241,10 @@ def install() -> None:
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_ingest_file"):
             ProductionRAGSystem._runtime_v3_original_ingest_file = ProductionRAGSystem.ingest_file
             ProductionRAGSystem.ingest_file = _stable_production_ingest
+
+        if not hasattr(ProductionRAGSystem, "_runtime_v3_original_clear"):
+            ProductionRAGSystem._runtime_v3_original_clear = ProductionRAGSystem.clear_pdf_data
+            ProductionRAGSystem.clear_pdf_data = _safe_clear
 
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_answer"):
             ProductionRAGSystem._runtime_v3_original_answer = ProductionRAGSystem.answer
