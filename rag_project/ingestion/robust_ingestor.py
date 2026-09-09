@@ -15,6 +15,21 @@ from rag_project.parsing.pdf_extractor import PDFExtractor
 from rag_project.utils.text_utils import detect_language
 
 
+def _unique_archive_path(directory: Path, source: Path, suffix: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    stem = source.stem
+    extension = source.suffix
+    candidates = [directory / source.name, directory / f"{stem}-{suffix}{extension}"]
+    for candidate in candidates:
+        if not candidate.exists():
+            return candidate
+    for _ in range(100):
+        candidate = directory / f"{stem}-{suffix}-{uuid.uuid4().hex[:10]}{extension}"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Unable to allocate a unique archive path.")
+
+
 def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     """Single production ingestion implementation with durable progress and lease fencing."""
     started = time.perf_counter()
@@ -65,6 +80,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     target = system.settings.processed_dir / file_path.name
     previous_target_backup: Path | None = None
     moved_into_processed = False
+    published = False
     try:
         if existing and not system.state_store.is_ready_status(existing.get("status")):
             try:
@@ -187,10 +203,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
         same_target = file_path.resolve() == target.resolve()
         if target.exists() and not same_target:
-            previous_target_backup = system.settings.archive_dir / target.name
-            if previous_target_backup.exists():
-                previous_target_backup = system.settings.archive_dir / f"{target.stem}-{content_hash[:12]}{target.suffix}"
-            previous_target_backup.parent.mkdir(parents=True, exist_ok=True)
+            previous_target_backup = _unique_archive_path(system.settings.archive_dir, target, content_hash[:12])
             target.replace(previous_target_backup)
         if not same_target:
             file_path.replace(target)
@@ -206,6 +219,14 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             file_path=str(target.resolve()),
             ingestion_metrics=json.dumps({"embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total": round((time.perf_counter() - started) * 1000, 3), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count}, sort_keys=True),
         )
+        published = True
+
+        # Observability is deliberately non-critical after publication. A telemetry/database
+        # event failure must never trigger rollback of an already published searchable version.
+        try:
+            system.state_store.record_event(document_id, stage="READY", status="READY", event_type="completion", message="Document ready for retrieval and grounded questions", details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
+        except Exception:
+            system.logger.exception("Failed to record completion event for published document %s", file_path.name)
 
         if previous_version:
             try:
@@ -219,13 +240,16 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             except OSError:
                 system.logger.exception("Failed to remove archived previous file for %s", file_path.name)
 
-        system.state_store.record_event(document_id, stage="READY", status="READY", event_type="completion", message="Document ready for retrieval and grounded questions", details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         total_ms = round((time.perf_counter() - started) * 1000, 3)
         metrics = {"total": total_ms, "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3)}
         system.logger.info("Processed %s incrementally in %.2fs", file_path.name, total_ms / 1000.0)
         return {"status": "success", "document_id": document_id, "file_name": file_path.name, "document_type": classification.get("document_type", "unknown"), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid", "timings_ms": metrics}
     except Exception as exc:
         system.logger.exception("Failed to process %s", file_path.name)
+        if published:
+            # The durable state already says READY and the new version is visible. Do not
+            # destroy a successfully published index because of a late non-critical failure.
+            return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed.", "error": type(exc).__name__}
         try:
             system.vector_store.delete_version(document_id, content_hash)
             system.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
@@ -248,12 +272,19 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
 
         quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
-        failed_path = system.settings.failed_dir / file_path.name
-        if quarantine_source is not None and quarantine_source.exists() and quarantine_source.resolve() != failed_path.resolve():
+        failed_path = _unique_archive_path(system.settings.failed_dir, file_path, content_hash[:12])
+        if quarantine_source is not None and quarantine_source.exists():
             try:
                 failed_path.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists() and quarantine_source.resolve() == target.resolve():
-                    target.replace(failed_path)
+                try:
+                    quarantine_source.resolve().relative_to(system.settings.incoming_dir.resolve())
+                    in_incoming = True
+                except ValueError:
+                    in_incoming = False
+                if quarantine_source.resolve() == failed_path.resolve():
+                    pass
+                elif in_incoming or moved_into_processed:
+                    quarantine_source.replace(failed_path)
                 else:
                     shutil.copy2(quarantine_source, failed_path)
             except OSError:
