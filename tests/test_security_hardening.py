@@ -4,8 +4,12 @@ import pytest
 
 from rag_project.security import (
     CLEAR_PHRASE,
+    MAX_SESSION_UPLOAD_BYTES,
     MAX_UPLOAD_BYTES,
+    max_pdf_pages,
+    register_session_upload,
     validate_ollama_url,
+    validate_pdf_page_count,
     validate_pdf_payload,
     validate_query,
     validate_storage_path,
@@ -47,6 +51,24 @@ def test_pdf_size_and_magic_byte_limits():
         validate_pdf_payload("large.pdf", b"%PDF-" + b"0" * MAX_UPLOAD_BYTES)
 
 
+def test_pdf_page_limit(monkeypatch):
+    monkeypatch.delenv("BOOKRAG_MAX_PDF_PAGES", raising=False)
+    assert max_pdf_pages() == 500
+    assert validate_pdf_page_count(500) == 500
+    with pytest.raises(ValueError):
+        validate_pdf_page_count(501)
+
+
+def test_pdf_page_limit_can_be_tuned(monkeypatch):
+    monkeypatch.setenv("BOOKRAG_MAX_PDF_PAGES", "1000")
+    assert max_pdf_pages() == 1000
+    assert validate_pdf_page_count(1000) == 1000
+    with pytest.raises(ValueError):
+        validate_pdf_page_count(1001)
+    monkeypatch.setenv("BOOKRAG_MAX_PDF_PAGES", "99999")
+    assert max_pdf_pages() == 5000
+
+
 def test_query_length_limit():
     assert validate_query(" hello ") == "hello"
     with pytest.raises(ValueError):
@@ -55,3 +77,17 @@ def test_query_length_limit():
 
 def test_clear_phrase_is_explicit():
     assert CLEAR_PHRASE == "CLEAR ALL PDF DATA"
+
+
+def test_register_session_upload_limit(monkeypatch):
+    import rag_project.security as security
+
+    class SessionState(dict):
+        pass
+
+    session = SessionState()
+    monkeypatch.setattr(security.st, "session_state", session)
+    register_session_upload(MAX_SESSION_UPLOAD_BYTES)
+    assert session["bookrag_upload_bytes"] == MAX_SESSION_UPLOAD_BYTES
+    with pytest.raises(ValueError):
+        register_session_upload(1)
