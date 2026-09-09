@@ -6,6 +6,8 @@ import time
 import requests
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, stop_after_delay, wait_random_exponential
 
+from rag_project.security import validate_ollama_url
+
 try:
     from rag_project.utils.logger import build_logger
 
@@ -20,27 +22,18 @@ except Exception:
 def _before_sleep_cb(retry_state):
     instance = retry_state.args[0]
     instance.retries_encountered += 1
-    attempt = retry_state.attempt_number
-    exc = retry_state.outcome.exception()
-    _logger.warning("Retry attempt %d failed with: %s", attempt, exc)
+    _logger.warning("Retry attempt %d failed", retry_state.attempt_number)
 
 
 class OllamaLLMClient:
-    def __init__(
-        self,
-        base_url: str,
-        model: str,
-        timeout_seconds: float = 180.0,
-        max_output_tokens: int = 512,
-        circuit_threshold: int = 2,
-        circuit_open_seconds: float = 15.0,
-    ):
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+    def __init__(self, base_url: str, model: str, timeout_seconds: float = 180.0, max_output_tokens: int = 512, circuit_threshold: int = 2, circuit_open_seconds: float = 15.0):
+        self.base_url = validate_ollama_url(base_url)
+        self.model = str(model).strip()
+        if not self.model or len(self.model) > 200 or any(ord(ch) < 32 for ch in self.model):
+            raise ValueError("Invalid Ollama model identifier.")
         self.timeout_seconds = max(5.0, float(timeout_seconds))
-        # A single Ollama call should not consume the whole end-to-end latency budget.
         self.request_timeout_seconds = min(self.timeout_seconds, 60.0)
-        self.max_output_tokens = max(32, int(max_output_tokens))
+        self.max_output_tokens = max(32, min(int(max_output_tokens), 4096))
         self.circuit_threshold = max(1, int(circuit_threshold))
         self.circuit_open_seconds = max(1.0, float(circuit_open_seconds))
         self.retries_encountered = 0
@@ -58,16 +51,20 @@ class OllamaLLMClient:
         try:
             response = requests.get(
                 f"{self.base_url}/api/tags",
-                timeout=(1.0, max(0.5, float(timeout_seconds))),
+                timeout=(1.0, max(0.5, min(float(timeout_seconds), 5.0))),
+                allow_redirects=False,
             )
+            if 300 <= response.status_code < 400:
+                self.last_error = "Ollama health endpoint returned an unexpected redirect."
+                return False
             response.raise_for_status()
             return True
         except requests.RequestException as exc:
-            self.last_error = str(exc)
+            self.last_error = "Ollama health check failed."
             return False
 
     def _record_failure(self, exc: Exception) -> None:
-        self.last_error = str(exc)
+        self.last_error = type(exc).__name__
         self._consecutive_failures += 1
         if self._consecutive_failures >= self.circuit_threshold:
             self._circuit_open_until = time.monotonic() + self.circuit_open_seconds
@@ -77,36 +74,32 @@ class OllamaLLMClient:
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
 
-    @retry(
-        stop=stop_after_attempt(2) | stop_after_delay(65),
-        wait=wait_random_exponential(min=0.5, max=4),
-        retry=retry_if_exception_type((requests.RequestException, RuntimeError)),
-        before_sleep=_before_sleep_cb,
-        reraise=True,
-    )
+    @retry(stop=stop_after_attempt(2) | stop_after_delay(65), wait=wait_random_exponential(min=0.5, max=4), retry=retry_if_exception_type((requests.RequestException, RuntimeError)), before_sleep=_before_sleep_cb, reraise=True)
     def _generate_raw(self, prompt: str, system_prompt: str | None, temperature: float) -> dict:
         payload = {
             "model": self.model,
             "stream": False,
-            "options": {"temperature": temperature, "num_predict": self.max_output_tokens},
-            "messages": [{"role": "user", "content": prompt}],
+            "options": {"temperature": max(0.0, min(float(temperature), 1.0)), "num_predict": self.max_output_tokens},
+            "messages": [{"role": "user", "content": str(prompt)}],
         }
         if system_prompt:
-            payload["messages"].insert(0, {"role": "system", "content": system_prompt})
+            payload["messages"].insert(0, {"role": "system", "content": str(system_prompt)})
         try:
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
                 timeout=(5, self.request_timeout_seconds),
+                allow_redirects=False,
             )
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Ollama returned an unexpected redirect.")
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict):
                 raise RuntimeError("Ollama returned a non-object JSON response.")
             return data
         except (requests.RequestException, ValueError, TypeError) as exc:
-            self.last_error = str(exc)
-            raise RuntimeError(f"Generation service failed for model {self.model!r}.") from exc
+            raise RuntimeError("Generation service request failed.") from exc
 
     def generate(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.2) -> str:
         if self._circuit_is_open():
@@ -116,15 +109,11 @@ class OllamaLLMClient:
         except Exception as exc:
             self._record_failure(exc)
             raise
-        self.last_metrics = {
-            k: data.get(k)
-            for k in ("prompt_eval_count", "eval_count", "eval_duration", "load_duration", "total_duration")
-            if k in data
-        }
+        self.last_metrics = {k: data.get(k) for k in ("prompt_eval_count", "eval_count", "eval_duration", "load_duration", "total_duration") if k in data}
         message = data.get("message")
         if isinstance(message, dict) and isinstance(message.get("content"), str):
             self._record_success()
-            return message["content"].strip()
-        error = RuntimeError(f"Ollama returned an invalid chat response for model {self.model!r}.")
+            return message["content"].strip()[:20000]
+        error = RuntimeError("Ollama returned an invalid chat response.")
         self._record_failure(error)
         raise error
