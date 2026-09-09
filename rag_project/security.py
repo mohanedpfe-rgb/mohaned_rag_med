@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import streamlit as st
 
 AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
+DEFAULT_ADMIN_PASSWORD = "becheikh_mohaned_rag"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
@@ -72,11 +73,8 @@ def sanitize_log_text(value: object) -> str:
 
 
 def require_auth() -> bool:
-    """Authenticate using only an explicitly configured administrator password."""
-    configured = os.getenv(AUTH_ENV, "").strip()
-    if len(configured) < 12:
-        st.error("BookRAG is locked because BOOKRAG_ADMIN_PASSWORD is not configured with a password of at least 12 characters.")
-        st.stop()
+    """Authenticate with .env override support and the documented default password."""
+    configured = os.getenv(AUTH_ENV, "").strip() or DEFAULT_ADMIN_PASSWORD
     now = time.time()
     if st.session_state.get("bookrag_authenticated"):
         if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
@@ -355,22 +353,29 @@ def harden_system(system):
             raise ValueError("Unsupported or missing PDF.")
         size = candidate.stat().st_size
         if size > MAX_UPLOAD_BYTES:
-            raise ValueError("PDF exceeds the 50 MB security limit.")
-        with candidate.open("rb") as handle:
-            payload = handle.read(min(size, MAX_UPLOAD_BYTES + 1))
-        validate_pdf_payload(candidate.name, payload)
-        return original_ingest_file(candidate)
+            raise ValueError("PDF exceeds the configured upload size limit.")
+        if not acquire_ingest_slot(0.1):
+            raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
+        try:
+            audit_event("ingest_file_start", detail=str(candidate))
+            return original_ingest_file(candidate)
+        finally:
+            release_ingest_slot()
+            audit_event("ingest_file_finish", detail=str(candidate))
 
     def guarded_answer(question, metadata_filter=None):
+        clean_question = validate_query(question)
         if not consume_rate_limit("answer", limit=30, window_seconds=60):
-            raise RuntimeError("Query rate limit exceeded; wait before sending more questions.")
-        validate_query(question)
+            raise RuntimeError("Query rate limit reached; please wait a moment before asking again.")
         if not acquire_answer_slot(0.1):
             raise RuntimeError("Global answer concurrency limit reached; try again shortly.")
         try:
-            return postprocess_medical_output(original_answer(question, metadata_filter))
+            audit_event("answer_start")
+            result = original_answer(clean_question, metadata_filter)
+            return postprocess_medical_output(result)
         finally:
             release_answer_slot()
+            audit_event("answer_finish")
 
     system.clear_pdf_data = guarded_clear
     system.apply_settings_in_place = guarded_apply
