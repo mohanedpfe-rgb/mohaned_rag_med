@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 import streamlit as st
 
 AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
-DEFAULT_ADMIN_PASSWORD = "becheikh_mohaned_rag"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
@@ -24,6 +23,7 @@ MAX_PDF_PAGES = 500
 MAX_QUERY_CHARS = 4000
 AUTH_SESSION_SECONDS = 1800
 MAX_FAILED_AUTH = 5
+MIN_ADMIN_PASSWORD_LENGTH = 12
 GLOBAL_CONCURRENT_INGESTS = 2
 GLOBAL_CONCURRENT_ANSWERS = 4
 MAX_FILENAME_CHARS = 180
@@ -73,18 +73,24 @@ def sanitize_log_text(value: object) -> str:
 
 
 def _configured_admin_passwords() -> tuple[str, ...]:
-    """Return the documented default and an optional local override."""
+    """Return only an explicitly configured strong administrator password."""
     override = os.getenv(AUTH_ENV, "").strip()
-    passwords = [DEFAULT_ADMIN_PASSWORD]
-    if override and override not in passwords:
-        passwords.append(override)
-    return tuple(passwords)
+    if not override or len(override) < MIN_ADMIN_PASSWORD_LENGTH:
+        return ()
+    return (override,)
 
 
 def require_auth() -> bool:
-    """Authenticate with the documented default and an optional .env override."""
+    """Authenticate against the explicitly configured local administrator password."""
     passwords = _configured_admin_passwords()
     now = time.time()
+    if not passwords:
+        st.error(
+            f"Administrator authentication is not configured. Set {AUTH_ENV} to a strong password "
+            f"of at least {MIN_ADMIN_PASSWORD_LENGTH} characters in your local .env file."
+        )
+        st.stop()
+
     if st.session_state.get("bookrag_authenticated"):
         if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
             return True
@@ -106,7 +112,7 @@ def require_auth() -> bool:
             st.rerun()
         st.session_state["bookrag_failed_attempts"] = int(st.session_state.get("bookrag_failed_attempts", 0)) + 1
         audit_event("login_failure")
-        st.error("Invalid password. Use the documented BookRAG password or the local BOOKRAG_ADMIN_PASSWORD override.")
+        st.error("Invalid administrator password.")
         if st.session_state["bookrag_failed_attempts"] >= MAX_FAILED_AUTH:
             audit_event("login_lockout")
             st.warning("Too many failed attempts in this session. Restart Streamlit to reset the lock.")
@@ -227,6 +233,20 @@ def sanitize_model_text(text: str, *, limit: int) -> str:
     return value
 
 
+def _safe_sequence(value: object) -> list[object]:
+    """Normalize sequence-like results without evaluating array truthiness."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return []
+
+
 def sanitize_evidence_for_prompt(text: str) -> str:
     value = sanitize_model_text(text, limit=12000)
     patterns = (
@@ -245,7 +265,7 @@ def postprocess_medical_output(result: dict) -> dict:
     if not isinstance(result, dict):
         return result
     answer = str(result.get("answer") or "")
-    citations = result.get("citations") or []
+    citations = _safe_sequence(result.get("citations"))
     high_risk = re.search(r"(?i)\b(dose|dosage|mg|mcg|ml|mL|prescri|take\s+\d+|inject|anticoagul|insulin|opioid|chemotherapy|pregnan|suicid|overdose|emergency)\b", answer)
     if high_risk and not citations:
         result = dict(result)
