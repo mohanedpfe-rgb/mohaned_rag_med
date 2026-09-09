@@ -1,6 +1,11 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
 import streamlit as st
 
 from rag_project.app import canva_exact_ui
+from rag_project.app import rag_system as rag_system_module
 from rag_project.app.canva_exact_ui import main as exact_main
 from rag_project.security import (
     register_session_upload,
@@ -11,6 +16,12 @@ from rag_project.security import (
     validate_query,
     validate_storage_path,
 )
+
+# Defensive compatibility guard: ingestion code uses a UTC timestamp helper.
+# Keep the canonical implementation in state_store, but guarantee the RAG module
+# always has a callable symbol even when a stale deployment/import cache survives.
+if not callable(getattr(rag_system_module, "utc_now", None)):
+    rag_system_module.utc_now = lambda: datetime.now(timezone.utc).isoformat()
 
 _ORIGINAL_GET_SYSTEM = canva_exact_ui.get_system
 _ORIGINAL_SAVE_PDF = canva_exact_ui.save_pdf
