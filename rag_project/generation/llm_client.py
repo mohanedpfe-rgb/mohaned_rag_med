@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
+from collections.abc import Iterator
 
 import requests
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, stop_after_delay, wait_random_exponential
@@ -117,3 +119,72 @@ class OllamaLLMClient:
         error = RuntimeError("Ollama returned an invalid chat response.")
         self._record_failure(error)
         raise error
+
+    def generate_stream(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.2) -> Iterator[str]:
+        """Yield Ollama chat tokens as they arrive over the HTTP stream.
+
+        Streaming intentionally does not retry after the connection starts: once
+        output has been emitted, retrying would duplicate text. Callers receive
+        already-emitted tokens before any later transport error is raised.
+        """
+        if self._circuit_is_open():
+            raise RuntimeError("Ollama circuit breaker is open; generation was skipped.")
+
+        payload = {
+            "model": self.model,
+            "stream": True,
+            "options": {"temperature": max(0.0, min(float(temperature), 1.0)), "num_predict": self.max_output_tokens},
+            "messages": [{"role": "user", "content": str(prompt)}],
+        }
+        if system_prompt:
+            payload["messages"].insert(0, {"role": "system", "content": str(system_prompt)})
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=(5, self.request_timeout_seconds),
+                allow_redirects=False,
+                stream=True,
+            )
+            if 300 <= response.status_code < 400:
+                raise RuntimeError("Ollama returned an unexpected redirect.")
+            response.raise_for_status()
+
+            emitted = 0
+            final_metrics: dict[str, float] = {}
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                try:
+                    data = json.loads(raw_line)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("Ollama returned an invalid streaming event.") from exc
+                if not isinstance(data, dict):
+                    continue
+                message = data.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    token = message["content"]
+                    if token:
+                        emitted += len(token)
+                        if emitted > 20000:
+                            raise RuntimeError("Ollama streaming response exceeded the output limit.")
+                        yield token
+                for key in ("prompt_eval_count", "eval_count", "eval_duration", "load_duration", "total_duration"):
+                    if key in data:
+                        final_metrics[key] = data[key]
+                if bool(data.get("done")):
+                    self.last_metrics = final_metrics or None
+                    self._record_success()
+                    return
+
+            self.last_metrics = final_metrics or None
+            self._record_success()
+        except (requests.RequestException, ValueError, TypeError, RuntimeError) as exc:
+            self._record_failure(exc)
+            raise RuntimeError("Ollama streaming generation failed.") from exc
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
