@@ -57,8 +57,10 @@ class SemanticChunker:
             if page.table_count or page.table_ids:
                 evidence.add("table")
             page_enriched = enrich_text(page.text or "")
+            headings = page_enriched.get("headings") or []
+            fallback_heading = headings[0] if headings else None
             for parent_text, parent_meta in self._parent_sections(page.text or ""):
-                section_title = parent_meta.get("section") or parent_meta.get("subsection") or page_enriched.get("headings", [None])[0]
+                section_title = parent_meta.get("section") or parent_meta.get("subsection") or fallback_heading
                 chapter_title = parent_meta.get("chapter")
                 parent_id = f"{page.document_id}:p{page.page_number}:parent:{section_index}"
                 section_id = f"{page.document_id}:p{page.page_number}:section:{section_index}"
@@ -68,15 +70,18 @@ class SemanticChunker:
                     if not child_text:
                         continue
                     enriched = enrich_text(child_text)
-                    table_id = (page.table_ids[section_index % len(page.table_ids)] if page.table_ids and "table" in evidence else None)
-                    figure_id = (page.figure_ids[section_index % len(page.figure_ids)] if page.figure_ids and "figure" in evidence else None)
+                    table_id = page.table_ids[section_index % len(page.table_ids)] if page.table_ids and "table" in evidence else None
+                    figure_id = page.figure_ids[section_index % len(page.figure_ids)] if page.figure_ids and "figure" in evidence else None
                     prefix_parts = []
-                    if chapter_title: prefix_parts.append(f"Chapter: {chapter_title}")
-                    if section_title: prefix_parts.append(f"Section: {section_title}")
+                    if chapter_title:
+                        prefix_parts.append(f"Chapter: {chapter_title}")
+                    if section_title:
+                        prefix_parts.append(f"Section: {section_title}")
                     prefix = " - ".join(prefix_parts)
                     search_text = f"[{prefix}]\n{child_text}" if prefix else child_text
                     metadata = {
                         "source_pages": [page.page_number or 1],
+                        "page_numbers": [page.page_number or 1],
                         "evidence_types": sorted(evidence),
                         "chapter": chapter_title,
                         "section": section_title,
@@ -114,10 +119,23 @@ class SemanticChunker:
         return chunks
 
     def chunk_page_batches(self, pages: Iterable[PageExtraction], batch_size: int = 16) -> Iterator[List[Chunk]]:
-        """Yield bounded page batches; indices remain globally sequential across the iterator."""
+        """Yield true bounded page batches with globally sequential chunk indices."""
+        limit = max(1, int(batch_size))
+        buffer: list[PageExtraction] = []
         offset = 0
         for page in pages:
-            batch = self.chunk_pages([page])
+            buffer.append(page)
+            if len(buffer) < limit:
+                continue
+            batch = self.chunk_pages(buffer)
+            for chunk in batch:
+                chunk.chunk_index = offset
+                offset += 1
+            if batch:
+                yield batch
+            buffer.clear()
+        if buffer:
+            batch = self.chunk_pages(buffer)
             for chunk in batch:
                 chunk.chunk_index = offset
                 offset += 1
