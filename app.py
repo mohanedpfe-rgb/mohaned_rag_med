@@ -12,26 +12,6 @@ from rag_project.security import (
     validate_storage_path,
 )
 
-_RESPONSIVE_RUNTIME_CSS = """
-<style>
-/* Let Streamlit own sidebar visibility/collapse; only constrain page flow. */
-:root{--bookrag-content-max:1440px}
-html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{min-height:100%;overflow-x:hidden!important}
-[data-testid="stAppViewContainer"]{overflow:visible!important}
-[data-testid="stAppViewContainer"]>section.main{min-width:0!important}
-.studio-shell{display:none!important}
-.block-container{position:relative!important;box-sizing:border-box!important;width:100%!important;max-width:var(--bookrag-content-max)!important;margin:0 auto!important;padding:32px 32px 64px!important;min-width:0!important}
-[data-testid="stSidebar"]{z-index:100!important;overflow:visible!important}
-[data-testid="stSidebar"]>div:first-child{box-sizing:border-box!important;max-height:100vh!important;overflow-y:auto!important;overflow-x:hidden!important}
-[data-testid="stHorizontalBlock"],[data-testid="stVerticalBlock"],[data-testid="stColumn"]{min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
-.index-grid,.row-grid{display:grid!important;grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr)!important;gap:16px!important;width:100%!important}
-.index-panel,.settings-panel,.query-panel,.health-panel,.inspector-panel{width:100%!important;max-width:100%!important;height:auto!important}
-.data-wrap{max-width:100%!important;overflow:auto!important}.answer,.glass-note{max-width:100%!important;overflow-wrap:anywhere!important;word-break:break-word!important}
-@media(max-width:1100px){.index-grid,.row-grid{grid-template-columns:minmax(0,1fr)!important}.block-container{padding:28px 22px 56px!important}}
-@media(max-width:760px){.block-container{width:100%!important;max-width:100%!important;padding:20px 14px 44px!important}.index-grid,.row-grid{grid-template-columns:1fr!important}}
-</style>
-"""
-
 _ORIGINAL_GET_SYSTEM = canva_exact_ui.get_system
 _ORIGINAL_SAVE_PDF = canva_exact_ui.save_pdf
 _ORIGINAL_START_INGESTION = canva_exact_ui.start_ingestion
@@ -42,6 +22,7 @@ def _secure_system():
     system = _ORIGINAL_GET_SYSTEM()
     if getattr(system, "_bookrag_security_wrapped", False):
         return system
+
     original_clear = system.clear_pdf_data
     original_apply = system.apply_settings_in_place
     original_answer = system.answer
@@ -69,6 +50,7 @@ def _secure_system():
     return system
 
 
+# Preserve Streamlit's cache clear method for the UI's Recreate runtime action.
 _secure_system.clear = getattr(_ORIGINAL_GET_SYSTEM, "clear", lambda: None)
 canva_exact_ui.get_system = _secure_system
 
@@ -99,13 +81,7 @@ def main() -> None:
     st.set_page_config(page_title="BookRAG Studio", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
     if not require_auth():
         return
-    original_page_config = canva_exact_ui.st.set_page_config
-    canva_exact_ui.st.set_page_config = lambda *args, **kwargs: None
-    try:
-        exact_main()
-    finally:
-        canva_exact_ui.st.set_page_config = original_page_config
-    st.markdown(_RESPONSIVE_RUNTIME_CSS, unsafe_allow_html=True)
+    exact_main()
 
 
 if __name__ == "__main__":
