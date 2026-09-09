@@ -62,7 +62,7 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
 
 
 def _locked_answer(self: Any, question: str, metadata_filter=None):
-    """Serialize expensive local generation to avoid concurrent Ollama overload."""
+    """Serialize expensive local generation and keep first-use embedding probes bounded."""
     with _ANSWER_LOCK:
         return self._runtime_v3_original_answer(question, metadata_filter)
 
@@ -120,6 +120,23 @@ def _enriched_document(self: Any, document_id: str) -> dict[str, Any] | None:
     return _merge_metrics(dict(row)) if row else None
 
 
+def _bounded_discover_dimension(self: Any) -> int:
+    """Perform dimension discovery with a short probe budget, then restore settings."""
+    original_timeout = float(self.timeout_seconds)
+    original_retries = int(self.retries)
+    try:
+        if not self._check_ollama_available(force=False):
+            raise RuntimeError(
+                f"Embedding backend unavailable: Ollama at {self.base_url!r} did not respond to its health check."
+            )
+        self.timeout_seconds = min(original_timeout, float(os.getenv("RAG_DIMENSION_TIMEOUT", "15")))
+        self.retries = 0
+        return self._runtime_v3_original_discover_dimension()
+    finally:
+        self.timeout_seconds = original_timeout
+        self.retries = original_retries
+
+
 def _table_worker(pdf_path: str, page_index: int, queue: Any) -> None:
     """Extract one page's tables in a killable process."""
     try:
@@ -153,7 +170,7 @@ def _table_worker(pdf_path: str, page_index: int, queue: Any) -> None:
 
 
 def _timed_table_extract(page: Any) -> str:
-    """Hard-timeout table extraction after v2's heuristic routing."""
+    """Hard-timeout table extraction after heuristic signal routing."""
     try:
         text = str(page.get_text("text") or "")
         image_count = len(page.get_images(full=True))
@@ -208,6 +225,7 @@ def install() -> None:
 
         from rag_project.app.production_rag import ProductionRAGSystem
         from rag_project.ingestion.state_store import IngestionStateStore
+        from rag_project.embeddings.embedding_service import EmbeddingService
         from rag_project.parsing.pdf_extractor import PDFExtractor
 
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_ingest_file"):
@@ -234,6 +252,10 @@ def install() -> None:
         if not hasattr(IngestionStateStore, "_runtime_v3_original_get_document"):
             IngestionStateStore._runtime_v3_original_get_document = IngestionStateStore.get_document
             IngestionStateStore.get_document = _enriched_document
+
+        if not hasattr(EmbeddingService, "_runtime_v3_original_discover_dimension"):
+            EmbeddingService._runtime_v3_original_discover_dimension = EmbeddingService.discover_dimension
+            EmbeddingService.discover_dimension = _bounded_discover_dimension
 
         PDFExtractor._runtime_v3_original_extract_tables = getattr(PDFExtractor, "_extract_tables", None)
         PDFExtractor._extract_tables = staticmethod(_timed_table_extract)
