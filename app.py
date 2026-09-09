@@ -49,6 +49,25 @@ _BOOT: dict[str, object] = {
 }
 
 
+def _clamp_local_embedding_profile() -> None:
+    """Prevent an unavailable/slow local Ollama from blocking the ingestion supervisor for minutes."""
+    try:
+        retries = max(0, min(int(os.getenv("EMBEDDING_RETRIES", "1")), 1))
+    except ValueError:
+        retries = 1
+    try:
+        timeout = max(5.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30")), 30.0))
+    except ValueError:
+        timeout = 30.0
+    try:
+        batch_size = max(1, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "4")), 4))
+    except ValueError:
+        batch_size = 4
+    os.environ["EMBEDDING_RETRIES"] = str(retries)
+    os.environ["EMBEDDING_TIMEOUT_SECONDS"] = str(timeout)
+    os.environ["EMBEDDING_BATCH_SIZE"] = str(batch_size)
+
+
 def _boot_start() -> None:
     with _BOOT_LOCK:
         if _BOOT["status"] in {"starting", "ready"}:
@@ -58,6 +77,8 @@ def _boot_start() -> None:
     def worker() -> None:
         try:
             from datetime import datetime, timezone
+
+            _clamp_local_embedding_profile()
 
             from rag_project.app import bookrag_ui
             from rag_project.app import rag_system as rag_system_module
