@@ -19,6 +19,18 @@ from rag_project.security import (
     validate_storage_path,
 )
 
+# Streamlit page configuration must be the first Streamlit command in the
+# process. The UI module also contains a legacy set_page_config call; it is
+# suppressed after this canonical bootstrap so configuration happens exactly
+# once and login/authentication can safely render afterwards.
+st.set_page_config(
+    page_title="BookRAG Medical",
+    page_icon="BR",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+bookrag_ui.st.set_page_config = lambda *args, **kwargs: None
+
 # Defensive compatibility guard for older/stale deployments where the helper may
 # be absent from the imported RAG module even though the canonical helper exists
 # in the persistent ingestion state store.
@@ -99,12 +111,10 @@ def main() -> None:
     # Start one autonomous process-level watcher after authentication. Ingestion
     # is no longer coupled to a UI button or to the current browser page.
     start_auto_supervisor(system, interval_seconds=1.0)
-    # Keep bookrag_ui's page configuration as the first Streamlit command.
-    ui_main()
     # The runtime rail is independently refreshed every second and reads durable
-    # SQLite state plus supervisor diagnostics, so live processing remains visible
-    # after the normal page layout is rendered.
+    # SQLite state plus supervisor diagnostics.
     render_live_runtime(system)
+    ui_main()
 
 
 if __name__ == "__main__":
