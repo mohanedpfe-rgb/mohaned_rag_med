@@ -8,14 +8,11 @@ from rag_project.ingestion import robust_ingestor
 from rag_project.intelligence.god_mode import _god_answer, audit_god_mode_index
 from rag_project.intelligence.final_44 import _wrap_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
-from rag_project.intelligence.production_contract import (
-    sanitize_trace,
-    validate_feature_contract,
-)
+from rag_project.intelligence.production_contract import sanitize_trace, validate_feature_contract
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
-    """Explicit production composition with resilient incremental PDF ingestion."""
+    """Canonical production composition for ingestion, retrieval and answering."""
 
     _certified_god_answer = _wrap_answer(_god_answer)
 
@@ -34,36 +31,18 @@ class ProductionRAGSystem(ResilientRAGSystem):
             rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
 
     def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
-        """Use incremental ingestion and fail fast when embeddings are unavailable."""
-        self.embedding_startup_error = None
-        self._ensure_embedding_dimension()
-        if self.embedding_startup_error:
-            return {
-                "status": "failed",
-                "file_name": getattr(pdf_path, "name", str(pdf_path)),
-                "error": f"FAILED_EMBEDDING: {self.embedding_startup_error}",
-            }
+        """Single authoritative ingestion implementation."""
         return robust_ingestor.robust_ingest_file(self, pdf_path)
 
     def ingest_directory(self, directory: str | Any | None = None) -> List[Dict[str, Any]]:
-        """Process PDFs serially in production to avoid Chroma/SQLite contention.
-
-        The ingestion pipeline is already incremental, so serial execution keeps
-        the shared local vector database responsive while still exposing live
-        page/batch progress for the active document.
-        """
+        """Process PDFs serially so the shared local index remains responsive."""
         from pathlib import Path
 
         source_dir = Path(directory) if directory else self.settings.incoming_dir
         source_dir.mkdir(parents=True, exist_ok=True)
-        results: List[Dict[str, Any]] = []
-        for pdf_path in sorted(source_dir.glob("*.pdf")):
-            result = self.ingest_file(pdf_path)
-            results.append(result)
-        return results
+        return [self.ingest_file(path) for path in sorted(source_dir.glob("*.pdf"))]
 
     def cancel_all_ingests(self) -> int:
-        """Cancel ingestion jobs owned by the shared ingestion registry."""
         with rag_system_module._INGEST_LOCK:
             count = 0
             for flag in rag_system_module._INGEST_CANCEL_FLAGS.values():
@@ -109,10 +88,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
         except Exception as exc:
             checks["audit"] = {"ok": False, "error": str(exc)}
         checks["feature_contract"] = self._production_feature_contract
-        checks["models"] = {
-            "embedding_model": self.settings.embedding_model,
-            "generation_model": self.settings.generation_model,
-        }
+        checks["models"] = {"embedding_model": self.settings.embedding_model, "generation_model": self.settings.generation_model}
         checks["pipeline"] = {
             "explicit_composition": True,
             "answer_monkey_patch": False,
@@ -123,13 +99,10 @@ class ProductionRAGSystem(ResilientRAGSystem):
             "bounded_embedding_commit": True,
             "durable_page_checkpoints": True,
             "serialized_local_index_writes": True,
+            "canonical_ingestion": "robust_ingestor",
         }
         index_status = str(checks.get("index", {}).get("status", "READY")).upper()
-        checks["ready"] = bool(
-            checks["embedding"]["ok"]
-            and index_status in {"READY", "OK"}
-            and self._production_feature_contract["all_resolved"]
-        )
+        checks["ready"] = bool(checks["embedding"]["ok"] and index_status in {"READY", "OK"} and self._production_feature_contract["all_resolved"])
         return checks
 
 
