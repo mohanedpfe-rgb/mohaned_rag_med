@@ -110,9 +110,15 @@ canva_exact_ui.ollama_health = _secure_ollama_health
 
 
 def main() -> None:
+    st.set_page_config(page_title="BookRAG Studio", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
     require_auth()
     clear_confirmation_ui()
-    canva_exact_ui.main()
+    original_page_config = canva_exact_ui.st.set_page_config
+    canva_exact_ui.st.set_page_config = lambda *args, **kwargs: None
+    try:
+        canva_exact_ui.main()
+    finally:
+        canva_exact_ui.st.set_page_config = original_page_config
     st.markdown(_EXACT_RUNTIME_CSS, unsafe_allow_html=True)
 
 
