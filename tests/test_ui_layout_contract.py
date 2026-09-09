@@ -12,9 +12,10 @@ def test_runtime_layout_uses_single_normal_scroll_flow():
     assert '.studio-shell{display:none!important}' in APP
     assert '[data-testid="stAppViewContainer"]{overflow:visible!important}' in APP
     assert 'width:100%!important' in APP
-    assert 'position:fixed!important;left:0!important;top:0!important' in APP
+    assert '[data-testid="stSidebar"]{z-index:100!important;overflow:visible!important}' in APP
     assert '.index-grid,.row-grid{' in APP
     assert 'grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr)!important' in APP
+    assert 'position:fixed!important' not in APP[APP.index('_RESPONSIVE_RUNTIME_CSS'):APP.index('_ORIGINAL_GET_SYSTEM')]
 
 
 def test_all_navigation_pages_have_real_dispatch_targets():
@@ -32,6 +33,8 @@ def test_navigation_controls_are_real_actions_not_decorative_markup():
     assert 'key="top_health"' in UI
     assert 'key="top_refresh"' in UI
     assert 'st.session_state["studio_nav"]' in UI
+    assert '_go("Chat")' in UI
+    assert '_go("Health")' in UI
 
 
 def test_shared_components_use_one_cached_system_and_one_job_registry():
@@ -52,7 +55,8 @@ def test_login_path_continues_after_success_and_default_password_exists():
     assert '        return' in APP
     assert 'DEFAULT_LOCAL_PASSWORD = "becheikh_mohaned_med"' in SECURITY
     assert 'return True' in SECURITY
-    assert 'st.rerun()' not in SECURITY[SECURITY.index('def require_auth'):SECURITY.index('def clear_confirmation_ui')]
+    auth = SECURITY[SECURITY.index('def require_auth'):SECURITY.index('def clear_confirmation_ui')]
+    assert 'st.rerun()' not in auth
 
 
 def test_recreate_runtime_keeps_cache_clear_callable_after_security_facade():
