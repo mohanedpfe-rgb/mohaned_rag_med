@@ -99,11 +99,12 @@ def main() -> None:
     # Start one autonomous process-level watcher after authentication. Ingestion
     # is no longer coupled to a UI button or to the current browser page.
     start_auto_supervisor(system, interval_seconds=1.0)
-    # The runtime rail is independently refreshed every second. It reads durable
-    # SQLite state plus supervisor diagnostics, so the user sees live processing
-    # even while browsing another BookRAG page.
-    render_live_runtime(system)
+    # Keep bookrag_ui's page configuration as the first Streamlit command.
     ui_main()
+    # The runtime rail is independently refreshed every second and reads durable
+    # SQLite state plus supervisor diagnostics, so live processing remains visible
+    # after the normal page layout is rendered.
+    render_live_runtime(system)
 
 
 if __name__ == "__main__":
