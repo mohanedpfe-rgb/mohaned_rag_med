@@ -35,6 +35,7 @@ STAGES = {
     "COMPLETED": ("Ready", "Available for grounded research questions."),
     "FAILED": ("Failed", "Processing stopped and needs attention."),
     "FAILED_EMBEDDING": ("Embedding failed", "Semantic indexing could not complete."),
+    "FAILED_INDEXING": ("Indexing failed", "Final index validation could not complete."),
     "INTERRUPTED": ("Interrupted", "Processing stopped before completion."),
     "RECOVERING": ("Recovering", "Preparing a safe recovery attempt."),
 }
@@ -164,7 +165,7 @@ def _status_class(value: Any) -> str:
     status = str(value or "UNKNOWN").upper()
     if status in {"READY", "COMPLETED", "PASS", "ONLINE", "HEALTHY", "OK", "GROUNDED"}:
         return "good"
-    if status in {"FAILED", "FAILED_EMBEDDING", "ERROR", "OFFLINE", "UNAVAILABLE", "ABSTAIN", "INTERRUPTED"}:
+    if status in {"FAILED", "FAILED_EMBEDDING", "FAILED_INDEXING", "ERROR", "OFFLINE", "UNAVAILABLE", "ABSTAIN", "INTERRUPTED"}:
         return "bad"
     if status in ACTIVE or status in {"RUNNING", "PROCESSING", "BUILDING", "WARNING", "WARN"}:
         return "warn"
@@ -182,7 +183,9 @@ def _progress(document: dict[str, Any]) -> float:
         "RUNNING": 0.03, "DISCOVERED": 0.08, "VALIDATING": 0.15, "EXTRACTING": 0.30,
         "OCR": 0.46, "CHUNKING": 0.58, "EMBEDDING": 0.73, "INDEXING": 0.86,
         "VALIDATING_INDEX": 0.96, "READY": 1.0, "COMPLETED": 1.0,
-    }.get(status, 1.0 if status in {"FAILED", "FAILED_EMBEDDING", "INTERRUPTED"} else 0.03)
+    }.get(status, 0.03)
+    if status in {"FAILED", "FAILED_EMBEDDING", "FAILED_INDEXING", "INTERRUPTED"}:
+        return 0.0
     total, current = _int(document.get("total_pages")), _int(document.get("current_page"))
     if status in {"EXTRACTING", "OCR"} and total:
         base += min(current / total, 1.0) * (0.14 if status == "EXTRACTING" else 0.10)
@@ -267,12 +270,15 @@ def auto_ingest(system, count: int) -> str | None:
 
 def ollama_health(base_url: str):
     try:
-        response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=(2.5, 5))
+        response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=(2.5, 5), allow_redirects=False)
         response.raise_for_status()
-        models = [str(item.get("name")) for item in response.json().get("models", []) if item.get("name")]
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Ollama health response was not an object")
+        models = [str(item.get("name")) for item in payload.get("models", []) if isinstance(item, dict) and item.get("name")]
         return True, "Ollama is reachable", models
     except Exception as exc:
-        return False, str(exc), []
+        return False, type(exc).__name__, []
 
 
 def _job_running() -> bool:
@@ -291,7 +297,11 @@ def _metric(result: dict[str, Any], *keys: str) -> Any:
 
 
 def _evidence(result: dict[str, Any]) -> list[Any]:
-    value = result.get("evidence") or result.get("hits") or result.get("citations") or []
+    value = result.get("evidence")
+    if value is None:
+        value = result.get("hits")
+    if value is None:
+        value = result.get("citations")
     return list(value) if isinstance(value, (list, tuple)) else []
 
 
@@ -775,8 +785,16 @@ def inspector_page(system) -> None:
     st.markdown('</div>', unsafe_allow_html=True)
     with st.expander("Event timeline", expanded=True):
         event_rows = events(system, document_id, 250)
+        start_at = _utc(document.get("ingestion_started_at"))
+        if start_at:
+            current_attempt = []
+            for event in event_rows:
+                event_time = _utc(event.get("created_at"))
+                if event_time is None or event_time >= start_at:
+                    current_attempt.append(event)
+            event_rows = current_attempt
         if not event_rows:
-            st.caption("No events recorded yet.")
+            st.caption("No events recorded for the current ingestion attempt.")
         else:
             st.markdown('<div class="timeline">', unsafe_allow_html=True)
             for event in reversed(event_rows[-50:]):
