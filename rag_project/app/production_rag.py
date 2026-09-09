@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 from rag_project.app import rag_system as rag_system_module
@@ -30,14 +31,48 @@ class ProductionRAGSystem(ResilientRAGSystem):
         with rag_system_module._INGEST_LOCK:
             rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
 
+    def _archive_duplicate_upload(self, pdf_path: str | Path, document_id: str, result: dict[str, Any]) -> dict[str, Any]:
+        """Remove a successfully deduplicated upload from the incoming queue.
+
+        A duplicate must not remain in ``incoming`` forever because the autonomous
+        supervisor will continue to discover it on every reconciliation cycle.
+        Archive failures are reported as warnings and never change a successful
+        deduplication into a failed ingestion result.
+        """
+        source = Path(pdf_path)
+        if not source.is_file():
+            return result
+        try:
+            content_hash = self._hash_file(source)
+            archive_dir = Path(self.settings.archive_dir)
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            target = archive_dir / source.name
+            if target.exists():
+                target = archive_dir / f"{source.stem}-duplicate-{content_hash[:12]}{source.suffix}"
+            if target.exists():
+                target = archive_dir / f"{source.stem}-duplicate-{content_hash[:12]}-{document_id[:8]}{source.suffix}"
+            source.replace(target)
+            result = dict(result)
+            result["archived_duplicate"] = str(target)
+            return result
+        except OSError as exc:
+            result = dict(result)
+            result["archive_warning"] = f"Duplicate was skipped but could not be archived: {type(exc).__name__}"
+            return result
+
     def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
-        """Single authoritative ingestion implementation."""
-        return robust_ingestor.robust_ingest_file(self, pdf_path)
+        """Single authoritative ingestion implementation with duplicate cleanup."""
+        result = robust_ingestor.robust_ingest_file(self, pdf_path)
+        if str((result or {}).get("status") or "").lower() == "skipped":
+            result = self._archive_duplicate_upload(
+                pdf_path,
+                str((result or {}).get("document_id") or "unknown"),
+                result,
+            )
+        return result
 
     def ingest_directory(self, directory: str | Any | None = None) -> List[Dict[str, Any]]:
         """Process PDFs serially so the shared local index remains responsive."""
-        from pathlib import Path
-
         source_dir = Path(directory) if directory else self.settings.incoming_dir
         source_dir.mkdir(parents=True, exist_ok=True)
         return [self.ingest_file(path) for path in sorted(source_dir.glob("*.pdf"))]
