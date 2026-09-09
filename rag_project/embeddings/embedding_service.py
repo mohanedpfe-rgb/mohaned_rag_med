@@ -234,8 +234,7 @@ class EmbeddingService:
             metric="cosine",
             implementation_version=implementation,
         )
-        if self._profile_fingerprint != profile.fingerprint:
-            self._profile_fingerprint = profile.fingerprint
+        self._profile_fingerprint = profile.fingerprint
         return profile
 
     def discover_dimension(self) -> int:
@@ -264,11 +263,10 @@ class EmbeddingService:
                 if cached is not None:
                     ordered[index] = cached
                     self._embedding_cache.move_to_end(key)
-                elif key in self._embedding_cache:
-                    self._embedding_cache.pop(key, None)
-                else:
-                    missing_indices.append(index)
-                    missing.append(text)
+                    continue
+                self._embedding_cache.pop(key, None)
+                missing_indices.append(index)
+                missing.append(text)
 
         if missing:
             with self._inference_semaphore:
@@ -346,7 +344,7 @@ class EmbeddingService:
                 self.last_error = "Embedding request timed out"
                 self._consecutive_timeouts += 1
                 self._active_batch_size = max(1, self._active_batch_size // 2)
-                if len(attempt_texts) > 1 and self._active_batch_size < len(attempt_texts):
+                if len(attempt_texts) > 1 and self._active_batch_size <= len(attempt_texts) // 2:
                     return self._split_and_embed(attempt_texts)
                 if attempt + 1 < attempts:
                     time.sleep(min(2, 0.75 * (2**attempt)))
@@ -435,7 +433,6 @@ class EmbeddingService:
                 self._query_cache.move_to_end(key)
                 return cached
             self._query_cache.pop(key, None)
-
         vectors = self.embed_texts([clean_query])
         if not vectors:
             raise RuntimeError("No embedding was produced for the query.")
