@@ -92,14 +92,14 @@ class PDFExtractor:
             try: pdf=fitz.open(str(pdf_file))
             except RuntimeError as exc: raise RuntimeError(f"{pdf_file.name}: failed to open PDF") from exc
             page_count=validate_pdf_page_count(pdf.page_count)
-            cached_pages={x["page_number"]:x for x in self.state_store.get_pages(document_id)} if self.state_store else {}; last_progress=0
+            cached_pages={x["page_number"]:x for x in self.state_store.get_pages(document_id)} if self.state_store else {}
             for index in range(page_count):
                 physical_page=index+1; cached=cached_pages.get(physical_page) if self.state_store else None
                 if cached and cached["extraction_status"]=="COMPLETED" and cached.get("text"):
                     text=cached["text"]; quality=score_page_quality(text,page_number=physical_page); meta=dict(cached.get("metadata") or {}); meta.update({"physical_page":physical_page,"cached":True,"quality_score":quality.quality,"routing_decision":quality.route,**enrich_text(text)})
+                    if self.state_store:
+                        self.state_store.update_document(document_id,current_stage="EXTRACTING",current_page=physical_page,total_pages=page_count)
                     yield PageExtraction(document_id,pdf_file.name,index,physical_page,text,cached.get("extraction_method") or "cached",ocr_status=cached.get("ocr_status","not_required"),page_type=meta.get("page_type","unknown"),image_count=int(meta.get("image_count") or 0),table_count=int(meta.get("table_count") or 0),has_images=bool(meta.get("has_images")),blocks=[p.strip() for p in split_paragraphs(text) if p.strip()],metadata=meta,source_path=str(pdf_file),quality_score=quality.quality,routing_decision=quality.route,normalized_text=meta.get("normalized_text",""),entities=meta.get("entities",{}),headings=meta.get("headings",[]))
-                    if self.state_store and (physical_page%4==0 or physical_page==page_count) and physical_page!=last_progress:
-                        self.state_store.update_document(document_id,current_stage="EXTRACTING",current_page=physical_page); last_progress=physical_page
                     continue
                 try: page=self._load_page(pdf,index); raw_text=self._extract_page_text(page)
                 except Exception: page=self._load_page(pdf,index); raw_text=""
@@ -123,8 +123,9 @@ class PDFExtractor:
                         except Exception as exc: extraction.ocr_status="failed"; extraction.metadata["ocr_error"]=type(exc).__name__; extraction.metadata["quality_warning"]="Page requires OCR but OCR failed."
                 if self.state_store and self.state_store.get_document(document_id):
                     self.state_store.upsert_page(document_id,physical_page,extraction_status="COMPLETED" if extraction.text else "FAILED",ocr_status=extraction.ocr_status,extraction_method=extraction.extraction_method,text=extraction.text,processing_error=extraction.metadata.get("ocr_error"),checksum=hashlib.sha256(extraction.text.encode("utf-8")).hexdigest())
-                    if physical_page%4==0 or physical_page==page_count:
-                        self.state_store.update_document(document_id,current_stage="EXTRACTING",current_page=physical_page); last_progress=physical_page
+                    # Persist every page immediately so the UI can show the exact
+                    # page currently processed without waiting for a 4-page batch.
+                    self.state_store.update_document(document_id,current_stage="EXTRACTING",current_page=physical_page,total_pages=page_count)
                 yield extraction
         finally:
             if pdf is not None: pdf.close()
