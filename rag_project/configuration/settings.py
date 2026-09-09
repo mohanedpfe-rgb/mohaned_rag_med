@@ -8,6 +8,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from rag_project.configuration.config_i5_16gb import DEVICE_PRESETS, get_preset
+from rag_project.security import validate_storage_path
 
 
 @dataclass
@@ -52,7 +53,6 @@ class Settings:
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     ollama_failure_circuit_threshold: int = 5
     ollama_circuit_open_seconds: float = 30.0
-    # Universal mode favors coverage and explicit degradation over silent omission.
     ocr_enabled: bool = True
     auto_ocr: bool = True
     universal_pdf_mode: bool = True
@@ -101,7 +101,7 @@ class Settings:
 
     def __post_init__(self) -> None:
         self.device_mode = self.device_mode if self.device_mode in DEVICE_PRESETS else "i5_16gb"
-        self.project_root = Path(self.project_root).resolve()
+        self.project_root = Path(self.project_root).expanduser().resolve()
         self.ollama_base_url = str(self.ollama_base_url).strip().rstrip("/") or "http://127.0.0.1:11434"
         self.chunk_size = max(200, int(self.chunk_size))
         self.chunk_overlap = max(0, min(int(self.chunk_overlap), self.chunk_size - 1))
@@ -170,7 +170,7 @@ class Settings:
                     load_dotenv(candidate, override=False)
 
         default_root = Path(__file__).resolve().parents[2]
-        project_root = Path(os.getenv("PROJECT_ROOT", str(default_root))).resolve()
+        project_root = Path(os.getenv("PROJECT_ROOT", str(default_root))).expanduser().resolve()
         additional = project_root / ".env"
         if additional.is_file():
             load_dotenv(additional, override=False)
@@ -236,6 +236,19 @@ class Settings:
             multi_query_retrieval_enabled=cls._parse_bool(os.getenv("MULTI_QUERY_RETRIEVAL_ENABLED"), True),
             max_query_variants=cls._parse_int(os.getenv("MAX_QUERY_VARIANTS"), 8),
         )
+
+        runtime_paths = {
+            "incoming_dir": settings.incoming_dir,
+            "processed_dir": settings.processed_dir,
+            "failed_dir": settings.failed_dir,
+            "archive_dir": settings.archive_dir,
+            "vector_db_dir": settings.vector_db_dir,
+            "log_dir": settings.log_dir,
+            "ingestion_db_path": settings.ingestion_db_path,
+        }
+        for label, path in runtime_paths.items():
+            validate_storage_path(settings.project_root, path, label)
+
         for _dir in [settings.incoming_dir, settings.processed_dir, settings.failed_dir, settings.archive_dir, settings.vector_db_dir, settings.log_dir]:
             _dir.mkdir(parents=True, exist_ok=True)
         valid_levels = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
