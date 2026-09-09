@@ -108,7 +108,8 @@ def ollama_health(base_url: str) -> tuple[bool, str, list[str]]:
     try:
         response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=(2.5, 5))
         response.raise_for_status()
-        models = [str(x.get("name")) for x in response.json().get("models", []) if x.get("name")]
+        payload = response.json()
+        models = [str(x.get("name")) for x in payload.get("models", []) if x.get("name")] if isinstance(payload, dict) else []
         return True, "Ollama is reachable.", models
     except Exception as exc:
         return False, str(exc), []
@@ -131,6 +132,8 @@ def _status(v: Any) -> str:
 
 
 def _go(page: str) -> None:
+    if page not in PAGES:
+        page = "Overview"
     st.session_state["studio_nav"] = page
     st.rerun()
 
@@ -164,7 +167,7 @@ def sidebar(system):
         current = st.session_state.get("studio_nav", "Overview")
         st.markdown('<div class="nav-label">Workspace</div>', unsafe_allow_html=True)
         for item in ["Overview","Documents","Index them"]:
-            if st.button(("●  " if current == item else "○  ")+item, key=f"nav_{item}", use_container_width=True): _go({"Documents":"Overview","Index them":"Ingestion"}[item] if item != "Overview" else "Overview")
+            if st.button(("●  " if current == item else "○  ")+item, key=f"nav_{item}", use_container_width=True): _go(item)
         st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
         for item in ["Ingestion","Inspector","Settings"]:
             if st.button(("●  " if current == item else "○  ")+item, key=f"nav_{item}", use_container_width=True): _go(item)
@@ -186,7 +189,9 @@ def sidebar(system):
             if count: st.success(f"Added {count} PDF{'s' if count != 1 else ''}.")
         st.text_input("Incoming folder", value=str(system.settings.incoming_dir), key="exact_incoming")
         if st.button("Start all chunks", use_container_width=True, key="exact_start"):
-            try: st.session_state["studio_last_job"] = start_ingestion(system, st.session_state["exact_incoming"]); _go("Ingestion")
+            try:
+                st.session_state["studio_last_job"] = start_ingestion(system, st.session_state["exact_incoming"])
+                _go("Ingestion")
             except Exception as exc: st.error(str(exc))
         if st.button("Recreate runtime", use_container_width=True, key="exact_recreate"):
             get_system.clear(); _go("Overview")
@@ -203,8 +208,6 @@ def topbar():
 
 def overview(system):
     items, ready, active = docs(system), ready_docs(system), active_document_count(system)
-    vector = sum(_safe_int(d.get("vector_chunks", d.get("chunks", 0))) for d in items)
-    lexical = sum(_safe_int(d.get("lexical_chunks", 0)) for d in items)
     st.markdown('<div class="title-block"><div class="main-title">BookRAG Studio</div><div class="subtitle">Upload PDFs, index them, ask questions, inspect evidence</div><div class="cleanup">I understand cleanup is permanent | Clear all PDF data</div></div>', unsafe_allow_html=True)
     st.markdown('<div class="index-grid"><div class="index-panel"><div class="panel-head"><div class="panel-title">Vector chunks | Start all chunks</div><div class="panel-right">Total</div></div><div class="index-metrics">', unsafe_allow_html=True)
     st.markdown(f'<div class="index-metric"><div class="metric-icon">▣</div><div class="metric-value">{len(items)}</div><div class="metric-label">Documents</div></div><div class="index-metric"><div class="metric-icon">✓</div><div class="metric-value">{len(ready)}</div><div class="metric-label">Ready</div></div><div class="index-metric"><div class="metric-icon">◌</div><div class="metric-value">{active}</div><div class="metric-label">Processing</div></div></div></div>', unsafe_allow_html=True)
@@ -234,6 +237,31 @@ def overview(system):
     st.markdown('</div></div></div>', unsafe_allow_html=True)
 
 
+def documents(system):
+    items = docs(system)
+    st.markdown('<div class="health-panel"><div class="panel-head"><div class="panel-title">Documents</div><div class="panel-right">Indexed files</div></div>', unsafe_allow_html=True)
+    if not items:
+        st.markdown('<div class="glass-note">No documents have been uploaded or indexed yet.</div>', unsafe_allow_html=True)
+    else:
+        headers = ["Status","File","Pages","Chunks","Embeddings","Dimension","Stage","Error"]
+        st.markdown('<div class="data-wrap"><table class="data-table"><tr>' + ''.join(f'<th>{h}</th>' for h in headers) + '</tr>', unsafe_allow_html=True)
+        for d in items:
+            row = [
+                d.get("status", "N/A"),
+                d.get("file_name", d.get("filename", "N/A")),
+                d.get("total_pages", d.get("pages", "N/A")),
+                d.get("chunk_count", d.get("chunks", d.get("vector_chunks", "N/A"))),
+                d.get("embedding_count", d.get("embeddings", "N/A")),
+                d.get("embedding_dimension", d.get("dimension", "N/A")),
+                d.get("current_stage", d.get("stage", "N/A")),
+                d.get("error", ""),
+            ]
+            st.markdown('<tr>' + ''.join(f'<td>{_status(v) if i == 0 else _esc(v)}</td>' for i,v in enumerate(row)) + '</tr>', unsafe_allow_html=True)
+        st.markdown('</table></div>', unsafe_allow_html=True)
+    if st.button("Refresh documents", key="exact_documents_refresh", use_container_width=True): st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 def chat(system):
     available = ready_docs(system)
     st.markdown('<div class="query-panel"><div class="panel-title">Ask Your Documents</div><div class="mini-title">Grounded search</div>', unsafe_allow_html=True)
@@ -247,7 +275,8 @@ def chat(system):
         if not question.strip(): st.warning("Please enter a question.")
         elif not available: st.warning("No READY documents are available yet.")
         else:
-            st.session_state["console_answer"] = system.answer(question.strip(), metadata_filter={"document_id": selected_filter} if selected_filter else None)
+            try: st.session_state["console_answer"] = system.answer(question.strip(), metadata_filter={"document_id": selected_filter} if selected_filter else None)
+            except Exception as exc: st.error(f"Answer failed safely: {exc}")
     if st.button("Clear chat", key="exact_chat_clear"):
         st.session_state.pop("console_answer", None); st.session_state["studio_chat_nonce"] = nonce + 1; st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
@@ -260,34 +289,82 @@ def chat(system):
 
 
 def health(system):
-    ok,msg,models = ollama_health(system.settings.ollama_base_url)
-    rows=[("Ollama","PASS" if ok else "FAIL",msg),("Embedding","PASS",system.settings.embedding_model),("Vector index","READY","Persistent index"),("Generation","PASS",system.settings.generation_model)]
-    st.markdown('<div class="health-panel"><div class="panel-title">System Health</div><div class="data-wrap"><table class="data-table"><tr><th>Service</th><th>Status</th><th>Detail</th></tr>', unsafe_allow_html=True)
-    for a,b,c in rows: st.markdown(f'<tr><td>{a}</td><td>{_status(b)}</td><td>{_esc(c)}</td></tr>', unsafe_allow_html=True)
+    try:
+        report = system.health_report()
+    except Exception as exc:
+        report = {"ready": False, "embedding": {"ok": False, "error": str(exc)}, "index": {"status": "UNAVAILABLE", "error": str(exc)}, "audit": {"ok": False, "error": str(exc)}, "feature_contract": {"all_resolved": False}}
+    ollama_ok, ollama_msg, models = ollama_health(system.settings.ollama_base_url)
+    embedding = report.get("embedding", {}) if isinstance(report, dict) else {}
+    index = report.get("index", {}) if isinstance(report, dict) else {}
+    audit = report.get("audit", {}) if isinstance(report, dict) else {}
+    contract = report.get("feature_contract", {}) if isinstance(report, dict) else {}
+    index_status = str(index.get("status", "UNAVAILABLE")).upper()
+    embedding_ok = bool(embedding.get("ok"))
+    audit_ok = bool(audit.get("ok", audit.get("status") in {"PASS","READY","OK"}))
+    contract_ok = bool(contract.get("all_resolved", False))
+    rows = [
+        ("Ollama", "PASS" if ollama_ok else "FAIL", ollama_msg),
+        ("Embedding", "PASS" if embedding_ok else "FAIL", embedding.get("identity") or embedding.get("error") or system.settings.embedding_model),
+        ("Vector index", "READY" if index_status in {"READY","OK"} else index_status, index.get("error") or index_status),
+        ("Production contract", "PASS" if contract_ok else "FAIL", "All production features resolved" if contract_ok else "Production feature contract incomplete"),
+        ("Index audit", "PASS" if audit_ok else "FAIL", audit.get("error") or "Consistency checks complete" if audit_ok else "Audit failed"),
+    ]
+    overall_ready = bool(report.get("ready")) and ollama_ok
+    st.markdown('<div class="health-panel"><div class="panel-head"><div class="panel-title">System Health</div><div class="panel-right">' + ("Ready" if overall_ready else "Attention required") + '</div></div><div class="data-wrap"><table class="data-table"><tr><th>Service</th><th>Status</th><th>Detail</th></tr>', unsafe_allow_html=True)
+    for a,b,c in rows: st.markdown(f'<tr><td>{_esc(a)}</td><td>{_status(b)}</td><td>{_esc(c)}</td></tr>', unsafe_allow_html=True)
     st.markdown('</table></div></div>', unsafe_allow_html=True)
-    if st.button("Recheck index", key="exact_health_recheck"): st.write(system.verify_index())
-    if not ok: st.warning("Configured Ollama endpoint is unavailable.")
+    if models:
+        st.markdown('<div class="mini-title">Available Ollama models</div>', unsafe_allow_html=True)
+        st.write(models)
+    if st.button("Recheck index and health", key="exact_health_recheck"): st.rerun()
+    if not ollama_ok: st.warning("Configured Ollama endpoint is unavailable.")
 
 
-def ingestion(system):
-    job_id,job=None,None
-    for jid,j in get_jobs()["items"].items():
-        if j.get("status")=="RUNNING": job_id,job=jid,j; break
-    st.markdown('<div class="health-panel"><div class="panel-head"><div class="panel-title">Ingestion</div><div class="panel-right">Active progress</div></div>', unsafe_allow_html=True)
-    if job: st.info(f"Active progress · {Path(job['source_dir']).name} · {time.time()-job['started']:.1f}s"); st.progress(0.35,text="Processing PDF pipeline…")
-    else: st.caption("No ingestion worker is currently running.")
+def ingestion(system, *, index_mode: bool = False):
+    job_id, job = None, None
+    registry = get_jobs()
+    with registry["lock"]:
+        for jid, candidate in reversed(list(registry["items"].items())):
+            if candidate.get("status") == "RUNNING":
+                job_id, job = jid, candidate
+                break
+    title = "Index them" if index_mode else "Ingestion"
+    st.markdown(f'<div class="health-panel"><div class="panel-head"><div class="panel-title">{title}</div><div class="panel-right">Active progress</div></div>', unsafe_allow_html=True)
+    if job:
+        elapsed = max(0.0, time.time() - float(job.get("started", time.time())))
+        st.info(f"Active progress · {Path(job['source_dir']).name} · {elapsed:.1f}s")
+        st.progress(0.35,text="Processing PDF pipeline…")
+        st.caption("Progress refreshes when this page reruns. Use Refresh below while the worker is active.")
+    else:
+        st.caption("No ingestion worker is currently running.")
     rows=[]
     for d in docs(system): rows.append([d.get("status","N/A"),d.get("file_name",d.get("filename","N/A")),d.get("current_stage",d.get("stage","N/A")),d.get("current_page",d.get("page","N/A")),d.get("chunks",d.get("vector_chunks","N/A")),d.get("embedding_count",d.get("embeddings","N/A")),d.get("embedding_dimension",d.get("dimension","N/A")),d.get("error","")])
-    st.markdown('<div class="data-wrap"><table class="data-table"><tr>'+''.join(f'<th>{h}</th>' for h in ["Status","File","Stage","Page","Chunks","Embeddings","Dimension","Error"])+'</tr>',unsafe_allow_html=True)
-    for row in rows: st.markdown('<tr>'+''.join(f'<td>{_status(v) if i==0 else _esc(v)}</td>' for i,v in enumerate(row))+'</tr>',unsafe_allow_html=True)
-    st.markdown('</table></div></div>',unsafe_allow_html=True)
+    if rows:
+        st.markdown('<div class="data-wrap"><table class="data-table"><tr>'+''.join(f'<th>{h}</th>' for h in ["Status","File","Stage","Page","Chunks","Embeddings","Dimension","Error"])+'</tr>',unsafe_allow_html=True)
+        for row in rows: st.markdown('<tr>'+''.join(f'<td>{_status(v) if i==0 else _esc(v)}</td>' for i,v in enumerate(row))+'</tr>',unsafe_allow_html=True)
+        st.markdown('</table></div>',unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="glass-note">No document records are available yet.</div>', unsafe_allow_html=True)
+    if job_id:
+        current = registry["items"].get(job_id, {})
+        if current.get("status") == "COMPLETED": st.success("Ingestion completed successfully.")
+        elif current.get("status") == "FAILED": st.error(_esc(current.get("error") or "Ingestion failed."))
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Refresh progress", key=f"exact_ingestion_refresh_{'index' if index_mode else 'main'}", use_container_width=True): st.rerun()
+    with c2:
+        if st.button("Open documents", key=f"exact_ingestion_docs_{'index' if index_mode else 'main'}", use_container_width=True): _go("Documents")
+    st.markdown('</div>',unsafe_allow_html=True)
 
 
 def background(system):
     st.markdown('<div class="health-panel"><div class="panel-title">Background workers</div>',unsafe_allow_html=True)
-    items=list(get_jobs()["items"].values())
+    registry = get_jobs()
+    with registry["lock"]:
+        items = list(registry["items"].values())
     if not items: st.markdown('<div class="glass-note">No background ingestion jobs have been created yet.</div>',unsafe_allow_html=True)
     for j in reversed(items): st.markdown(f'<div class="event"><div class="event-copy">{_esc(Path(j.get("source_dir","")).name)}<div class="event-meta">{_esc(j.get("error") or "ingestion")}</div></div>{_status(j.get("status"))}</div>',unsafe_allow_html=True)
+    if st.button("Refresh workers", key="exact_background_refresh", use_container_width=True): st.rerun()
     st.markdown('</div>',unsafe_allow_html=True)
 
 
@@ -299,7 +376,9 @@ def inspector(system):
         labels=[str(d.get("file_name",d.get("filename",d.get("document_id","Document")))) for d in items]
         selected=items[st.selectbox("Document",range(len(items)),format_func=lambda i:labels[i],key="exact_inspector_doc")]
         for k,v in [("Status",selected.get("status")), ("Pages",selected.get("total_pages",selected.get("pages"))), ("Dimension",selected.get("embedding_dimension",selected.get("dimension"))), ("Version",selected.get("version_id",selected.get("version"))), ("Chunks",selected.get("chunk_count",selected.get("chunks"))), ("Document ID",selected.get("document_id"))]: st.markdown(f'<div class="event"><div class="event-copy">{_esc(k)}</div><div>{_esc(v)}</div></div>',unsafe_allow_html=True)
-        if st.button("Verify index",key="exact_verify"): st.write(system.verify_index(selected.get("document_id")))
+        if st.button("Verify index",key="exact_verify"): 
+            try: st.write(system.verify_index(selected.get("document_id")))
+            except Exception as exc: st.error(f"Index verification failed: {exc}")
         st.markdown('<div class="mini-title">Page checkpoints</div>',unsafe_allow_html=True); st.json(selected.get("page_checkpoints",[]))
         with st.expander("Raw metadata"): st.json(selected)
     st.markdown('</div>',unsafe_allow_html=True)
@@ -315,8 +394,12 @@ def settings(system):
         with c2: overlap=st.number_input("Chunk overlap",0,3999,int(s.chunk_overlap),10); temp=st.slider("Temperature",0.0,1.0,float(s.temperature),0.05); neighbor=st.checkbox("Neighbor expansion",value=bool(s.neighbor_expansion))
         apply=st.form_submit_button("Apply live settings",use_container_width=True)
     if apply:
-        if overlap>=chunk: st.error("Chunk overlap must be smaller than chunk size.")
-        else: st.success(f"Settings applied: {system.apply_settings_in_place({'ollama_base_url':host,'embedding_model':embedding,'generation_model':generation,'chunk_size':int(chunk),'chunk_overlap':int(overlap),'top_k':int(top),'temperature':float(temp),'vector_weight':float(vw),'neighbor_expansion':bool(neighbor)})}")
+        if overlap>=chunk:
+            st.error("Chunk overlap must be smaller than chunk size.")
+        else:
+            updates={'ollama_base_url':host,'embedding_model':embedding,'generation_model':generation,'chunk_size':int(chunk),'chunk_overlap':int(overlap),'top_k':int(top),'temperature':float(temp),'vector_weight':float(vw),'neighbor_expansion':bool(neighbor)}
+            try: st.success(f"Settings applied: {system.apply_settings_in_place(updates)}")
+            except Exception as exc: st.error(f"Settings could not be applied: {exc}")
     st.markdown('</div>',unsafe_allow_html=True)
 
 
@@ -325,13 +408,18 @@ def main():
     st.session_state.setdefault("studio_nav","Overview"); st.session_state.setdefault("studio_chat_nonce",0)
     system=get_system(); css(); st.markdown('<div class="studio-shell"></div>',unsafe_allow_html=True); sidebar(system); topbar()
     page=st.session_state["studio_nav"]
-    if page in {"Overview","Documents","Index them"}: overview(system)
-    elif page=="Chat": chat(system)
-    elif page=="Health": health(system)
-    elif page=="Ingestion": ingestion(system)
-    elif page=="Background": background(system)
-    elif page=="Inspector": inspector(system)
-    elif page=="Settings": settings(system)
+    if page == "Overview": overview(system)
+    elif page == "Documents": documents(system)
+    elif page == "Index them": ingestion(system, index_mode=True)
+    elif page == "Chat": chat(system)
+    elif page == "Health": health(system)
+    elif page == "Ingestion": ingestion(system)
+    elif page == "Background": background(system)
+    elif page == "Inspector": inspector(system)
+    elif page == "Settings": settings(system)
+    else:
+        st.session_state["studio_nav"] = "Overview"
+        st.rerun()
 
 
 if __name__ == "__main__": main()
