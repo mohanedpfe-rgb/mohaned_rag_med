@@ -3,6 +3,7 @@ import streamlit as st
 from rag_project.app import canva_exact_ui
 from rag_project.security import (
     clear_confirmation_ui,
+    register_session_upload,
     require_auth,
     require_clear_confirmation,
     validate_ollama_url,
@@ -91,6 +92,7 @@ def _secure_save_pdf(incoming, name, content):
     system = _secure_system()
     safe_incoming = validate_storage_path(system.settings.project_root, incoming, "incoming folder")
     validate_pdf_payload(name, content)
+    register_session_upload(len(content))
     return _ORIGINAL_SAVE_PDF(safe_incoming, name, content)
 
 
