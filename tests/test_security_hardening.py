@@ -14,6 +14,7 @@ from rag_project.security import (
     validate_query,
     validate_storage_path,
 )
+from rag_project.ingestion.state_store import IngestionStateStore
 
 
 def test_storage_path_is_jailed(tmp_path: Path):
@@ -82,12 +83,29 @@ def test_clear_phrase_is_explicit():
 def test_register_session_upload_limit(monkeypatch):
     import rag_project.security as security
 
-    class SessionState(dict):
-        pass
-
-    session = SessionState()
+    session = {}
     monkeypatch.setattr(security.st, "session_state", session)
     register_session_upload(MAX_SESSION_UPLOAD_BYTES)
     assert session["bookrag_upload_bytes"] == MAX_SESSION_UPLOAD_BYTES
     with pytest.raises(ValueError):
         register_session_upload(1)
+
+
+def test_document_update_rejects_untrusted_sql_identifiers(tmp_path: Path):
+    store = IngestionStateStore(tmp_path / "state.sqlite3")
+    document_id = "doc-1"
+    store.upsert_document(
+        {
+            "document_id": document_id,
+            "content_hash": "hash-1",
+            "file_path": str(tmp_path / "incoming" / "a.pdf"),
+            "file_name": "a.pdf",
+            "file_size": 1,
+            "parser_version": "test",
+            "ocr_config": "{}",
+            "chunking_config": "{}",
+            "embedding_model": "test",
+        }
+    )
+    with pytest.raises(ValueError):
+        store.update_document(document_id, **{"status = 'READY', error": "bad"})
