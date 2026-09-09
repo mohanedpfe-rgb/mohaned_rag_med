@@ -17,14 +17,11 @@ def _transition_guard(self, document_id, new_stage, **values):
         raise ValueError(f"Document {document_id!r} does not exist.")
     current = str(record.get("current_stage") or record.get("status") or "").upper()
     target = str(new_stage or "").upper()
-    # Once a document is terminal, changing it back into a live processing state
-    # is only valid after the canonical ingestor has first created a new RUNNING
-    # record and acquired a lease. This blocks accidental READY -> EXTRACTING
-    # regressions from UI/debug code while preserving normal re-ingestion.
+    # Terminal records are immutable through transition_document_state. A new
+    # ingestion must first atomically claim/update the document to a non-terminal
+    # state; this prevents stale/foreign leases from bypassing the state fence.
     if current in _TERMINAL and target not in _TERMINAL:
-        owner = record.get("lease_owner")
-        if not owner:
-            raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
+        raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
     return self._runtime_v5_original_transition(document_id, new_stage, **values)
 
 
