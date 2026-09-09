@@ -121,12 +121,7 @@ class OllamaLLMClient:
         raise error
 
     def generate_stream(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.2) -> Iterator[str]:
-        """Yield Ollama chat tokens as they arrive over the HTTP stream.
-
-        Streaming intentionally does not retry after the connection starts: once
-        output has been emitted, retrying would duplicate text. Callers receive
-        already-emitted tokens before any later transport error is raised.
-        """
+        """Yield Ollama chat tokens as they arrive over the HTTP stream."""
         if self._circuit_is_open():
             raise RuntimeError("Ollama circuit breaker is open; generation was skipped.")
 
@@ -139,6 +134,7 @@ class OllamaLLMClient:
         if system_prompt:
             payload["messages"].insert(0, {"role": "system", "content": str(system_prompt)})
 
+        response = None
         try:
             response = requests.post(
                 f"{self.base_url}/api/chat",
@@ -184,7 +180,8 @@ class OllamaLLMClient:
             self._record_failure(exc)
             raise RuntimeError("Ollama streaming generation failed.") from exc
         finally:
-            try:
-                response.close()
-            except Exception:
-                pass
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
