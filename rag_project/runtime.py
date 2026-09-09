@@ -19,13 +19,15 @@ def install() -> None:
         from rag_project.runtime_quality_gate import install as install_quality
         from rag_project.runtime_final_gate import install as install_final
         from rag_project.runtime_stability import install as install_stability
+        from rag_project.runtime_stability_v2 import install as install_stability_v2
 
         install_hardening()
         install_extra()
         install_recovery()
         install_quality()
         install_final()
-        # Final layer: replace stall-prone ingestion/extraction behaviors after all
-        # compatibility patches have been installed.
         install_stability()
+        # Last layer: state-machine correctness, preflight checks, safe table routing,
+        # cached Ollama health probes, and rollback of unsafe mid-document degradation.
+        install_stability_v2()
         _INSTALLED = True
