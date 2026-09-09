@@ -5,7 +5,7 @@ from typing import Any
 
 import streamlit as st
 
-from rag_project.ingestion.auto_supervisor import snapshot as supervisor_snapshot
+from rag_project.ingestion.responsive_supervisor import snapshot as supervisor_snapshot
 
 _ACTIVE = {
     "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR",
@@ -84,19 +84,9 @@ def _safe_events(system: Any, limit: int = 8) -> list[dict[str, Any]]:
 
 @st.fragment(run_every="1s")
 def render_live_runtime(system: Any) -> None:
-    """Render a continuously refreshed native Streamlit runtime rail.
-
-    The values come from durable SQLite state and the autonomous supervisor, so
-    the live rail does not depend on the current page, an upload button, or a
-    browser-side polling script. The percentage shown for cross-stage pipeline
-    progress is deliberately labeled as an estimate; page counters, stage, event
-    timestamps and supervisor counters are the authoritative live signals.
-    """
+    """Render live runtime state without blocking on document ingestion."""
     documents = _safe_documents(system)
-    active = [
-        doc for doc in documents
-        if str(doc.get("status") or "").upper() in _ACTIVE
-    ]
+    active = [doc for doc in documents if str(doc.get("status") or "").upper() in _ACTIVE]
     ready = sum(1 for doc in documents if str(doc.get("status") or "").upper() in {"READY", "COMPLETED"})
     supervisor = supervisor_snapshot(system)
     events = _safe_events(system)
@@ -108,12 +98,13 @@ def render_live_runtime(system: Any) -> None:
             enabled = bool(supervisor.get("enabled"))
             st.metric("AUTO INGEST", "ON" if enabled else "OFF", f"scan {_age(supervisor.get('last_scan_at'))}")
         with middle:
-            st.metric("LIVE QUEUE", len(active), f"{ready} ready")
+            in_flight = int(supervisor.get("in_flight") or 0)
+            st.metric("LIVE QUEUE", len(active), f"{ready} ready · {in_flight} worker")
         with right:
             action = str(supervisor.get("last_action") or "idle")
             st.caption("LIVE ACTIVITY")
             st.write(action)
-            st.caption(f"watcher: {_age(supervisor.get('started_at'))} · last event: {_age(latest.get('created_at'))}")
+            st.caption(f"watcher: {_age(supervisor.get('last_scan_at'))} · last event: {_age(latest.get('created_at'))}")
 
         for document in active[:4]:
             name = str(document.get("file_name") or document.get("document_id") or "document")
@@ -126,8 +117,7 @@ def render_live_runtime(system: Any) -> None:
                 st.caption(name)
                 st.progress(_progress(document), text=f"{stage} · {page_text}")
             with cols[1]:
-                started = document.get("ingestion_started_at")
-                st.metric("ELAPSED", _age(started).replace("ago", ""))
+                st.metric("ELAPSED", _age(document.get("ingestion_started_at")).replace("ago", ""))
             with cols[2]:
                 st.metric("HEARTBEAT", _age(document.get("heartbeat_at")))
 
@@ -139,7 +129,8 @@ def render_live_runtime(system: Any) -> None:
             f"completed {int(supervisor.get('completed') or 0)} · "
             f"failed {int(supervisor.get('failed') or 0)} · "
             f"recovered {int(supervisor.get('recovered') or 0)} · "
-            f"scans {int(supervisor.get('scans') or 0)}"
+            f"scans {int(supervisor.get('scans') or 0)} · "
+            f"in-flight {int(supervisor.get('in_flight') or 0)}"
         )
 
 
