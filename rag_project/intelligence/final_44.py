@@ -15,13 +15,7 @@ from rag_project.intelligence.advanced_reasoning import (
     resolve_conflicts,
     sentence_compress,
 )
-from rag_project.intelligence.evidence_guard import (
-    citation_firewall,
-    contradiction_report,
-    evidence_confidence,
-    grounding_decision,
-    verify_claims,
-)
+from rag_project.intelligence.evidence_guard import citation_firewall, contradiction_report, evidence_confidence, grounding_decision, verify_claims
 from rag_project.intelligence.pdf_intelligence import score_page_quality
 from rag_project.intelligence.query_intelligence import plan_query
 
@@ -29,7 +23,7 @@ FEATURE_IMPLEMENTATIONS: dict[str, str] = {
     "universal_pdf_routing": "rag_project.intelligence.pdf_intelligence:classify_document_pages",
     "page_quality_scoring": "rag_project.intelligence.pdf_intelligence:score_page_quality",
     "adaptive_ocr_routing": "rag_project.intelligence.pdf_intelligence:classify_document_pages",
-    "alternate_extractor_trigger": "rag_project.intelligence.pdf_intelligence:score_page_quality",
+    "alternate_extractor_trigger": "rag_project.parsing.pdf_extractor:PDFExtractor",
     "ocr_quality_detection": "rag_project.intelligence.pdf_intelligence:score_page_quality",
     "multi_representation_chunks": "rag_project.intelligence.pdf_intelligence:enrich_text",
     "numeric_normalization": "rag_project.intelligence.advanced_reasoning:normalize_numeric_measurements",
@@ -69,6 +63,7 @@ FEATURE_IMPLEMENTATIONS: dict[str, str] = {
     "resilient_generation_fallback": "rag_project.intelligence.god_mode:_answer_with_ladder",
     "index_visibility_guard": "rag_project.intelligence.atomic_versioning:install",
     "retrieval_fail_closed_behavior": "rag_project.intelligence.final_44:fail_closed",
+    "exact_feature_certification_contract": "rag_project.intelligence.production_contract:validate_feature_contract",
 }
 
 _INSTALL_LOCK = threading.RLock()
@@ -104,7 +99,8 @@ def fail_closed(*, query_ok: bool, retrieval_ok: bool, evidence_score: float, gr
 
 
 def build_final_trace(question: str, plan: Any, reasoning: dict[str, Any], decision: dict[str, Any], generation_path: str, timings: dict[str, float]) -> dict[str, Any]:
-    return {"version": "44.1", "question": question, "query_plan": plan.to_dict() if hasattr(plan, "to_dict") else plan, "decision": decision, "generation_path": generation_path, "timings_ms": {k: round(v, 2) for k, v in timings.items()}, "context": {"parent_child": len(reasoning.get("parent_child_hits", ())), "neighbors": len(reasoning.get("neighbor_hits", ())), "hops": len(reasoning.get("hop_evidence", ()))}}
+    structures = reasoning.get("structures", {})
+    return {"version": "44.1", "question": question, "query_plan": plan.to_dict() if hasattr(plan, "to_dict") else plan, "decision": decision, "generation_path": generation_path, "timings_ms": {k: round(v, 2) for k, v in timings.items()}, "context": {"parent_child": len(reasoning.get("parent_child_hits", ())), "neighbors": len(reasoning.get("neighbor_hits", ())), "hops": len(reasoning.get("hop_evidence", ()))}, "structures": {"tables": len(structures.get("tables", ())), "figures": len(structures.get("figures", ()))}}
 
 
 def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[..., dict[str, Any]]:
@@ -161,9 +157,13 @@ def _wrap_answer(original_answer: Callable[..., dict[str, Any]]) -> Callable[...
 
 
 def install() -> None:
-    """Compatibility no-op: production answer composition is explicit."""
+    """Compatibility adapter only; production answer composition is explicit."""
     global _INSTALLED
     with _INSTALL_LOCK:
+        if _INSTALLED:
+            return
+        from rag_project.intelligence.atomic_versioning import install as install_atomic_versioning
+        install_atomic_versioning()
         _INSTALLED = True
 
 
