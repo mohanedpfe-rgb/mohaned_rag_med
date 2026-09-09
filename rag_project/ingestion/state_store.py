@@ -20,6 +20,11 @@ _ALLOWED_DOCUMENT_UPDATE_KEYS = {
     "ingestion_metrics",
 }
 
+_ALLOWED_PAGE_UPDATE_KEYS = {
+    "extraction_status", "ocr_status", "extraction_method", "text", "cache_reference",
+    "processing_error", "checksum", "updated_at",
+}
+
 
 class IngestionStateStore:
     """Durable document and page checkpoints backed by SQLite."""
@@ -193,10 +198,7 @@ class IngestionStateStore:
         placeholders = ", ".join("?" for _ in values)
         assignments = ", ".join(f"{key}=excluded.{key}" for key in values if key != "document_id")
         with self._connect() as connection:
-            connection.execute(
-                f"INSERT INTO documents ({', '.join(values)}) VALUES ({placeholders}) ON CONFLICT(document_id) DO UPDATE SET {assignments}",
-                tuple(values.values()),
-            )
+            connection.execute(f"INSERT INTO documents ({', '.join(values)}) VALUES ({placeholders}) ON CONFLICT(document_id) DO UPDATE SET {assignments}", tuple(values.values()))
 
     def update_document(self, document_id: str, **values: Any) -> None:
         if not values:
@@ -262,15 +264,7 @@ class IngestionStateStore:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE documents
-                SET lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, modified_at = ?
-                WHERE document_id = ?
-                  AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)
-                """,
-                (worker_id, expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id, now.isoformat()),
-            )
+            cursor = connection.execute("UPDATE documents SET lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, modified_at = ? WHERE document_id = ? AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)", (worker_id, expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id, now.isoformat()))
         return cursor.rowcount == 1
 
     def heartbeat_document(self, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
@@ -288,14 +282,7 @@ class IngestionStateStore:
     def recover_stale_documents(self) -> int:
         now = utc_now()
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE documents SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED', index_state = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ?
-                WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING')
-                  AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
-                """,
-                (now, now),
-            )
+            cursor = connection.execute("UPDATE documents SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED', index_state = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", (now, now))
         return cursor.rowcount
 
     def transition_document_state(self, document_id: str, new_stage: str, **values: Any) -> None:
@@ -304,13 +291,9 @@ class IngestionStateStore:
             raise ValueError(f"Document {document_id!r} does not exist.")
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
-        terminal_states = {
-            "READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR",
-            "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL",
-        }
+        terminal_states = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL"}
         if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states:
             raise RuntimeError(f"Invalid terminal state regression: {current_stage} -> {new_stage_value}.")
-
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:
             values.setdefault("status", "READY")
@@ -325,18 +308,10 @@ class IngestionStateStore:
             values.setdefault("status", new_stage_value)
         else:
             values.setdefault("status", "RUNNING")
+        event_page = int(values.get("current_page", record.get("current_page") or 0))
+        event_total = int(values.get("total_pages", record.get("total_pages") or 0))
         self.update_document(document_id, **values)
-        self.record_event(
-            document_id,
-            stage=new_stage_value,
-            status=values.get("status", record.get("status")),
-            event_type="stage",
-            message=f"State transition {current_stage} -> {new_stage_value}",
-            details={"from_stage": current_stage, "to_stage": new_stage_value, **values},
-            current_page=int(record.get("current_page") or values.get("current_page", 0)),
-            total_pages=int(record.get("total_pages") or values.get("total_pages", 0)),
-            file_name=record.get("file_name"),
-        )
+        self.record_event(document_id, stage=new_stage_value, status=values.get("status", record.get("status")), event_type="stage", message=f"State transition {current_stage} -> {new_stage_value}", details={"from_stage": current_stage, "to_stage": new_stage_value, **values}, current_page=event_page, total_pages=event_total, file_name=record.get("file_name"))
 
     def is_document_ready(self, document_id: str) -> bool:
         record = self.get_document(document_id)
@@ -346,6 +321,9 @@ class IngestionStateStore:
         page_number = int(page_number)
         if page_number < 1:
             raise ValueError("Page number must be >= 1.")
+        unknown = set(values) - _ALLOWED_PAGE_UPDATE_KEYS
+        if unknown:
+            raise ValueError(f"Unsupported page update field(s): {', '.join(sorted(unknown))}")
         values.setdefault("extraction_status", "PENDING")
         values.setdefault("ocr_status", "not_required")
         values.setdefault("updated_at", utc_now())
@@ -372,7 +350,6 @@ class IngestionStateStore:
             connection.execute("DELETE FROM query_traces")
             connection.execute("DELETE FROM documents")
             connection.commit()
-        # VACUUM must run outside an active write transaction.
         with self._connect() as connection:
             connection.execute("VACUUM")
 
