@@ -25,6 +25,20 @@ def _metadata_dict(metadata: Any) -> Dict[str, Any]:
    return {"value": metadata}
 
 
+def _as_list(value: Any) -> list[Any]:
+   """Convert array-like connector values to plain Python lists without truth tests."""
+   if value is None:
+       return []
+   if isinstance(value, list):
+       return value
+   if isinstance(value, tuple):
+       return list(value)
+   try:
+       return list(value)
+   except (TypeError, ValueError):
+       return []
+
+
 class VectorStore:
    def __init__(self, persist_directory: str | Path, collection_name: str = "rag_documents"):
        self.persist_directory = Path(persist_directory)
@@ -99,10 +113,16 @@ class VectorStore:
            return 0
 
    def _resolve_dimension(self, embeddings: Sequence[Sequence[float]] | None = None) -> int:
-       if embeddings:
-           first = next(iter(embeddings), None)
-           if first is not None:
-               return len(first)
+       if embeddings is not None:
+           try:
+               if len(embeddings) > 0:
+                   first = embeddings[0]
+                   try:
+                       return len(first)
+                   except TypeError:
+                       pass
+           except (TypeError, ValueError, IndexError):
+               pass
        stored = self._collection_dim()
        if stored > 0:
            return stored
@@ -122,9 +142,9 @@ class VectorStore:
        return base
 
    def _normalize_records(self, records: dict[str, Any]) -> list[dict[str, Any]]:
-       ids = list(records.get("ids", []) or [])
-       documents = list(records.get("documents", []) or [])
-       metadatas = list(records.get("metadatas", []) or [])
+       ids = _as_list(records.get("ids"))
+       documents = _as_list(records.get("documents"))
+       metadatas = _as_list(records.get("metadatas"))
        results: list[dict[str, Any]] = []
        for index, item_id in enumerate(ids):
            metadata = self._coerce_metadata(metadatas[index] if index < len(metadatas) else {})
@@ -178,7 +198,7 @@ class VectorStore:
    def clear_all(self) -> None:
        """Delete all vector and lexical records while keeping the store usable."""
        records = self.collection.get(include=["metadatas"])
-       ids = [str(item_id) for item_id in records.get("ids", [])]
+       ids = [str(item_id) for item_id in _as_list(records.get("ids"))]
        if ids:
            self.collection.delete(ids=ids)
        with sqlite3.connect(self.lexical_database) as connection:
@@ -194,7 +214,7 @@ class VectorStore:
    def set_document_index_state(self, document_id: str, state: str) -> None:
       if document_id == "*":
         matches = self.collection.get(include=["metadatas"])
-        for item_id, metadata in zip(matches.get("ids", []), matches.get("metadatas", []), strict=False):
+        for item_id, metadata in zip(_as_list(matches.get("ids")), _as_list(matches.get("metadatas")), strict=False):
            meta = self._coerce_metadata(metadata)
            meta["index_state"] = state
            self.collection.update(ids=[str(item_id)], metadatas=[meta])
@@ -205,7 +225,7 @@ class VectorStore:
            )
         return
       matches = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
-      for item_id, metadata in zip(matches.get("ids", []), matches.get("metadatas", []), strict=False):
+      for item_id, metadata in zip(_as_list(matches.get("ids")), _as_list(matches.get("metadatas")), strict=False):
         meta = self._coerce_metadata(metadata)
         meta["index_state"] = state
         self.collection.update(ids=[str(item_id)], metadatas=[meta])
@@ -218,7 +238,7 @@ class VectorStore:
 
    def set_version_index_state(self, document_id: str, version_id: str, state: str) -> None:
       matches = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
-      for item_id, metadata in zip(matches.get("ids", []), matches.get("metadatas", []), strict=False):
+      for item_id, metadata in zip(_as_list(matches.get("ids")), _as_list(matches.get("metadatas")), strict=False):
         meta = self._coerce_metadata(metadata)
         if meta.get("version_id") == version_id:
            meta["index_state"] = state
@@ -241,41 +261,32 @@ class VectorStore:
    def delete_version(self, document_id: str, version_id: str) -> None:
        matches = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
        removable = []
-       for item_id, metadata in zip(matches.get("ids", []), matches.get("metadatas", []), strict=False):
+       for item_id, metadata in zip(_as_list(matches.get("ids")), _as_list(matches.get("metadatas")), strict=False):
            meta = self._coerce_metadata(metadata)
            if meta.get("version_id") == version_id:
                removable.append(str(item_id))
        if removable:
            self.collection.delete(ids=removable)
        with sqlite3.connect(self.lexical_database) as connection:
-           rows = connection.execute(
-               "SELECT id, metadata FROM lexical_documents"
-           ).fetchall()
-           matching = [
-               row[0] for row in rows
-               if (json.loads(row[1]).get("document_id") == document_id
-                   and json.loads(row[1]).get("version_id") == version_id)
-           ]
-           if matching:
-               connection.executemany(
-                   "DELETE FROM lexical_documents WHERE id = ?",
-                   [(item_id,) for item_id in matching],
-               )
+           connection.execute(
+               """
+               DELETE FROM lexical_documents
+               WHERE json_extract(metadata, '$.document_id') = ?
+                 AND json_extract(metadata, '$.version_id') = ?
+               """,
+               (str(document_id), str(version_id)),
+           )
+           connection.commit()
 
    def reconcile_index(self, document_id: str | None = None) -> Dict[str, Any]:
        query = {"document_id": document_id} if document_id else None
-       if query is not None:
-           records = self.collection.get(where=query, include=["metadatas", "documents"])
-       else:
-           records = self.collection.get(include=["metadatas", "documents"])
+       records = self.collection.get(where=query, include=["metadatas", "documents"]) if query is not None else self.collection.get(include=["metadatas", "documents"])
+       record_ids = _as_list(records.get("ids"))
+       metadata_values = _as_list(records.get("metadatas"))
+       document_values = _as_list(records.get("documents"))
        deduped: Dict[str, Dict[str, Any]] = {}
        removed = 0
-       for item_id, metadata, document in zip(
-           records.get("ids", []),
-           records.get("metadatas", []),
-           records.get("documents", []),
-           strict=False,
-       ):
+       for item_id, metadata, document in zip(record_ids, metadata_values, document_values, strict=False):
            meta = self._coerce_metadata(metadata)
            key = f"{meta.get('document_id','')}::{meta.get('chunk_id', str(item_id))}"
            if key in deduped:
@@ -284,7 +295,7 @@ class VectorStore:
            deduped[key] = {"id": str(item_id), "metadata": meta, "document": str(document)}
        if removed:
            old_ids = [entry["id"] for entry in deduped.values()]
-           all_ids = [str(item_id) for item_id in records.get("ids", [])]
+           all_ids = [str(item_id) for item_id in record_ids]
            stale = [item_id for item_id in all_ids if item_id not in old_ids]
            if stale:
                self.collection.delete(ids=stale)
@@ -300,18 +311,22 @@ class VectorStore:
            where={"document_id": document_id},
            include=["metadatas", "documents", "embeddings"],
        )
+       ids = _as_list(records.get("ids"))
+       metadatas_all = _as_list(records.get("metadatas"))
        if version_id is not None:
            keep = [
                index
-               for index, metadata in enumerate(records.get("metadatas", []))
+               for index, metadata in enumerate(metadatas_all)
                if self._coerce_metadata(metadata).get("version_id") == version_id
            ]
            records = {
                key: [values[index] for index in keep]
                for key, values in records.items()
-               if isinstance(values, list)
+               if isinstance(values, (list, tuple))
            }
-       metadatas = records.get("metadatas", [])
+           ids = _as_list(records.get("ids"))
+           metadatas_all = _as_list(records.get("metadatas"))
+       metadatas = metadatas_all
        issues: list[str] = []
        seen_chunk_ids: set[str] = set()
        for metadata in metadatas:
@@ -324,19 +339,17 @@ class VectorStore:
            seen_chunk_ids.add(chunk_id)
            if meta.get("index_state") not in {"READY", "BUILDING"}:
                issues.append(f"unexpected index_state: {meta.get('index_state')}")
-       embeddings = records.get("embeddings")
-       if embeddings is None:
-           embeddings = []
+       embeddings = _as_list(records.get("embeddings"))
        for vector in embeddings:
            if not self._valid_vector(vector, self._collection_dim()):
                issues.append("invalid semantic embedding")
-       valid = not issues and bool(records.get("ids"))
-       return {"document_id": document_id, "count": len(records.get("ids", [])), "valid": valid, "issues": issues}
+       valid = not issues and bool(ids)
+       return {"document_id": document_id, "count": len(ids), "valid": valid, "issues": issues}
 
    @staticmethod
    def _valid_vector(vector: Sequence[float], expected_dimension: int = 0) -> bool:
      try:
-        values = [float(value) for value in vector]
+        values = [float(value) for value in _as_list(vector)]
      except (TypeError, ValueError):
         return False
      return bool(
@@ -362,31 +375,35 @@ class VectorStore:
        embeddings: Sequence[Sequence[float]],
        ids: Sequence[str],
    ) -> None:
-       if not documents:
+       documents_list = _as_list(documents)
+       metadata_list = _as_list(metadatas)
+       embedding_list = _as_list(embeddings)
+       ids_list = _as_list(ids)
+       if not documents_list:
            return
-       if len(documents) != len(metadatas) or len(documents) != len(embeddings) or len(documents) != len(ids):
+       if len(documents_list) != len(metadata_list) or len(documents_list) != len(embedding_list) or len(documents_list) != len(ids_list):
            raise ValueError("documents, metadatas, embeddings, and ids must have the same length")
-       dim = self._resolve_dimension(embeddings)
+       dim = self._resolve_dimension(embedding_list)
        self._apply_collection_metadata(dim)
        normalized = []
-       for index, item in enumerate(documents):
-           metadata = self._coerce_metadata(metadatas[index])
+       for index, item in enumerate(documents_list):
+           metadata = self._coerce_metadata(metadata_list[index])
            metadata.setdefault("document_id", "unknown")
-           metadata.setdefault("chunk_id", ids[index])
+           metadata.setdefault("chunk_id", ids_list[index])
            metadata.setdefault("index_state", "READY")
            metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
            metadata.setdefault("page_numbers", [])
            normalized.append(metadata)
-           if not self._valid_vector(embeddings[index], dim):
+           if not self._valid_vector(embedding_list[index], dim):
                raise ValueError(f"Invalid semantic embedding at index {index}.")
        self.collection.add(
-           ids=[str(item) for item in ids],
-           documents=[str(item) for item in documents],
+           ids=[str(item) for item in ids_list],
+           documents=[str(item) for item in documents_list],
            metadatas=normalized,
-           embeddings=[list(map(float, vector)) for vector in embeddings],
+           embeddings=[list(map(float, vector)) for vector in embedding_list],
        )
        self._update_collection_identity(self.expected_identity)
-       self._upsert_lexical_records(documents, normalized, ids)
+       self._upsert_lexical_records(documents_list, normalized, ids_list)
 
    def add_lexical_documents(
        self,
@@ -394,20 +411,23 @@ class VectorStore:
        metadatas: Sequence[Dict[str, Any]],
        ids: Sequence[str],
    ) -> None:
-       if not documents:
+       documents_list = _as_list(documents)
+       metadata_list = _as_list(metadatas)
+       ids_list = _as_list(ids)
+       if not documents_list:
            return
-       if len(documents) != len(metadatas) or len(documents) != len(ids):
+       if len(documents_list) != len(metadata_list) or len(documents_list) != len(ids_list):
            raise ValueError("documents, metadatas, and ids must have the same length")
        normalized = []
-       for index, item in enumerate(documents):
-           metadata = self._coerce_metadata(metadatas[index])
+       for index, item in enumerate(documents_list):
+           metadata = self._coerce_metadata(metadata_list[index])
            metadata.setdefault("document_id", "unknown")
-           metadata.setdefault("chunk_id", ids[index])
+           metadata.setdefault("chunk_id", ids_list[index])
            metadata.setdefault("index_state", "BUILDING")
            metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
            metadata.setdefault("page_numbers", [])
            normalized.append(metadata)
-       self._upsert_lexical_records(documents, normalized, ids)
+       self._upsert_lexical_records(documents_list, normalized, ids_list)
 
    def compatibility_report(self, expected_identity: Any | None) -> Dict[str, Any]:
        stored = self._read_collection_identity()
@@ -456,9 +476,7 @@ class VectorStore:
            issues.append("Collection is empty.")
        try:
            records = self.collection.get(include=["embeddings"])
-           embeddings = records.get("embeddings")
-           if embeddings is None:
-               embeddings = []
+           embeddings = _as_list(records.get("embeddings"))
            invalid = sum(
                1 for vector in embeddings
                if not self._valid_vector(vector, report.get("collection_dimension") or 0)
@@ -466,11 +484,8 @@ class VectorStore:
            if invalid:
                issues.append(f"{invalid} invalid semantic embeddings.")
        except Exception as exc:
-           issues.append(f"Unable to validate stored embeddings: {exc}")
-       if not issues:
-           valid = True
-       else:
-           valid = False
+           issues.append(f"Unable to validate stored embeddings: {type(exc).__name__}: {exc}")
+       valid = not issues
        return {
            "valid": valid,
            "metadata_valid": report.get("metadata_valid", False),
@@ -507,25 +522,35 @@ class VectorStore:
        expected = self.expected_identity
        report = self.compatibility_report(expected)
        if not report["valid"]:
-           if "dimension mismatch" in report["message"]:
-               raise IndexCompatibilityError(report["message"])
            raise IndexCompatibilityError(report["message"])
-       if not embedding:
+       embedding_list = _as_list(embedding)
+       if not embedding_list:
            return self._as_query_result([], [], [])
        collection_dim = self._collection_dim()
-       if collection_dim and len(embedding) != collection_dim:
-           raise IndexCompatibilityError(f"dimension mismatch: expected {collection_dim}, got {len(embedding)}")
+       if collection_dim and len(embedding_list) != collection_dim:
+           raise IndexCompatibilityError(f"dimension mismatch: expected {collection_dim}, got {len(embedding_list)}")
+       if not self._valid_vector(embedding_list, collection_dim or 0):
+           raise IndexCompatibilityError("query embedding is not a valid finite non-zero vector")
        results = self.collection.query(
-           query_embeddings=[list(map(float, embedding))],
+           query_embeddings=[list(map(float, embedding_list))],
            n_results=max(1, int(n_results)),
            where=where,
            include=["documents", "metadatas", "distances"],
        )
-       ids = results.get("ids", [[]])[0] if "ids" in results and results["ids"] else []
-       documents = results.get("documents", [[]])[0] if "documents" in results and results["documents"] else []
-       metadatas = results.get("metadatas", [[]])[0] if "metadatas" in results and results["metadatas"] else []
-       distances = results.get("distances", [[]])[0] if "distances" in results and results["distances"] else []
-       return self._as_query_result([str(item) for item in ids], [str(item) for item in documents], [dict(item or {}) for item in metadatas], [float(item) for item in distances])
+       raw_ids = _as_list(results.get("ids"))
+       raw_documents = _as_list(results.get("documents"))
+       raw_metadatas = _as_list(results.get("metadatas"))
+       raw_distances = _as_list(results.get("distances"))
+       ids = _as_list(raw_ids[0]) if raw_ids and isinstance(raw_ids[0], (list, tuple)) else raw_ids
+       documents = _as_list(raw_documents[0]) if raw_documents and isinstance(raw_documents[0], (list, tuple)) else raw_documents
+       metadatas = _as_list(raw_metadatas[0]) if raw_metadatas and isinstance(raw_metadatas[0], (list, tuple)) else raw_metadatas
+       distances = _as_list(raw_distances[0]) if raw_distances and isinstance(raw_distances[0], (list, tuple)) else raw_distances
+       return self._as_query_result(
+           [str(item) for item in ids],
+           [str(item) for item in documents],
+           [dict(item or {}) if isinstance(item, dict) else {} for item in metadatas],
+           [float(item) for item in distances],
+       )
 
    def search_lexical(self, query: str, n_results: int = 5, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
        query = (query or "").strip()
@@ -542,7 +567,7 @@ class VectorStore:
        corpus = [json.loads(row[3]) for row in records]
        document_count = len(records)
        document_frequency = {
-           token: sum(token in tokens for tokens in corpus) for token in tokens
+           token: sum(token in row_tokens for row_tokens in corpus) for token in tokens
        }
        rank: list[tuple[float, dict[str, Any]]] = []
        for row, row_tokens in zip(records, corpus, strict=True):
