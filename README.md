@@ -22,6 +22,14 @@
 ---
 
 > [!IMPORTANT]
+> **🔐 DEFAULT BOOKRAG LOGIN PASSWORD: `becheikh_mohaned_rag`**
+>
+> This is the default password for opening the local Streamlit BookRAG workspace.
+> You can override it in your local `.env` with `BOOKRAG_ADMIN_PASSWORD`.
+>
+> **⚠️ Public/shared computers:** change the default password before exposing the application to anyone you do not fully trust.
+
+> [!CAUTION]
 > **This project is a document research tool, not a doctor.** Medical answers can be incomplete or wrong. Always verify important clinical information against the original source and qualified medical guidance.
 
 ## 🌟 What is BookRAG?
@@ -249,7 +257,17 @@ Or:
 python run_dev.py
 ```
 
-### 6. Add your first PDF
+### 6. 🔐 Unlock BookRAG
+
+When the login screen appears, use the clearly documented default password:
+
+```text
+becheikh_mohaned_rag
+```
+
+The password is also shown near the top of this README so users do not have to search through configuration files to find it.
+
+### 7. Add your first PDF
 
 1. Open **BookRAG Studio**.
 2. Use **Add PDFs** in the sidebar.
@@ -271,34 +289,34 @@ mohaned_rag_med/
 ├── app.py                         # Main application entry point
 ├── run_dev.py                     # Developer launch entry point
 ├── requirements.txt               # Human-readable dependency constraints
-├── requirements.in                 # Dependency source constraints
-├── requirements.lock               # Generated reproducible lockfile
-├── .env.example                    # Configuration example
-├── ARCHITECTURE.md                 # Architecture rules and ownership
+├── requirements.in                # Dependency source constraints
+├── requirements.lock              # Generated reproducible lockfile
+├── .env.example                   # Configuration example
+├── ARCHITECTURE.md                # Architecture rules and ownership
 │
 ├── rag_project/
-│   ├── application.py              # Composition root
-│   ├── runtime.py                  # Runtime policy bootstrap
+│   ├── application.py             # Composition root
+│   ├── runtime.py                 # Runtime policy bootstrap
 │   ├── app/
-│   │   ├── studio_ui.py            # Functional Streamlit studio
-│   │   ├── resilient_rag.py        # Production RAG service wrapper
-│   │   └── rag_system.py            # Core RAG implementation
-│   ├── chunking/                    # Chunk creation
-│   ├── citations/                   # Citation handling
-│   ├── configuration/               # Settings and hardware profile
-│   ├── embeddings/                  # Embedding service
-│   ├── evaluation/                  # Evaluation tools
-│   ├── generation/                  # Local LLM client
-│   ├── ingestion/                   # Document state + monitoring
-│   ├── ocr/                         # OCR service
-│   ├── parsing/                     # PDF parsing
-│   ├── reranking/                   # Cross-encoder reranker
-│   ├── retrieval/                   # Hybrid retrieval + context building
-│   ├── storage/                     # Chroma + lexical storage
-│   └── utils/                       # Shared helpers
+│   │   ├── studio_ui.py           # Functional Streamlit studio
+│   │   ├── resilient_rag.py       # Production RAG service wrapper
+│   │   └── rag_system.py           # Core RAG implementation
+│   ├── chunking/                   # Chunk creation
+│   ├── citations/                  # Citation handling
+│   ├── configuration/              # Settings and hardware profile
+│   ├── embeddings/                 # Embedding service
+│   ├── evaluation/                 # Evaluation tools
+│   ├── generation/                 # Local LLM client
+│   ├── ingestion/                  # Document state + monitoring
+│   ├── ocr/                        # OCR service
+│   ├── parsing/                    # PDF parsing
+│   ├── reranking/                  # Cross-encoder reranker
+│   ├── retrieval/                  # Hybrid retrieval + context building
+│   ├── storage/                    # Chroma + lexical storage
+│   └── utils/                      # Shared helpers
 │
-├── tests/                           # Automated safety and regression tests
-└── .github/workflows/               # CI + dependency lock automation
+├── tests/                          # Automated safety and regression tests
+└── .github/workflows/              # CI + dependency lock automation
 ```
 
 ---
@@ -425,6 +443,12 @@ Start from:
 
 Important values include the Ollama base URL, embedding model, generation model, retrieval settings, chunking settings, and hardware profile.
 
+The default login is:
+
+```text
+BOOKRAG_ADMIN_PASSWORD=becheikh_mohaned_rag
+```
+
 Keep secrets and machine-specific `.env` files out of Git.
 
 ---
@@ -519,7 +543,9 @@ Before calling any release “production certified,” run the full CI suite and
 
 <div align="center">
 
-### Made for people who want their documents to stay in control. 🔐📚
+### 🔐 Default password: `becheikh_mohaned_rag`
+
+**Made for people who want their documents to stay in control.** 📚
 
 **Local first · Evidence first · Simple to use · Built to grow**
 
