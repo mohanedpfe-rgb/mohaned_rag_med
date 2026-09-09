@@ -3,14 +3,16 @@ from __future__ import annotations
 import ipaddress
 import os
 import secrets
+import socket
+import threading
 import time
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlparse
 
 import streamlit as st
 
 AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
-REMOTE_OLLAMA_ENV = "BOOKRAG_ALLOW_REMOTE_OLLAMA"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
@@ -18,6 +20,17 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_PDF_PAGES = 500
 MAX_QUERY_CHARS = 4000
+MAX_EVIDENCE_CHARS = 12000
+MAX_CONVERSATION_CHARS = 8000
+AUTH_SESSION_SECONDS = 1800
+MAX_FAILED_AUTH = 5
+GLOBAL_CONCURRENT_INGESTS = 2
+GLOBAL_CONCURRENT_ANSWERS = 4
+
+_INGEST_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_INGESTS)
+_ANSWER_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_ANSWERS)
+_RATE_LOCK = threading.Lock()
+_RATE_STATE: dict[str, tuple[float, int]] = {}
 
 
 def _truthy(value: str | None) -> bool:
@@ -33,48 +46,68 @@ def max_pdf_pages() -> int:
     return max(1, min(value, 5000))
 
 
+def _session_actor() -> str:
+    actor = st.session_state.get("bookrag_actor_id")
+    if not actor:
+        actor = secrets.token_hex(16)
+        st.session_state["bookrag_actor_id"] = actor
+    return actor
+
+
+def audit_event(action: str, *, detail: str = "") -> None:
+    """Write a minimal local audit record without secrets or document contents."""
+    from datetime import datetime, timezone
+    log_dir = Path(os.getenv("LOG_DIR", "logs")).expanduser()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_action = "".join(ch for ch in str(action) if ch.isalnum() or ch in "._-")[:80]
+    safe_detail = sanitize_log_text(detail)[:500]
+    line = f"{datetime.now(timezone.utc).isoformat()} actor={_session_actor()} action={safe_action} detail={safe_detail}\n"
+    with (log_dir / "security_audit.log").open("a", encoding="utf-8") as handle:
+        handle.write(line)
+
+
+def sanitize_log_text(value: object) -> str:
+    text = str(value or "")
+    text = "".join(ch for ch in text if ch in "\n\r\t" or unicodedata.category(ch)[0] != "C")
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
 def require_auth() -> None:
-    """Require an explicit admin password before exposing the application."""
+    """Require an explicit administrator password before exposing the application."""
     password = os.getenv(AUTH_ENV, "").strip()
     if len(password) < 12:
         st.error(
             "BookRAG is locked because BOOKRAG_ADMIN_PASSWORD is not configured "
-            "with a password of at least 12 characters. Set it in the process environment "
-            "before starting Streamlit."
+            "with a password of at least 12 characters."
         )
         st.stop()
 
     now = time.time()
     if st.session_state.get("bookrag_authenticated"):
-        if now - float(st.session_state.get("bookrag_auth_at", 0)) <= 1800:
+        if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
             return
         st.session_state.pop("bookrag_authenticated", None)
+        audit_event("session_expired")
 
-    st.markdown(
-        "<div style='max-width:520px;margin:14vh auto 0;padding:28px;border:1px solid #273449;"
-        "border-radius:18px;background:#111a2a;color:#f7f9fc'>"
-        "<h2 style='margin:0 0 8px'>BookRAG Studio</h2>"
-        "<p style='color:#8794a8;margin-bottom:18px'>Private local application — authentication required.</p>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
     attempt = st.text_input("Admin password", type="password", key="bookrag_login_password")
     if st.button("Unlock BookRAG", type="primary", key="bookrag_unlock"):
         if secrets.compare_digest(attempt, password):
             st.session_state["bookrag_authenticated"] = True
             st.session_state["bookrag_auth_at"] = now
             st.session_state["bookrag_failed_attempts"] = 0
+            audit_event("login_success")
             st.rerun()
         st.session_state["bookrag_failed_attempts"] = int(st.session_state.get("bookrag_failed_attempts", 0)) + 1
+        audit_event("login_failure")
         st.error("Invalid password.")
-        if st.session_state["bookrag_failed_attempts"] >= 5:
+        if st.session_state["bookrag_failed_attempts"] >= MAX_FAILED_AUTH:
+            audit_event("login_lockout")
             st.warning("Too many failed attempts in this session. Restart Streamlit to reset the lock.")
             st.stop()
     st.stop()
 
 
 def clear_confirmation_ui() -> None:
-    """Render a typed confirmation and synchronize the legacy checkbox gate."""
     with st.sidebar:
         phrase = st.text_input(
             "Type CLEAR ALL PDF DATA to enable deletion",
@@ -89,6 +122,7 @@ def clear_confirmation_ui() -> None:
 def require_clear_confirmation() -> None:
     if not secrets.compare_digest(str(st.session_state.get("bookrag_clear_phrase", "")), CLEAR_PHRASE):
         raise PermissionError("Typed confirmation required before clearing PDF data.")
+    audit_event("clear_authorized")
 
 
 def validate_storage_path(project_root: Path, candidate: str | Path, label: str = "path") -> Path:
@@ -101,35 +135,48 @@ def validate_storage_path(project_root: Path, candidate: str | Path, label: str 
     return target
 
 
+def _resolved_ips(host: str) -> set[str]:
+    try:
+        return {item[4][0] for item in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
+    except OSError as exc:
+        raise ValueError("Ollama hostname could not be resolved safely.") from exc
+
+
+def _is_disallowed_ip(value: str) -> bool:
+    ip = ipaddress.ip_address(value)
+    return bool(ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified or ip.is_private)
+
+
 def validate_ollama_url(value: str) -> str:
     raw = str(value or "").strip().rstrip("/")
     parsed = urlparse(raw)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Ollama URL must be an HTTP(S) URL without embedded credentials.")
-    host = parsed.hostname
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        raise ValueError("Ollama URL must contain only scheme, host and optional port.")
+    host = parsed.hostname.lower()
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
         ip = None
 
-    allow_remote = _truthy(os.getenv(REMOTE_OLLAMA_ENV))
+    if host in {"localhost", "ip6-localhost"} or (ip and ip.is_loopback):
+        return raw
+
     allowlist = {h.strip().lower() for h in os.getenv(OLLAMA_ALLOWLIST_ENV, "").split(",") if h.strip()}
-    if host.lower() in {"localhost", "ip6-localhost"} or ip and ip.is_loopback:
-        return raw
-    if host.lower() in allowlist:
-        return raw
-    if not allow_remote:
-        raise ValueError(
-            "Remote Ollama endpoints are disabled. Use 127.0.0.1/localhost or explicitly "
-            "configure BOOKRAG_OLLAMA_ALLOWLIST / BOOKRAG_ALLOW_REMOTE_OLLAMA."
-        )
-    if ip and (ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-        raise ValueError("Ollama endpoint uses a disallowed network address.")
+    if not allowlist or host not in allowlist:
+        raise ValueError("Remote Ollama endpoints are disabled unless the exact hostname is in BOOKRAG_OLLAMA_ALLOWLIST.")
+
+    addresses = {str(ipaddress.ip_address(x)) for x in _resolved_ips(host)}
+    if not addresses or any(_is_disallowed_ip(addr) for addr in addresses):
+        raise ValueError("Ollama hostname resolves to a private, local, reserved, or otherwise unsafe network address.")
     return raw
 
 
 def validate_query(value: str) -> str:
     question = str(value or "").strip()
+    if not question:
+        raise ValueError("Question cannot be empty.")
     if len(question) > MAX_QUERY_CHARS:
         raise ValueError(f"Question is too long; maximum is {MAX_QUERY_CHARS} characters.")
     return question
@@ -160,3 +207,59 @@ def register_session_upload(size_bytes: int) -> None:
     if total + size > MAX_SESSION_UPLOAD_BYTES:
         raise ValueError("This session exceeded the 500 MB cumulative upload security limit.")
     st.session_state["bookrag_upload_bytes"] = total + size
+
+
+def sanitize_model_text(text: str, *, limit: int) -> str:
+    """Normalize untrusted text before placing it into model context."""
+    value = unicodedata.normalize("NFKC", str(text or ""))
+    value = "".join(ch for ch in value if ch in "\n\r\t" or unicodedata.category(ch)[0] != "C")
+    if len(value) > limit:
+        value = value[:limit] + "\n[TRUNCATED_UNTRUSTED_TEXT]"
+    return value
+
+
+def acquire_ingest_slot(timeout: float = 0.1) -> bool:
+    return _INGEST_LIMITER.acquire(timeout=max(0.0, timeout))
+
+
+def release_ingest_slot() -> None:
+    _INGEST_LIMITER.release()
+
+
+def acquire_answer_slot(timeout: float = 0.1) -> bool:
+    return _ANSWER_LIMITER.acquire(timeout=max(0.0, timeout))
+
+
+def release_answer_slot() -> None:
+    _ANSWER_LIMITER.release()
+
+
+def consume_rate_limit(bucket: str, *, limit: int, window_seconds: float) -> bool:
+    now = time.monotonic()
+    key = f"{_session_actor()}::{bucket}"
+    with _RATE_LOCK:
+        start, count = _RATE_STATE.get(key, (now, 0))
+        if now - start >= window_seconds:
+            start, count = now, 0
+        if count >= limit:
+            return False
+        _RATE_STATE[key] = (start, count + 1)
+        return True
+
+
+def enforce_private_permissions(root: Path) -> None:
+    """Best-effort restrictive permissions for local medical data on POSIX."""
+    if os.name == "nt":
+        return
+    root = Path(root)
+    if not root.exists():
+        return
+    try:
+        root.chmod(0o700)
+        for path in root.rglob("*"):
+            if path.is_dir():
+                path.chmod(0o700)
+            elif path.is_file():
+                path.chmod(0o600)
+    except OSError:
+        pass
