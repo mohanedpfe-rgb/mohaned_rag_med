@@ -32,7 +32,7 @@ def install() -> None:
         install_stability()
         install_stability_v2()
         install_stability_v3()
-        # Final application-level policy: process scheduling, query concurrency,
-        # page watchdogs, safe clear semantics, and consistency auditing.
+        # Last layer: lease fencing, clear-vs-ingestion protection, and serialized
+        # production answer generation.
         install_stability_v4()
         _INSTALLED = True
