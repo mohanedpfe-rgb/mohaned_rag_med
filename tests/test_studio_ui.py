@@ -59,6 +59,17 @@ def test_canva_redesign_has_complete_functional_paths() -> None:
     assert "Latest ingestion completed" in source or "Latest ingestion failed" in source
 
 
+def test_chat_clear_is_streamlit_safe() -> None:
+    source = _source()
+
+    # Clearing chat rotates the widget key instead of mutating a live widget's
+    # session-state value after Streamlit has instantiated it.
+    assert "studio_chat_nonce" in source
+    assert 'key=f"studio_question_{chat_nonce}"' in source
+    assert 'st.session_state["studio_chat_nonce"] = chat_nonce + 1' in source
+    assert 'st.session_state["studio_question"] = ""' not in source
+
+
 def test_canva_redesign_keeps_functional_state_and_refresh_paths() -> None:
     source = _source()
 
@@ -79,3 +90,4 @@ def test_settings_and_ingestion_have_input_guards() -> None:
     assert "Folder does not exist" in source
     assert "if not ready" in source
     assert "disabled=not ready" in source
+    assert "path.suffix.lower() == \".pdf\"" in source
