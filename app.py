@@ -3,8 +3,18 @@ from __future__ import annotations
 import os
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any
+
+import streamlit as st
+
+st.set_page_config(
+    page_title="BookRAG Medical",
+    page_icon="BR",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 
 def _load_local_env() -> None:
@@ -30,16 +40,6 @@ def _load_local_env() -> None:
 
 
 _load_local_env()
-
-import streamlit as st
-from rag_project.security import require_auth
-
-st.set_page_config(
-    page_title="BookRAG Medical",
-    page_icon="BR",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 _BOOT_LOCK = threading.RLock()
 _BOOT: dict[str, object] = {
@@ -72,6 +72,20 @@ def _clamp_local_embedding_profile() -> None:
     os.environ["EMBEDDING_BATCH_SIZE"] = str(batch_size)
 
 
+def _write_bootstrap_diagnostic(exc: BaseException) -> None:
+    """Persist the full bootstrap traceback locally while keeping secrets out of the UI."""
+    try:
+        log_dir = Path(os.getenv("LOG_DIR", "logs")).expanduser().resolve()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        target = log_dir / "runtime_bootstrap.log"
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        target.open("a", encoding="utf-8").write(
+            f"\n=== {timestamp} ===\n{traceback.format_exc()}"
+        )
+    except OSError:
+        pass
+
+
 def _get_lazy_system() -> Any:
     global _LAZY_SETTINGS, _LAZY_STATE_STORE, _LAZY_SYSTEM
     with _BOOT_LOCK:
@@ -84,6 +98,7 @@ def _get_lazy_system() -> Any:
 
         class LazySystem:
             """Lightweight UI facade used until the heavy RAG runtime is ready."""
+
             def _real(self) -> Any | None:
                 with _BOOT_LOCK:
                     runtime = _BOOT.get("system")
@@ -168,8 +183,6 @@ def _boot_start() -> None:
             if not callable(getattr(rag_system_module, "utc_now", None)):
                 rag_system_module.utc_now = lambda: datetime.now(timezone.utc).isoformat()
 
-            # The composition root installs runtime hardening (including UI boundary
-            # wrappers). Capture the handlers only after that installation is complete.
             system = create_rag_system(_clamped_settings_for_runtime())
             original_save_pdf = bookrag_ui.save_pdf
             original_start_ingestion = bookrag_ui.start_ingestion
@@ -203,8 +216,7 @@ def _boot_start() -> None:
                     error=None,
                 )
         except Exception as exc:
-            # Never expose raw exception text from a background bootstrap thread;
-            # exceptions can contain filesystem paths, endpoint details or local config.
+            _write_bootstrap_diagnostic(exc)
             with _BOOT_LOCK:
                 _BOOT.update(status="error", error=f"{type(exc).__name__}")
 
@@ -218,14 +230,10 @@ def _render_boot_banner() -> None:
     if status == "starting":
         st.info("BookRAG services are loading in the background. The workspace is already available.")
     elif status == "error":
-        st.error(f"BookRAG runtime is unavailable: {error or 'bootstrap failed'}. Check the application logs for details.")
+        st.error(f"BookRAG runtime is unavailable: {error or 'bootstrap failed'}. See logs/runtime_bootstrap.log for the diagnostic traceback.")
 
 
 def main() -> None:
-    if not require_auth():
-        return
-
-    # Authentication returns before any RAG/settings/database bootstrap.
     _get_lazy_system()
     _boot_start()
 

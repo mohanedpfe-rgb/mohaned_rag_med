@@ -136,7 +136,11 @@ def _model_digest(self: Any) -> str | None:
         response = requests.get(f"{base_url}/api/tags", timeout=(1.5, 4.0))
         response.raise_for_status()
         payload = response.json()
+        if not isinstance(payload, dict):
+            return None
         for item in payload.get("models", []) or []:
+            if not isinstance(item, dict):
+                continue
             name = str(item.get("name") or item.get("model") or "")
             if name == model or name.split(":", 1)[0] == model.split(":", 1)[0]:
                 digest = str(item.get("digest") or "").strip()
@@ -173,10 +177,9 @@ def install() -> None:
         VectorStore._original_runtime_final_version_state = VectorStore.set_version_index_state
         VectorStore.set_version_index_state = _safe_version_state
 
-    current_property = EmbeddingService.identity
-    if not getattr(current_property.fget, "_runtime_final_wrapped", False):
-        original_getter = current_property.fget
-
+    current_property = getattr(EmbeddingService, "identity", None)
+    original_getter = getattr(current_property, "fget", None) if isinstance(current_property, property) else None
+    if callable(original_getter) and not getattr(original_getter, "_runtime_final_wrapped", False):
         def identity_with_digest(self: Any):
             profile = original_getter(self)
             if profile is None or getattr(self, "test_mode", False) or getattr(self, "provider", "") != "ollama":
