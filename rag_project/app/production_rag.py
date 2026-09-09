@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from rag_project.app.resilient_rag import ResilientRAGSystem
+from rag_project.ingestion import robust_ingestor
 from rag_project.intelligence.god_mode import _god_answer, audit_god_mode_index
 from rag_project.intelligence.final_44 import _wrap_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
@@ -13,13 +14,29 @@ from rag_project.intelligence.production_contract import (
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
-    """Explicit production composition of retrieval, reasoning, safety, and privacy policies."""
+    """Explicit production composition with resilient incremental PDF ingestion."""
 
     _certified_god_answer = _wrap_answer(_god_answer)
 
     def __init__(self, settings: Any | None = None):
         super().__init__(settings)
         self._production_feature_contract = validate_feature_contract()
+
+    def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
+        """Use incremental ingestion so large PDFs do not stall at the final write."""
+        self.embedding_startup_error = None
+        self._ensure_embedding_dimension()
+        if self.embedding_startup_error:
+            return {
+                "status": "failed",
+                "file_name": getattr(pdf_path, "name", str(pdf_path)),
+                "error": f"FAILED_EMBEDDING: {self.embedding_startup_error}",
+            }
+        return robust_ingestor.robust_ingest_file(self, pdf_path)
+
+    def cancel_all_ingests(self) -> int:
+        """Cancel ingestion jobs owned by the resilient ingestion pipeline."""
+        return robust_ingestor.cancel_all_ingests()
 
     def answer(self, question: str, metadata_filter: Dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._production_feature_contract["all_resolved"]:
@@ -68,6 +85,8 @@ class ProductionRAGSystem(ResilientRAGSystem):
             "medical_safety_policy": True,
             "privacy_safe_trace": True,
             "feature_count": 44,
+            "incremental_ingestion": True,
+            "bounded_embedding_commit": True,
         }
         index_status = str(checks.get("index", {}).get("status", "READY")).upper()
         checks["ready"] = bool(
