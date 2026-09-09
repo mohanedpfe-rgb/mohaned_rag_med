@@ -18,10 +18,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install dependencies
+      - name: Install deterministic dependency set
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
       - name: Validate installed environment
         run: python -m pip check
       - name: Compile source
@@ -31,7 +31,6 @@ jobs:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
-        # Embedding backend tests mock both the HTTP call and local Ollama health probe.
         run: python -m pytest -q
 
   security-audit:
@@ -41,17 +40,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install runtime dependencies
+      - name: Install deterministic dependency set
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements.lock
       - name: Install audit tooling
         run: python -m pip install --upgrade pip-audit
       - name: Audit resolved runtime dependencies
         run: |
-          # ChromaDB currently has four upstream advisories with no patched
-          # release. Keep those findings explicitly tracked while failing the
-          # build on all other known vulnerabilities in the resolved environment.
           python -m pip_audit --strict \
             --ignore-vuln PYSEC-2026-311 \
             --ignore-vuln CVE-2026-45830 \
