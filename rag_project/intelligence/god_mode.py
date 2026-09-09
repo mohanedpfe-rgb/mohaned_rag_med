@@ -134,22 +134,24 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         self._ensure_embedding_dimension()
         compatibility = self.vector_store.compatibility_report(self.embedding_service.identity)
     except Exception as exc:
-        return {"status": "INTERNAL_ERROR", "answer": "The retrieval index is temporarily unavailable.", "error": str(exc), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": "INTERNAL_ERROR", "answer": "The retrieval index is temporarily unavailable.", "error": type(exc).__name__, "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
     if str(compatibility.get("status", "")).upper() != "READY":
         return {"status": compatibility.get("status", "NOT_READY"), "answer": compatibility.get("message", "The index is not ready."), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
     try:
         from rag_project.retrieval.metadata_filter import MetadataFilter
         where = MetadataFilter.build(metadata_filter)
     except Exception:
-        where = None
+        # A malformed metadata filter must never broaden retrieval accidentally.
+        return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
     if not hits:
         return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
     try:
         alignment = self.evaluate_evidence_alignment(plan.normalized, hits[: max(int(self.settings.top_k) * 3, 12)])
-    except Exception:
-        alignment = {"decision": "PARTIALLY_SUPPORTED", "answerability": 0.25, "local_context_strength": 0.2, "contradiction": 0.0}
-    if alignment.get("decision") == "NOT_SUPPORTED":
+    except Exception as exc:
+        self.logger.exception("Evidence-alignment evaluation failed")
+        alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
+    if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"}:
         return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment}
     selected = hits[: max(int(self.settings.top_k) * 3, 12)]
     try:
