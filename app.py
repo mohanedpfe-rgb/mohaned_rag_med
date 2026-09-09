@@ -7,6 +7,7 @@ import streamlit as st
 from rag_project.app import bookrag_ui
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.bookrag_ui import main as ui_main
+from rag_project.ingestion.auto_supervisor import start as start_auto_supervisor
 from rag_project.security import (
     register_session_upload,
     require_auth,
@@ -47,8 +48,8 @@ def _secure_system():
         if "ollama_base_url" in clean:
             clean["ollama_base_url"] = validate_ollama_url(clean["ollama_base_url"])
         for key in (
-            "incoming_dir", "processed_dir", "failed_dir", "archive_dir",
-            "vector_db_dir", "log_dir", "ingestion_db_path",
+            "incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir",
+            "log_dir", "ingestion_db_path",
         ):
             if key in clean:
                 clean[key] = validate_storage_path(system.settings.project_root, clean[key], key)
@@ -93,6 +94,11 @@ bookrag_ui.ollama_health = _secure_ollama_health
 def main() -> None:
     if not require_auth():
         return
+    system = _secure_system()
+    # Start one autonomous, process-level watcher after authentication. The UI
+    # remains a consumer of durable state; ingestion does not depend on a button
+    # click or on the browser session staying on the Documents page.
+    start_auto_supervisor(system, interval_seconds=3.0)
     ui_main()
 
 
