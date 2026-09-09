@@ -16,6 +16,19 @@ _FIGURE = ("figure", "fig.", "image", "images", "diagram", "chart", "graph", "il
 _STOP = {"what", "does", "the", "and", "for", "with", "which", "from", "that", "this", "about", "have", "into", "dans", "avec", "pour", "les", "des", "est", "sont", "une", "sur", "ما", "ماذا", "كيف", "هل", "عن", "من", "هذا", "هذه"}
 
 
+def _contains_term(text: str, term: str) -> bool:
+    """Match intent keywords as words/phrases, not arbitrary substrings."""
+    haystack = (text or "").casefold()
+    needle = (term or "").casefold().strip()
+    if not needle:
+        return False
+    return bool(re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE))
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(_contains_term(text, term) for term in terms)
+
+
 @dataclass(frozen=True)
 class QueryPlan:
     original: str
@@ -47,7 +60,6 @@ def extract_query_entities(query: str) -> tuple[str, ...]:
     raw = normalize_query(query)
     tokens = re.findall(r"[\wÀ-ÿ'/-]{3,}", raw.casefold())
     out: list[str] = []
-    # Preserve multi-word quoted terms and biomedical-ish token forms.
     for quoted in re.findall(r"[\"“]([^\"”]+)[\"”]", raw):
         q = re.sub(r"\s+", " ", quoted.strip())
         if q and q.casefold() not in out:
@@ -76,7 +88,6 @@ def decompose_query(query: str) -> tuple[str, ...]:
     if not q:
         return ()
     pieces = _split_top_level(q)
-    # Comparison questions frequently hide two entity retrieval targets in one sentence.
     if len(pieces) == 1 and re.search(r"\bversus\b|\bbetween\b", q, re.I):
         pieces = re.split(r"\bversus\b|\bbetween\b|\band\b", q, flags=re.I)
         pieces = [p.strip(" ?!;,.") for p in pieces if p.strip()]
@@ -84,20 +95,19 @@ def decompose_query(query: str) -> tuple[str, ...]:
 
 
 def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
-    low = normalized.casefold()
-    if any(term in low for term in _COMPARISON):
+    if _contains_any(normalized, _COMPARISON):
         return "comparison"
-    if any(term in low for term in _NUMERIC):
+    if _contains_any(normalized, _NUMERIC):
         return "numeric"
-    if any(term in low for term in _DEFINITION):
+    if _contains_any(normalized, _DEFINITION):
         return "definition"
-    if any(term in low for term in _RELATION):
+    if _contains_any(normalized, _RELATION):
         return "relationship"
-    if any(term in low for term in _NAV):
+    if _contains_any(normalized, _NAV):
         return "navigation"
-    if any(term in low for term in _FIGURE):
+    if _contains_any(normalized, _FIGURE):
         return "figure_lookup"
-    if any(term in low for term in _TABLE):
+    if _contains_any(normalized, _TABLE):
         return "table_lookup"
     if len(subqueries) > 1:
         return "multi_part"
@@ -124,17 +134,21 @@ def _make_variants(normalized: str, intent: str, entities: tuple[str, ...], *, n
 def plan_query(query: str) -> QueryPlan:
     original = query or ""
     normalized = normalize_query(original)
-    low = normalized.casefold()
     subqueries = decompose_query(normalized)
     entities = extract_query_entities(normalized)
-    numeric = any(term in low for term in _NUMERIC)
-    table = numeric or any(term in low for term in _TABLE)
-    figure = any(term in low for term in _FIGURE)
-    comparison = any(term in low for term in _COMPARISON)
-    relation = any(term in low for term in _RELATION)
-    navigation = any(term in low for term in _NAV)
+    numeric = _contains_any(normalized, _NUMERIC)
+    table = numeric or _contains_any(normalized, _TABLE)
+    figure = _contains_any(normalized, _FIGURE)
+    comparison = _contains_any(normalized, _COMPARISON)
+    relation = _contains_any(normalized, _RELATION)
+    navigation = _contains_any(normalized, _NAV)
     intent = classify_intent(normalized, subqueries)
-    multi_hop = len(subqueries) > 1 or relation or comparison or any(k in low for k in ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب"))
+    multi_hop = (
+        len(subqueries) > 1
+        or relation
+        or comparison
+        or _contains_any(normalized, ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب"))
+    )
     variants = _make_variants(normalized, intent, entities, numeric=numeric, table=table, figure=figure)
     boosts = {
         "lexical": 1.20 if numeric or navigation else 1.0,
