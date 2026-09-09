@@ -61,7 +61,7 @@ class OllamaLLMClient:
                 return False
             response.raise_for_status()
             return True
-        except requests.RequestException as exc:
+        except requests.RequestException:
             self.last_error = "Ollama health check failed."
             return False
 
@@ -121,12 +121,7 @@ class OllamaLLMClient:
         raise error
 
     def generate_stream(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.2) -> Iterator[str]:
-        """Yield Ollama chat tokens as they arrive over the HTTP stream.
-
-        A streaming response is only considered successful after Ollama sends its
-        terminal ``done`` event. If the connection ends early, the caller receives
-        a failure instead of a silently truncated answer being marked healthy.
-        """
+        """Yield Ollama chat tokens as they arrive over the HTTP stream."""
         if self._circuit_is_open():
             raise RuntimeError("Ollama circuit breaker is open; generation was skipped.")
 
@@ -140,7 +135,6 @@ class OllamaLLMClient:
             payload["messages"].insert(0, {"role": "system", "content": str(system_prompt)})
 
         response = None
-        done = False
         try:
             response = requests.post(
                 f"{self.base_url}/api/chat",
@@ -176,14 +170,11 @@ class OllamaLLMClient:
                     if key in data:
                         final_metrics[key] = data[key]
                 if bool(data.get("done")):
-                    done = True
                     self.last_metrics = final_metrics or None
                     self._record_success()
                     return
 
-            if not done:
-                self.last_metrics = final_metrics or None
-                raise RuntimeError("Ollama streaming response ended before the terminal done event.")
+            raise RuntimeError("streaming response ended before the terminal done event")
         except (requests.RequestException, ValueError, TypeError, RuntimeError) as exc:
             self._record_failure(exc)
             raise RuntimeError("Ollama streaming generation failed.") from exc
