@@ -33,7 +33,7 @@ def test_500_page_reasoning_stays_bounded_and_cross_page_aware():
     ]
     result = full_reasoning_pass("What dose is reported and which figure is referenced?", hits[:12], hits, max_context_chars=9000)
     assert result["route"]
-    assert result["structures"]["figures"] >= 1
+    assert len(result["structures"]["figures"]) >= 1
     assert result["hop_evidence"]
     assert len(result["compressed_context"]) <= 9000
     # The graph expansion is deliberately bounded rather than scanning all 500 pages into context.
