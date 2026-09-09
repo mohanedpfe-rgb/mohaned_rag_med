@@ -36,7 +36,7 @@ BookRAG lets you talk to your own PDF documents.
 
 Instead of asking a general AI model to guess from memory, BookRAG first finds relevant passages inside your indexed documents and then asks a local language model to answer using that evidence.
 
-The basic idea:
+The basic idea is:
 
 ```text
 PDFs
@@ -215,3 +215,336 @@ python -m venv .venv
 ```
 
 Linux/macOS:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install the dependencies
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+For reproducible dependency installation, use `requirements.lock` when it is available.
+
+### 4. Install Ollama
+
+Install Ollama on your computer, start it, and make sure it answers locally.
+
+Then pull the models used by the default profile:
+
+```bash
+ollama pull nomic-embed-text
+ollama pull llama3.2:3b
+```
+
+The exact model names can be changed from configuration if you prefer another local model.
+
+### 5. Start the application
+
+```bash
+streamlit run app.py
+```
+
+Or:
+
+```bash
+python run_dev.py
+```
+
+### 6. 🔐 Configure the administrator password
+
+Before starting the application, create `.env` from `.env.example` and set:
+
+```text
+BOOKRAG_ADMIN_PASSWORD=<a unique random secret of at least 12 characters>
+```
+
+There is no built-in/default password.
+
+### 7. Add your first PDF
+
+1. Open **BookRAG Studio**.
+2. Use **Add PDFs** in the sidebar.
+3. Pick a PDF.
+4. Press **Start ingestion**.
+5. Wait until the document becomes **READY**.
+6. Open **Chat** and ask a question.
+7. Open **Inspector** to see the pages and vectors behind the answer.
+
+That is the complete basic workflow.
+
+---
+
+## 📁 Project layout
+
+```text
+mohaned_rag_med/
+│
+├── app.py                         # Main application entry point
+├── run_dev.py                     # Developer launch entry point
+├── requirements.txt               # Human-readable dependency constraints
+├── requirements.in                # Dependency source constraints
+├── requirements.lock              # Generated reproducible lockfile
+├── .env.example                   # Configuration example
+├── ARCHITECTURE.md                # Architecture rules and ownership
+│
+├── rag_project/
+│   ├── application.py             # Composition root
+│   ├── runtime.py                 # Runtime policy bootstrap
+│   ├── app/
+│   │   ├── studio_ui.py           # Functional Streamlit studio
+│   │   ├── resilient_rag.py       # Production RAG service wrapper
+│   │   └── rag_system.py           # Core RAG implementation
+│   ├── chunking/                   # Chunk creation
+│   ├── citations/                  # Citation handling
+│   ├── configuration/              # Settings and hardware profile
+│   ├── embeddings/                 # Embedding service
+│   ├── evaluation/                 # Evaluation tools
+│   ├── generation/                 # Local LLM client
+│   ├── ingestion/                  # Document state + monitoring
+│   ├── ocr/                        # OCR service
+│   ├── parsing/                    # PDF parsing
+│   ├── reranking/                  # Cross-encoder reranker
+│   ├── retrieval/                  # Hybrid retrieval + context building
+│   ├── storage/                    # Chroma + lexical storage
+│   └── utils/                      # Shared helpers
+│
+├── tests/                          # Automated safety and regression tests
+└── .github/workflows/              # CI + dependency lock automation
+```
+
+---
+
+## 🏗️ Architecture in simple words
+
+The most important rule is:
+
+> **The UI should not know how the internals are assembled.**
+
+The application enters through one composition root:
+
+```text
+app.py
+   ↓
+Studio UI
+   ↓
+application.create_rag_system()
+   ↓
+Resilient RAG service
+   ↓
+Retriever / reranker / embeddings / storage / generation
+```
+
+This makes it easier to replace a component later without rewriting the whole application.
+
+The runtime hardening layer installs reliability policies before the main service is constructed, and the project now keeps that bootstrap in one explicit place.
+
+See `ARCHITECTURE.md` for the project-level rules.
+
+---
+
+## ⚙️ Default hardware profile
+
+The project is tuned for a modest local computer rather than assuming a large GPU server.
+
+The current profile targets roughly:
+
+| Setting | Default direction |
+|---|---|
+| CPU profile | i5 / 16 GB RAM class |
+| Embedding batch size | 4 |
+| Ollama concurrency | 1 |
+| Ingestion workers | 2 |
+| Chunk size | 600 |
+| Chunk overlap | 100 |
+| Context budget | 3200 tokens |
+| OCR | Disabled by default |
+
+These are practical defaults, not universal laws. Your own document collection may benefit from different values.
+
+---
+
+## 🔒 Safety and reliability notes
+
+This repository contains several defensive behaviors that are easy to miss in a beginner project.
+
+### Prompt-injection resistant evidence handling
+Retrieved PDF text is treated as **document data**, not trusted instructions. The generation layer is explicitly told not to obey commands that appear inside evidence.
+
+### No silent support for weak questions
+Very short, malformed, or low-signal questions can be rejected before generation instead of producing a confident-looking guess.
+
+### Encrypted / malformed PDFs
+Documents that cannot be safely classified or opened are handled as failures instead of being treated as successfully indexed.
+
+### Physical page identity is preserved
+Printed page numbers and physical PDF page positions are kept conceptually separate so citations and checkpoints do not silently drift.
+
+### Partial embedding failure
+The ingestion path is designed to degrade safely rather than pretending that a partially embedded document is complete.
+
+### Safe file replacement
+Cross-filesystem moves use copy-to-temporary-file and replace semantics rather than assuming every filesystem behaves exactly like the local disk.
+
+---
+
+## 🧪 Testing
+
+Run the full test suite with:
+
+```bash
+python -m pytest -q
+```
+
+For a lightweight compile check:
+
+```bash
+python -m compileall -q rag_project app.py run_dev.py
+```
+
+The CI workflow exercises the project on Python 3.11 and 3.12 with a low-resource/local-test configuration.
+
+---
+
+## 📊 Evaluation
+
+The repository includes evaluation code and datasets under `data/eval/` and `rag_project/evaluation/`.
+
+The goal is not simply:
+
+> “Did the LLM say something reasonable?”
+
+The more useful questions are:
+
+- Did retrieval find the right evidence?
+- Did reranking improve the candidate order?
+- Is the answer supported?
+- Are citations aligned with claims?
+- Does the system abstain when evidence is weak?
+- Does behavior remain stable across English, French, and Arabic queries?
+
+For production work, **retrieval quality and evidence alignment matter as much as the final generated prose**.
+
+---
+
+## 🛠️ Configuration
+
+Start from:
+
+```text
+.env.example
+```
+
+Important values include the Ollama base URL, embedding model, generation model, retrieval settings, chunking settings, and hardware profile.
+
+Set the administrator password only in your private local `.env`:
+
+```text
+BOOKRAG_ADMIN_PASSWORD=<your-random-secret>
+```
+
+Keep secrets and machine-specific `.env` files out of Git.
+
+---
+
+## 🧹 Data management
+
+The Studio sidebar contains a cleanup action for managed document data.
+
+Use it carefully: cleanup is intentionally destructive because it removes managed indexing/application state.
+
+Generated databases, caches, OCR artifacts, and local runtime state are ignored by Git where appropriate.
+
+---
+
+## 🔁 Dependency locking
+
+The project keeps two layers:
+
+```text
+requirements.in  →  human-maintained dependency constraints
+requirements.lock →  generated fully resolved lockfile
+```
+
+GitHub Actions is configured to regenerate the lockfile when dependency inputs change.
+
+This gives you a readable source constraint file **and** a path toward reproducible installs.
+
+---
+
+## 🌱 Growing the project later
+
+The current architecture is intentionally suitable for a single-machine or small-server deployment.
+
+When the project grows, the natural next steps are:
+
+1. move more hardening behavior from compatibility/runtime patches into the owning core services
+2. introduce stronger end-to-end integration tests with representative PDFs
+3. add persistent job orchestration if multiple application processes need to share ingestion workers
+4. separate local storage from a production object/index backend when the dataset becomes large
+5. add stronger automated retrieval/answer quality gates before deployment
+
+These are scaling paths, not requirements for the basic local application.
+
+---
+
+## 🧑‍💻 Contributing
+
+A good change should be:
+
+```text
+small → testable → observable → documented
+```
+
+Before opening a contribution, run:
+
+```bash
+python -m compileall -q rag_project app.py run_dev.py
+python -m pytest -q
+```
+
+Keep generated data, model artifacts, local vector stores, and Python bytecode out of commits.
+
+---
+
+## 🏆 Project quality goals
+
+The project is explicitly built around five engineering goals:
+
+| Goal | What it means here |
+|---|---|
+| 🧱 Proper architecture | Clear ownership and one application composition path |
+| ✨ Clean code | Small responsibilities, typed boundaries, understandable behavior |
+| 📈 Scalable | Bounded work, isolated indexing, versioned data, safe concurrency |
+| 🔧 Maintainable | Tests, configuration, documentation, observable state |
+| 🕰️ Built for the long run | Recovery, compatibility checks, deterministic dependencies, migration-friendly design |
+
+The target is not to make the code look impressive.
+
+The target is to make it **easy to trust, easy to debug, and safe to improve**.
+
+---
+
+## 📌 Current status
+
+**Project stage:** production-hardening / local production candidate.
+
+The core architecture and runtime safety controls have been significantly strengthened, and the user interface has been rebuilt around real persisted state and explicit working actions.
+
+Before calling any release “production certified,” run the full CI suite and validate the application against the real PDFs and hardware you intend to use.
+
+---
+
+<div align="center">
+
+### 🔐 No default password — explicit local admin secret required
+
+**Made for people who want their documents to stay in control.** 📚
+
+**Local first · Evidence first · Simple to use · Built to grow**
+
+</div>
