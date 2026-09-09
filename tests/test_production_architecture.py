@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from rag_project.app.production_rag import ProductionRAGSystem
 from rag_project.application import runtime_contract
+from rag_project.intelligence.final_44 import validate_feature_registry
 from rag_project.intelligence.god_mode import GOD_MODE_FEATURES, report
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy, is_high_risk_medical_query
 
@@ -15,12 +16,16 @@ def test_production_pipeline_is_explicit() -> None:
     assert callable(ProductionRAGSystem.answer)
 
 
-def test_44_feature_contract_is_real_registry_shape() -> None:
+def test_44_feature_contract_is_executable_registry() -> None:
     assert len(GOD_MODE_FEATURES) == 44
     assert len(set(GOD_MODE_FEATURES)) == 44
     state = report()
     assert state["feature_count"] == 44
-    assert state["monkey_patch_answer"] is False
+    assert state["answer_monkey_patch"] is False
+    registry = validate_feature_registry()
+    assert registry["count"] == 44
+    assert registry["expected"] == 44
+    assert registry["ok"] is True, registry["errors"]
 
 
 def test_high_risk_medical_query_is_detected() -> None:
