@@ -4,8 +4,7 @@ from pathlib import Path
 
 
 def _source(path: str) -> str:
-    root = Path(__file__).resolve().parents[1]
-    return (root / path).read_text(encoding="utf-8")
+    return (Path(__file__).resolve().parents[1] / path).read_text(encoding="utf-8")
 
 
 def test_active_app_uses_canva_exact_runtime() -> None:
@@ -81,18 +80,19 @@ def test_canva_geometry_contract_is_explicit() -> None:
         "left:388px", "top:360px", "width:802px", "height:202px",
         "left:1210px", "width:573px", "top:694px",
         "left:388px", "top:694px", "width:802px",
-        "top:600px", "height:74px",
-        "top:694px!important",
-        "top:405px", "height:158px",
+        "top:600px", "height:74px", "top:405px", "height:158px",
     ):
         assert marker in app or marker in exact
 
 
 def test_no_bottom_panel_overlap_in_runtime_css() -> None:
     source = _source("app.py")
-    assert ".query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:74px" in source
-    assert ".health-panel{position:fixed!important;left:388px!important;top:694px!important;width:802px!important;height:236px" in source
-    assert ".inspector-panel{position:fixed!important;left:1210px!important;top:694px!important;width:573px!important;height:236px" in source
+    query = ".query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:74px"
+    health = ".health-panel{position:fixed!important;left:388px!important;top:694px!important;width:802px!important;height:236px"
+    inspector = ".inspector-panel{position:fixed!important;left:1210px!important;top:694px!important;width:573px!important;height:236px"
+    assert query in source
+    assert health in source
+    assert inspector in source
 
 
 def test_visual_system_matches_canva_style_language() -> None:
