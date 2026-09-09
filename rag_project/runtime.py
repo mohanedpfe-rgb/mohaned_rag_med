@@ -20,6 +20,7 @@ def install() -> None:
         from rag_project.runtime_final_gate import install as install_final
         from rag_project.runtime_stability import install as install_stability
         from rag_project.runtime_stability_v2 import install as install_stability_v2
+        from rag_project.runtime_stability_v3 import install as install_stability_v3
 
         install_hardening()
         install_extra()
@@ -27,7 +28,8 @@ def install() -> None:
         install_quality()
         install_final()
         install_stability()
-        # Last layer: state-machine correctness, preflight checks, safe table routing,
-        # cached Ollama health probes, and rollback of unsafe mid-document degradation.
         install_stability_v2()
+        # Final application-level corrections: the production subclass override,
+        # non-blocking health snapshots, answer serialization, and state monotonicity.
+        install_stability_v3()
         _INSTALLED = True
