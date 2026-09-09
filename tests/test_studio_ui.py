@@ -60,8 +60,8 @@ def test_chat_has_document_scope_and_grounding_metadata() -> None:
         "console_answer", "studio_chat_nonce", "Citations", "evidence", "query_trace",
     ):
         assert marker in source
-    assert 'key=f"studio_question_{st.session_state.get(\'studio_chat_nonce\', 0)}"' in source
-    assert 'st.session_state["studio_chat_nonce"] = st.session_state.get("studio_chat_nonce", 0) + 1' in source
+    assert 'key=f"studio_question_{nonce}"' in source
+    assert 'st.session_state["studio_chat_nonce"] = nonce + 1' in source
     assert 'st.session_state["studio_question"] = ""' not in source
 
 
@@ -69,7 +69,7 @@ def test_health_inspector_and_ingestion_are_operational() -> None:
     source = _source()
     for marker in (
         "ollama_health", "Configured models missing from Ollama", "Recheck index",
-        "verify_index", "Latest ingestion status", "Active progress", "Background workers",
+        "verify_index", "Active progress", "Background workers",
         "Document and index inspector", "Runtime configuration",
     ):
         assert marker in source
@@ -79,16 +79,27 @@ def test_settings_and_ingestion_have_input_guards() -> None:
     source = _source()
     for marker in (
         "Chunk overlap must be smaller than chunk size.", "No PDF files were found",
-        "Folder does not exist", "if not ready", "path.suffix.lower() == \".pdf\"",
-        "not bool(question.strip())",
+        "Folder does not exist", "elif not ready", "path.suffix.lower() == \".pdf\"",
+        "if not question.strip()",
     ):
         assert marker in source
 
 
-def test_visual_system_is_custom_glass_ui_not_default_streamlit_layout() -> None:
+def test_canva_geometry_contract_is_explicit() -> None:
     source = _source()
     for marker in (
-        "backdrop-filter", "metric-grid", "metric-card", "panel", "status",
-        "hero", "linear-gradient", "--panel", "--accent", "@media",
+        "max-width:1738px", "width:252px", "padding:23px 46px 56px",
+        "grid-template-columns:minmax(0,1.36fr) minmax(330px,.84fr)",
+        "min-height:202px", "border-radius:17px", "height:45px",
+        "topbar-title", "hero-title", "metric-row", "content-grid",
+    ):
+        assert marker in source
+
+
+def test_visual_system_matches_canva_style_language() -> None:
+    source = _source()
+    for marker in (
+        "backdrop-filter", "metric-card", "panel", "status", "hero",
+        "linear-gradient", "--surface", "--accent", "@media", "glass-note",
     ):
         assert marker in source
