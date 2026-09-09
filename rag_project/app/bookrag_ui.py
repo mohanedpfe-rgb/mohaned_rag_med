@@ -15,68 +15,53 @@ from rag_project.application import create_rag_system
 from rag_project.configuration.settings import Settings
 
 PAGES = ["Home", "Documents", "Live Processing", "Ask BookRAG", "Inspector", "System", "Settings"]
-ACTIVE_STAGES = {
-    "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING",
-    "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING", "INTERRUPTED", "RECOVERING",
-}
-STAGE_INFO = {
-    "RUNNING": ("Starting", "The document has entered the processing pipeline."),
-    "DISCOVERED": ("Found PDF", "The PDF was accepted and is being prepared."),
-    "VALIDATING": ("Checking PDF", "The PDF structure and document type are being checked."),
-    "EXTRACTING": ("Reading pages", "BookRAG is reading the PDF page by page."),
-    "OCR": ("Reading scanned pages", "OCR is reading pages that do not contain usable text."),
-    "CHUNKING": ("Preparing sections", "Extracted text is being split into searchable sections."),
-    "EMBEDDING": ("Creating semantic search", "Search vectors are being generated for the sections."),
-    "INDEXING": ("Building index", "Vectors and lexical records are being written to the search index."),
-    "VALIDATING_INDEX": ("Checking index", "The new index is being checked before it becomes searchable."),
-    "READY": ("Ready", "This PDF can now be used for grounded questions."),
-    "COMPLETED": ("Ready", "This PDF can now be used for grounded questions."),
-    "FAILED": ("Needs attention", "Processing stopped because an error occurred."),
-    "FAILED_EMBEDDING": ("Embedding failed", "The embedding service could not create search vectors."),
-    "INTERRUPTED": ("Interrupted", "Processing stopped before the PDF was completed."),
-    "RECOVERING": ("Recovering", "BookRAG is preparing the document for another attempt."),
+ACTIVE = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING", "INTERRUPTED", "RECOVERING"}
+STAGES = {
+    "RUNNING": ("Starting", "The document has entered the pipeline."),
+    "DISCOVERED": ("Discovered", "The PDF was accepted and queued."),
+    "VALIDATING": ("Validating", "Checking the PDF structure and safety."),
+    "EXTRACTING": ("Extracting", "Reading the document page by page."),
+    "OCR": ("OCR", "Recovering text from scanned pages."),
+    "CHUNKING": ("Chunking", "Turning extracted content into retrieval sections."),
+    "EMBEDDING": ("Embedding", "Creating semantic search vectors."),
+    "INDEXING": ("Indexing", "Writing semantic and lexical search records."),
+    "VALIDATING_INDEX": ("Verifying", "Checking the new index before publication."),
+    "READY": ("Ready", "Available for grounded research questions."),
+    "COMPLETED": ("Ready", "Available for grounded research questions."),
+    "FAILED": ("Failed", "Processing stopped and needs attention."),
+    "FAILED_EMBEDDING": ("Embedding failed", "Semantic indexing could not complete."),
+    "INTERRUPTED": ("Interrupted", "Processing stopped before completion."),
+    "RECOVERING": ("Recovering", "Preparing a safe recovery attempt."),
 }
 
 
-def _esc(value: Any) -> str:
-    return html.escape(str(value if value is not None else "—"))
+def _esc(v: Any) -> str:
+    return html.escape(str(v if v is not None else "—"))
 
 
-def _int(value: Any, default: int = 0) -> int:
+def _int(v: Any, default: int = 0) -> int:
     try:
-        return int(value)
+        return int(v)
     except (TypeError, ValueError):
         return default
 
 
-def _float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _utc(value: Any) -> datetime | None:
-    if not value:
+def _utc(v: Any) -> datetime | None:
+    if not v:
         return None
     try:
-        stamp = str(value).replace("Z", "+00:00")
-        parsed = datetime.fromisoformat(stamp)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        d = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d.astimezone(timezone.utc)
     except (TypeError, ValueError):
         return None
 
 
 def _elapsed(start: Any, end: Any | None = None) -> float:
-    started = _utc(start)
-    if not started:
+    d = _utc(start)
+    if not d:
         return 0.0
-    finish = _utc(end) if end else datetime.now(timezone.utc)
-    if not finish:
-        finish = datetime.now(timezone.utc)
-    return max(0.0, (finish - started).total_seconds())
+    e = _utc(end) or datetime.now(timezone.utc)
+    return max(0.0, (e - d).total_seconds())
 
 
 @st.cache_resource(show_spinner=False)
@@ -110,87 +95,73 @@ def events(system, document_id: str | None = None, limit: int = 250) -> list[dic
         return []
 
 
-def ready_docs(system) -> list[dict[str, Any]]:
+def ready_docs(system):
     return [d for d in docs(system) if str(d.get("status", "")).upper() in {"READY", "COMPLETED"}]
 
 
-def active_docs(system) -> list[dict[str, Any]]:
-    return [d for d in docs(system) if str(d.get("status", "")).upper() in ACTIVE_STAGES]
+def active_docs(system):
+    return [d for d in docs(system) if str(d.get("status", "")).upper() in ACTIVE]
 
 
 def total_chunks(system) -> int:
-    return sum(_int(d.get("chunk_count", d.get("chunks", d.get("vector_chunks", 0)))) for d in docs(system))
+    return sum(_int(d.get("chunk_count", d.get("chunks", 0))) for d in docs(system))
 
 
 def total_embeddings(system) -> int:
     return sum(_int(d.get("embedding_count", d.get("embeddings", 0))) for d in docs(system))
 
 
-def _stage(document: dict[str, Any]) -> tuple[str, str]:
-    raw = str(document.get("current_stage") or document.get("status") or "RUNNING").upper()
-    return STAGE_INFO.get(raw, (raw.replace("_", " ").title(), "BookRAG is processing this document."))
+def _stage(d):
+    key = str(d.get("current_stage") or d.get("status") or "RUNNING").upper()
+    return STAGES.get(key, (key.replace("_", " ").title(), "Processing document."))
 
 
-def _status_class(value: Any) -> str:
-    state = str(value or "UNKNOWN").upper()
-    if state in {"READY", "COMPLETED", "PASS", "ONLINE", "HEALTHY", "OK"}:
+def _status_class(v: Any) -> str:
+    x = str(v or "UNKNOWN").upper()
+    if x in {"READY", "COMPLETED", "PASS", "ONLINE", "HEALTHY", "OK"}:
         return "good"
-    if state in {"FAILED", "ERROR", "FAIL", "OFFLINE", "UNAVAILABLE", "INTERRUPTED"}:
+    if x in {"FAILED", "FAILED_EMBEDDING", "ERROR", "OFFLINE", "UNAVAILABLE", "ABSTAIN", "INTERRUPTED"}:
         return "bad"
-    if state in ACTIVE_STAGES or state in {"RUNNING", "PROCESSING", "BUILDING", "WARNING", "WARN"}:
+    if x in ACTIVE or x in {"RUNNING", "PROCESSING", "BUILDING", "WARNING", "WARN"}:
         return "warn"
     return "neutral"
 
 
-def _status(value: Any) -> str:
-    text = str(value or "UNKNOWN")
-    return f'<span class="status status-{_status_class(text)}">{_esc(text)}</span>'
+def _status(v: Any) -> str:
+    x = str(v or "UNKNOWN")
+    return f'<span class="pill pill-{_status_class(x)}"><i></i>{_esc(x)}</span>'
 
 
-def _navigate(page: str) -> None:
-    st.session_state["bookrag_page"] = page if page in PAGES else "Home"
-    st.rerun()
+def _progress(d: dict[str, Any]) -> float:
+    s = str(d.get("status") or d.get("current_stage") or "RUNNING").upper()
+    base = {"RUNNING": .03, "DISCOVERED": .08, "VALIDATING": .15, "EXTRACTING": .30, "OCR": .46, "CHUNKING": .58, "EMBEDDING": .73, "INDEXING": .86, "VALIDATING_INDEX": .96, "READY": 1, "COMPLETED": 1}.get(s, 1 if s in {"FAILED", "FAILED_EMBEDDING", "INTERRUPTED"} else .03)
+    total, current = _int(d.get("total_pages")), _int(d.get("current_page"))
+    if s in {"EXTRACTING", "OCR"} and total:
+        base += min(current / total, 1) * (.14 if s == "EXTRACTING" else .10)
+    return max(0, min(base, 1))
 
 
-def _refresh() -> None:
-    st.rerun()
+def _navigate(page: str):
+    if page in PAGES:
+        st.session_state["bookrag_page"] = page
+        st.rerun()
 
 
-def _snapshot_jobs() -> list[dict[str, Any]]:
-    registry = get_jobs()
-    with registry["lock"]:
-        return [dict(item) for item in registry["items"].values()]
-
-
-def _running_job() -> dict[str, Any] | None:
-    registry = get_jobs()
-    with registry["lock"]:
-        for job in reversed(list(registry["items"].values())):
-            if job.get("status") == "RUNNING":
-                return job
-    return None
-
-
-def _set_job(job: dict[str, Any], **updates: Any) -> None:
-    registry = get_jobs()
-    with registry["lock"]:
-        job.update(updates)
-
-
-def save_pdf(incoming: Path, name: str, content: bytes) -> str:
-    if not content:
-        raise ValueError(f"{name} is empty.")
-    if not content.startswith(b"%PDF-"):
-        raise ValueError(f"{name} is not a valid PDF file.")
+def _save_pdf(incoming: Path, name: str, content: bytes) -> str:
+    if not content or not content.startswith(b"%PDF-"):
+        raise ValueError(f"{name} is not a valid PDF payload.")
     incoming = Path(incoming).expanduser().resolve()
-    safe_stem = "".join(c if c.isalnum() or c in "._-" else "_" for c in (Path(name).stem or "document"))
-    safe_stem = safe_stem.strip(" ._") or "document"
     digest = hashlib.sha256(content).hexdigest()
+    stem = "".join(c if c.isalnum() or c in "._-" else "_" for c in (Path(name).stem or "document")).strip(" ._") or "document"
     incoming.mkdir(parents=True, exist_ok=True)
-    target = incoming / f"{safe_stem[:80]}_{digest[:12]}.pdf"
+    target = incoming / f"{stem[:80]}_{digest[:12]}.pdf"
     if not target.exists():
         target.write_bytes(content)
     return digest
+
+
+def save_pdf(incoming: Path, name: str, content: bytes) -> str:
+    return _save_pdf(incoming, name, content)
 
 
 def start_ingestion(system, source_dir: str, *, trigger: str = "manual") -> str:
@@ -199,507 +170,343 @@ def start_ingestion(system, source_dir: str, *, trigger: str = "manual") -> str:
     try:
         folder.relative_to(root)
     except ValueError as exc:
-        raise ValueError("The Incoming folder must stay inside the BookRAG project directory.") from exc
-    if not folder.is_dir():
-        raise ValueError(f"Folder does not exist: {folder}")
+        raise ValueError("The incoming folder must remain inside the BookRAG project.") from exc
     pdfs = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".pdf")
     if not pdfs:
-        raise ValueError("There are no PDF files waiting in Incoming.")
-    registry = get_jobs()
-    with registry["lock"]:
-        for job in reversed(list(registry["items"].values())):
+        raise ValueError("No PDFs are waiting in the incoming folder.")
+    jobs = get_jobs()
+    with jobs["lock"]:
+        for job in reversed(list(jobs["items"].values())):
             if job.get("status") == "RUNNING":
                 return str(job["id"])
         jid = f"ingest-{time.time_ns()}"
-        job = {
-            "id": jid,
-            "status": "RUNNING",
-            "started": time.time(),
-            "finished": None,
-            "source_dir": str(folder),
-            "file_count": len(pdfs),
-            "file_names": [p.name for p in pdfs],
-            "trigger": trigger,
-            "completed": 0,
-            "failed": 0,
-            "result": None,
-            "error": None,
-        }
-        registry["items"][jid] = job
+        job = {"id": jid, "status": "RUNNING", "started": time.time(), "finished": None, "file_count": len(pdfs), "completed": 0, "failed": 0, "result": None, "error": None, "trigger": trigger}
+        jobs["items"][jid] = job
 
-    def worker() -> None:
+    def worker():
         try:
             result = system.ingest_directory(str(folder)) or []
-            completed = sum(1 for row in result if row.get("status") in {"success", "skipped"})
-            failed = sum(1 for row in result if row.get("status") == "failed")
-            _set_job(job, result=result, completed=completed, failed=failed, status="FAILED" if failed and not completed else "COMPLETED")
+            ok = sum(1 for r in result if r.get("status") in {"success", "skipped"})
+            bad = sum(1 for r in result if r.get("status") == "failed")
+            with jobs["lock"]:
+                job.update(result=result, completed=ok, failed=bad, status="FAILED" if bad and not ok else "COMPLETED")
         except Exception as exc:
-            _set_job(job, error=str(exc), status="FAILED")
+            with jobs["lock"]:
+                job.update(error=str(exc), status="FAILED")
         finally:
-            _set_job(job, finished=time.time())
+            with jobs["lock"]:
+                job["finished"] = time.time()
 
     threading.Thread(target=worker, name=f"{jid}-worker", daemon=True).start()
     return jid
 
 
-def auto_ingest(system, added_count: int) -> str | None:
-    if added_count <= 0:
+def auto_ingest(system, count: int):
+    if not count:
         return None
     try:
-        job_id = start_ingestion(system, str(system.settings.incoming_dir), trigger="upload")
-        st.session_state["last_ingest_job"] = job_id
-        st.session_state["auto_ingest_message"] = f"{added_count} PDF file(s) accepted. Processing started automatically."
-        return job_id
+        jid = start_ingestion(system, str(system.settings.incoming_dir), trigger="upload")
+        st.session_state["last_ingest_job"] = jid
+        return jid
     except Exception as exc:
         st.session_state["auto_ingest_error"] = str(exc)
         return None
 
 
-def _progress(document: dict[str, Any]) -> float:
-    status = str(document.get("status") or document.get("current_stage") or "RUNNING").upper()
-    weights = {
-        "RUNNING": 0.03, "DISCOVERED": 0.08, "VALIDATING": 0.16, "EXTRACTING": 0.32,
-        "OCR": 0.48, "CHUNKING": 0.58, "EMBEDDING": 0.72, "INDEXING": 0.85,
-        "VALIDATING_INDEX": 0.95, "READY": 1.0, "COMPLETED": 1.0,
-        "FAILED": 1.0, "FAILED_EMBEDDING": 1.0, "INTERRUPTED": 1.0,
-    }
-    value = weights.get(status, 0.03)
-    total = _int(document.get("total_pages"))
-    current = _int(document.get("current_page"))
-    if status in {"EXTRACTING", "OCR"} and total:
-        value += min(current / total, 1.0) * (0.13 if status == "EXTRACTING" else 0.10)
-    return max(0.0, min(value, 1.0))
+def ollama_health(base_url: str):
+    try:
+        r = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=(2.5, 5))
+        r.raise_for_status()
+        models = [str(x.get("name")) for x in r.json().get("models", []) if x.get("name")]
+        return True, "Ollama is reachable", models
+    except Exception as exc:
+        return False, str(exc), []
 
 
-def _live_now_text(document: dict[str, Any], latest_event: dict[str, Any] | None) -> str:
-    current = _int(document.get("current_page"))
-    total = _int(document.get("total_pages"))
-    stage, description = _stage(document)
-    message = (latest_event or {}).get("message") or description
-    page_text = f"Page {current} of {total}" if total else "Page count not available yet"
-    return f"{page_text} · {message}"
+def _job_running():
+    jobs = get_jobs()
+    with jobs["lock"]:
+        return any(j.get("status") == "RUNNING" for j in jobs["items"].values())
 
 
-def _upload_panel(system) -> None:
-    st.markdown('<div class="upload-card"><div class="upload-title">Add your PDFs</div><div class="upload-subtitle">Choose one or more PDF files. BookRAG saves them and starts processing automatically.</div>', unsafe_allow_html=True)
-    uploads = st.file_uploader("Choose PDF files", type=["pdf"], accept_multiple_files=True, key="bookrag_uploader", help="You can select multiple PDFs at once. Duplicate files are ignored automatically.")
-    if uploads:
-        saved = st.session_state.setdefault("uploaded_hashes", set())
-        incoming = Path(system.settings.incoming_dir)
-        added = 0
-        errors: list[str] = []
-        for upload in uploads:
-            payload = upload.getvalue()
-            digest = hashlib.sha256(payload).hexdigest()
-            if digest in saved:
-                continue
-            try:
-                save_pdf(incoming, upload.name, payload)
-                saved.add(digest)
-                added += 1
-            except Exception as exc:
-                errors.append(f"{upload.name}: {exc}")
-        for message in errors:
-            st.error(message)
-        if added:
-            job_id = auto_ingest(system, added)
-            if job_id:
-                st.success(f"{added} PDF file(s) added. Automatic processing is now running.")
-                st.session_state["bookrag_page"] = "Live Processing"
-                st.rerun()
-            else:
-                st.error(st.session_state.get("auto_ingest_error", "The PDFs were saved, but automatic processing could not be started."))
-    st.markdown('</div>', unsafe_allow_html=True)
+def css():
+    st.markdown(r'''<style>
+:root{--bg:#080d16;--panel:#0e1623;--panel2:#111c2b;--line:#243246;--line2:#1b293b;--text:#edf3fa;--muted:#8493a7;--faint:#56667c;--accent:#63d9d1;--blue:#7e9cff;--green:#5fe0a0;--amber:#f2c76b;--red:#ff7285;--shadow:0 24px 70px rgba(0,0,0,.25)}
+html,body,[class*="css"]{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.stApp{background:radial-gradient(900px 500px at 80% -10%,rgba(126,156,255,.12),transparent 60%),radial-gradient(700px 450px at 10% 0,rgba(99,217,209,.07),transparent 62%),var(--bg);color:var(--text)}[data-testid=stHeader]{height:0;background:transparent}.block-container{max-width:1500px;padding:26px 42px 70px}.stApp *{letter-spacing:-.005em}
+[data-testid=stSidebar]{background:#09111d!important;border-right:1px solid var(--line)!important}[data-testid=stSidebar]>div:first-child{padding:22px 16px 30px!important}.brand{display:flex;align-items:center;gap:11px;padding:4px 7px 24px}.brandmark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#76e0d9,#718dff);display:grid;place-items:center;color:#07121b;font-size:13px;font-weight:950;box-shadow:0 10px 30px rgba(99,217,209,.16)}.brandname{font-weight:900;font-size:15px}.brandsub{font-size:9px;color:var(--faint);margin-top:2px}.navgroup{margin:17px 7px 7px;font-size:9px;text-transform:uppercase;letter-spacing:.14em;color:#58697e;font-weight:850}
+[data-testid=stSidebar] .stButton>button{min-height:40px!important;border:1px solid transparent!important;background:transparent!important;color:#8e9db0!important;border-radius:9px!important;text-align:left!important;font-size:12px!important;font-weight:700!important;padding:0 12px!important}[data-testid=stSidebar] .stButton>button:hover{background:#111d2c!important;border-color:#26364b!important;color:#edf3fa!important}.sidefoot{border-top:1px solid var(--line2);margin-top:18px;padding:14px 7px;color:#68788d;font-size:9px;line-height:1.6}
+.top{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:20px}.crumb{font-size:10px;color:#62738a;text-transform:uppercase;letter-spacing:.13em;font-weight:850}.title{font-size:22px;font-weight:900;letter-spacing:-.04em;margin-top:4px}.topright{display:flex;align-items:center;gap:8px}.chip{height:32px;border:1px solid var(--line);background:rgba(14,22,35,.8);border-radius:9px;padding:0 11px;display:flex;align-items:center;font-size:10px;color:#9aabbe}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 11px rgba(95,224,160,.7);margin-right:7px}
+.hero{border:1px solid #2a3a51;border-radius:18px;padding:26px 28px;background:linear-gradient(115deg,#0e1725,#121f32 58%,#182a38);box-shadow:var(--shadow);position:relative;overflow:hidden}.hero:after{content:"";position:absolute;right:-110px;top:-150px;width:360px;height:360px;border-radius:50%;background:radial-gradient(circle,rgba(99,217,209,.14),transparent 65%)}.kicker{font-size:9px;text-transform:uppercase;letter-spacing:.16em;color:#76d7d1;font-weight:900}.hero h1{font-size:31px;line-height:1.08;margin:8px 0 7px;letter-spacing:-.045em}.hero p{margin:0;max-width:690px;color:#93a2b5;font-size:12px;line-height:1.65}.hero-actions{margin-top:18px}
+.livebar{display:flex;align-items:center;gap:8px;margin-top:12px;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:rgba(14,22,35,.8);font-size:10px;color:#8fa0b4}.livebar .grow{flex:1}.livepulse{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(95,224,160,.07),0 0 12px rgba(95,224,160,.6)}
+.grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px;margin-top:12px}.stat{border:1px solid var(--line);border-radius:13px;background:linear-gradient(180deg,rgba(17,28,43,.94),rgba(12,20,32,.94));padding:15px;min-height:94px}.statlabel{font-size:9px;color:#718198;text-transform:uppercase;letter-spacing:.08em;font-weight:800}.statvalue{font-size:27px;font-weight:900;margin-top:6px;letter-spacing:-.05em}.stathint{font-size:9px;color:#53657a;margin-top:2px}
+.section{border:1px solid var(--line);border-radius:15px;background:rgba(14,22,35,.86);padding:18px;margin-top:12px;box-shadow:0 12px 36px rgba(0,0,0,.10)}.sectionhead{display:flex;justify-content:space-between;align-items:flex-start;gap:15px;margin-bottom:13px}.sectiontitle{font-size:14px;font-weight:850}.sectionsub{font-size:10px;color:#687990;line-height:1.5;margin-top:4px}.twocol{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(300px,.75fr);gap:12px}.threecol{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.docrow{border:1px solid var(--line2);border-radius:11px;padding:12px;background:#0b1421;margin-top:8px}.dochead{display:flex;justify-content:space-between;gap:12px}.docname{font-size:12px;font-weight:800;overflow-wrap:anywhere}.meta{font-size:9px;color:#6f8198;margin-top:3px}.meter{height:5px;background:#1a293a;border-radius:99px;overflow:hidden;margin:11px 0 8px}.meter>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--blue));border-radius:99px}.microgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}.micro{padding:8px;border:1px solid #1c2b3e;border-radius:8px;background:#0d1725}.micro span{display:block;font-size:8px;color:#62748b;text-transform:uppercase}.micro b{display:block;font-size:10px;margin-top:3px;overflow-wrap:anywhere}.pill{display:inline-flex;align-items:center;gap:5px;border-radius:99px;border:1px solid currentColor;padding:3px 7px;font-size:8px;font-weight:850;white-space:nowrap}.pill i{width:5px;height:5px;border-radius:50%;background:currentColor}.pill-good{color:var(--green);background:rgba(95,224,160,.06)}.pill-warn{color:var(--amber);background:rgba(242,199,107,.06)}.pill-bad{color:var(--red);background:rgba(255,114,133,.06)}.pill-neutral{color:#8494a8;background:rgba(132,148,168,.05)}
+.empty{border:1px dashed #304157;border-radius:11px;padding:28px;text-align:center;color:#708197;font-size:10px}.evidence{border:1px solid #23354b;border-radius:11px;padding:12px;background:#0b1421;margin-top:8px}.evidencehead{display:flex;justify-content:space-between;gap:10px}.evidencetitle{font-size:10px;font-weight:800}.evidencemeta{font-size:8px;color:#6e829a}.snippet{font-size:10px;color:#9aabba;line-height:1.6;margin-top:7px}.confidence{display:flex;align-items:center;gap:8px;font-size:9px;color:#708299}.bar{height:4px;flex:1;background:#1a293b;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;background:var(--accent)}
+.page{display:grid;grid-template-columns:1.1fr .75fr 1fr .65fr;gap:10px;padding:9px 0;border-bottom:1px solid #1a2839;align-items:center;font-size:9px}.page:last-child{border-bottom:0}.page small{display:block;color:#586a80;font-size:8px;margin-top:2px}.kv{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.kvitem{border:1px solid #1e2e42;border-radius:9px;padding:10px;background:#0b1421}.kvkey{font-size:8px;color:#60738b;text-transform:uppercase;letter-spacing:.07em}.kvvalue{font-size:10px;font-weight:750;margin-top:4px;overflow-wrap:anywhere}.timeline{border-left:1px solid #26384d;margin:4px 0 0 5px;padding-left:15px}.event{position:relative;padding:0 0 14px;font-size:9px;color:#8fa0b4}.event:before{content:"";position:absolute;left:-19px;top:3px;width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 4px #0e1623}.event b{color:#d9e2ed}.event small{display:block;color:#52647b;margin-top:3px}
+.stTextInput input,.stTextArea textarea,.stNumberInput input,.stSelectbox div[data-baseweb=select]{background:#0b1421!important;color:#eaf1f8!important;border:1px solid #26374c!important;border-radius:9px!important}.stTextInput input:focus,.stTextArea textarea:focus{border-color:#4c7884!important;box-shadow:0 0 0 1px #4c7884!important}.stButton>button{border-radius:9px!important;min-height:38px!important;border:1px solid #293a50!important;background:#111d2c!important;color:#dce6f0!important;font-weight:750!important;font-size:10px!important}.stButton>button:hover{border-color:#4e687e!important;background:#162438!important}.stButton>button[kind=primary]{background:#4b83a0!important;border-color:#5a9bb7!important;color:#fff!important}.stProgress>div>div>div>div{background:linear-gradient(90deg,var(--accent),var(--blue))!important}.stFileUploader{border:1px dashed #385069!important;border-radius:11px!important;background:#0b1421!important;padding:4px}.stFileUploader label{color:#91a2b6!important}.stExpander{border:1px solid #24364b!important;border-radius:10px!important;background:#0c1522!important}.stAlert{border-radius:9px!important}.caption{font-size:9px;color:#64758b}
+@media(max-width:1100px){.grid4{grid-template-columns:repeat(2,1fr)}.twocol{grid-template-columns:1fr}.threecol{grid-template-columns:1fr}.microgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:700px){.block-container{padding:18px 14px 50px}.hero h1{font-size:26px}.grid4{grid-template-columns:1fr}.microgrid{grid-template-columns:1fr}.page{grid-template-columns:1fr 1fr}.topright{display:none}}
+</style>''', unsafe_allow_html=True)
 
 
-@st.fragment(run_every="2s")
-def live_status_bar(system) -> None:
-    items = docs(system)
-    active = active_docs(system)
-    ready = ready_docs(system)
-    running = _running_job()
-    if active or running:
-        state, label = "RUNNING", f"{len(active)} document(s) processing"
-    elif ready:
-        state, label = "READY", f"{len(ready)} document(s) ready"
-    elif items:
-        state, label = "IDLE", "No document is processing"
-    else:
-        state, label = "IDLE", "Waiting for your first PDF"
-    st.markdown(f'<div class="status-bar"><span class="live-pulse"></span><b>Live</b><span>{_esc(label)}</span><span class="status-spacer"></span>{_status(state)}</div>', unsafe_allow_html=True)
-
-
-@st.fragment(run_every="2s")
-def live_processing_panel(system, *, compact: bool = False) -> None:
-    items = active_docs(system)
-    latest = {str(e.get("document_id")): e for e in events(system, limit=500)}
-    st.markdown('<div class="panel"><div class="panel-head"><div><div class="panel-title">Live processing</div><div class="panel-subtitle">Exact document stage, current page, elapsed time and latest activity.</div></div><div class="live-label"><span class="live-pulse"></span>updates every 2s</div></div>', unsafe_allow_html=True)
-    if not items:
-        if _running_job():
-            st.info("The worker is active. Waiting for the document state to appear…")
-        else:
-            st.markdown('<div class="empty">Nothing is processing right now.</div>', unsafe_allow_html=True)
-    for document in items:
-        document_id = str(document.get("document_id") or "")
-        stage, description = _stage(document)
-        event = latest.get(document_id)
-        elapsed = _elapsed(document.get("ingestion_started_at"))
-        current = _int(document.get("current_page"))
-        total = _int(document.get("total_pages"))
-        pct = _progress(document)
-        name = str(document.get("file_name") or document.get("filename") or document_id)
-        page_text = f"Page {current} / {total}" if total else "Page information pending"
-        st.markdown(f'<div class="doc-live"><div class="doc-live-top"><div><div class="doc-name">{_esc(name)}</div><div class="doc-stage">{_esc(stage)}</div></div><div class="doc-time">{elapsed:.1f}s</div></div><div class="stage-desc">{_esc(description)}</div>', unsafe_allow_html=True)
-        st.progress(pct, text=f"Pipeline progress · {pct * 100:.0f}%")
-        st.markdown(f'<div class="live-grid"><div><span>Current page</span><b>{_esc(page_text)}</b></div><div><span>Chunks</span><b>{_esc(document.get("chunk_count", "—"))}</b></div><div><span>Embeddings</span><b>{_esc(document.get("embedding_count", "—"))}</b></div><div><span>Activity</span><b>{_esc(_live_now_text(document, event))}</b></div></div></div>', unsafe_allow_html=True)
-        if not compact:
-            page_rows = pages(system, document_id)
-            if page_rows:
-                with st.expander(f"Page-by-page progress · {name}", expanded=False):
-                    completed = [p for p in page_rows if str(p.get("extraction_status", "")).upper() == "COMPLETED"]
-                    st.caption(f"{len(completed)} / {len(page_rows)} page record(s) completed")
-                    for page in page_rows:
-                        pno = _int(page.get("page_number"))
-                        pstatus = str(page.get("extraction_status") or "PENDING")
-                        ocr = str(page.get("ocr_status") or "not_required")
-                        chars = len(str(page.get("text") or ""))
-                        updated = page.get("updated_at") or ""
-                        state = "Completed" if pstatus.upper() == "COMPLETED" else "Pending"
-                        st.markdown(f'<div class="page-row"><div><b>Page {pno}</b><small>{_esc(updated)}</small></div><div>{_status(state)}</div><div>OCR: {_esc(ocr)}</div><div>{chars:,} chars</div></div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-def _header(title: str, subtitle: str) -> None:
-    st.markdown(f'<div class="hero"><div class="eyebrow">BOOKRAG · LOCAL DOCUMENT RESEARCH</div><h1>{_esc(title)}</h1><p>{_esc(subtitle)}</p></div>', unsafe_allow_html=True)
-
-
-def css() -> None:
-    st.markdown("""<style>
-:root{--bg:#f4f7fb;--surface:#fff;--surface2:#f8fafc;--ink:#142033;--muted:#66758a;--line:#dfe6ef;--blue:#2563eb;--teal:#0f9f8c;--green:#13966b;--amber:#c78208;--red:#d9485f;--shadow:0 8px 28px rgba(24,42,70,.07)}
-.stApp{background:var(--bg);color:var(--ink)}[data-testid="stHeader"]{background:transparent}.block-container{max-width:1400px;padding:24px 34px 64px}.hero{margin:6px 0 22px}.eyebrow{font-size:10px;letter-spacing:.14em;font-weight:800;color:#7890ad}.hero h1{font-size:34px;line-height:1.08;margin:7px 0 6px;color:#102039;letter-spacing:-.035em}.hero p{margin:0;max-width:840px;color:var(--muted);font-size:13px;line-height:1.6}
-.status-bar{display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 13px;box-shadow:var(--shadow);font-size:12px;margin-bottom:16px}.status-spacer{flex:1}.live-pulse{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 5px rgba(19,150,107,.10);display:inline-block}.live-label{font-size:10px;color:#6e7e93;display:flex;gap:7px;align-items:center}.panel{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:var(--shadow);margin-top:16px}.panel-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;margin-bottom:14px}.panel-title{font-size:16px;font-weight:850}.panel-subtitle{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5}.doc-live{border:1px solid #e3e9f1;background:#fbfcfe;border-radius:13px;padding:14px;margin-top:12px}.doc-live-top{display:flex;justify-content:space-between;gap:16px}.doc-name{font-size:13px;font-weight:850;overflow-wrap:anywhere}.doc-stage{font-size:11px;color:var(--blue);font-weight:750;margin-top:3px}.doc-time{font-size:12px;color:#53657b;font-variant-numeric:tabular-nums}.stage-desc{font-size:10px;color:var(--muted);margin:7px 0 7px;line-height:1.45}.live-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:10px}.live-grid>div{background:#f5f8fc;border:1px solid #e5ebf2;border-radius:9px;padding:8px}.live-grid span{display:block;font-size:9px;color:#75869c;text-transform:uppercase;letter-spacing:.05em}.live-grid b{display:block;font-size:11px;margin-top:3px;overflow-wrap:anywhere}.page-row{display:grid;grid-template-columns:1.3fr .7fr 1fr .7fr;gap:10px;padding:8px 0;border-bottom:1px solid #e7edf4;font-size:10px;align-items:center}.page-row:last-child{border-bottom:0}.page-row small{display:block;color:#8a98aa;font-size:9px;margin-top:2px}.status{display:inline-flex;align-items:center;border-radius:999px;border:1px solid currentColor;padding:3px 8px;font-size:9px;font-weight:800}.status-good{color:var(--green);background:#edf9f4}.status-warn{color:var(--amber);background:#fff7e6}.status-bad{color:var(--red);background:#fff0f2}.status-neutral{color:#6d7d92;background:#f1f4f8}.upload-card{background:linear-gradient(135deg,#eef5ff,#f8fbff);border:1px solid #d8e4f3;border-radius:16px;padding:18px;box-shadow:var(--shadow)}.upload-title{font-size:17px;font-weight:900}.upload-subtitle{font-size:11px;color:var(--muted);margin:5px 0 12px;line-height:1.5}.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:14px;box-shadow:var(--shadow)}.metric-label{font-size:10px;color:var(--muted)}.metric-value{font-size:28px;font-weight:900;margin-top:5px}.metric-help{font-size:9px;color:#8593a5;margin-top:4px}.two{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(300px,.9fr);gap:16px;margin-top:16px}.guide{display:grid;grid-template-columns:32px 1fr;gap:10px;padding:10px 0;border-bottom:1px solid #e6ecf3}.guide:last-child{border-bottom:0}.guide-num{width:28px;height:28px;border-radius:8px;background:#eaf1ff;color:var(--blue);display:grid;place-items:center;font-weight:900}.muted{color:var(--muted);font-size:11px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:11px;margin-top:10px}.table-wrap table{width:100%;border-collapse:collapse;min-width:800px;font-size:10px}.table-wrap th,.table-wrap td{padding:9px 10px;border-bottom:1px solid #e7edf4;text-align:left;white-space:nowrap}.table-wrap th{background:#f7f9fc;color:#74859a;font-size:9px;text-transform:uppercase;letter-spacing:.05em}.empty{border:1px dashed #cfd8e4;border-radius:11px;padding:20px;text-align:center;color:#7b8a9e;font-size:11px}
-[data-testid="stSidebar"]>div:first-child{padding:20px 16px 28px!important;background:#fff;border-right:1px solid #e3e8ef}[data-testid="stSidebar"] .stButton>button{border-radius:9px!important;border:1px solid transparent!important;text-align:left!important;background:transparent!important;color:#51627a!important;min-height:38px!important;font-size:12px!important}[data-testid="stSidebar"] .stButton>button:hover{background:#eef4ff!important;color:#1f55b9!important;border-color:#d7e4fb!important}.brand{display:flex;gap:10px;align-items:center;padding:4px 5px 19px}.brand-icon{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,#2563eb,#0f9f8c);display:grid;place-items:center;color:#fff;font-weight:900}.brand-name{font-size:14px;font-weight:900}.brand-sub{font-size:9px;color:#8593a5;margin-top:2px}.nav-title{font-size:9px;font-weight:850;letter-spacing:.1em;color:#94a2b4;text-transform:uppercase;margin:16px 7px 6px}.side-note{font-size:9px;color:#8593a5;line-height:1.5;padding:7px}.danger{border-top:1px solid #e6ebf2;margin-top:16px;padding-top:12px}
-.stTextInput input,.stTextArea textarea,.stSelectbox div[data-baseweb="select"],.stNumberInput input{background:#fff!important;color:#172234!important;border:1px solid #d5deea!important;border-radius:9px!important}.stFileUploader{background:transparent!important}.stButton>button{border-radius:9px!important}.stButton>button[kind="primary"]{background:var(--blue)!important;border-color:var(--blue)!important;color:#fff!important}.stButton>button[kind="secondary"]{border-color:#cfd9e6!important}.stProgress>div>div>div>div{background:var(--blue)!important}.stAlert{border-radius:10px}.stExpander{border:1px solid #e1e8f0;border-radius:10px}.stMarkdown,.stCaption{font-size:12px}
-@media(max-width:1000px){.block-container{padding:20px}.cards{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}.live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){.block-container{padding:16px}.hero h1{font-size:27px}.cards{grid-template-columns:1fr}.live-grid{grid-template-columns:1fr}.page-row{grid-template-columns:1fr 1fr}.panel-head{flex-direction:column}}
-</style>""", unsafe_allow_html=True)
-
-
-def sidebar(system) -> None:
+def sidebar(system):
     with st.sidebar:
-        st.markdown('<div class="brand"><div class="brand-icon">BR</div><div><div class="brand-name">BookRAG</div><div class="brand-sub">Local document assistant</div></div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="brand"><div class="brandmark">BR</div><div><div class="brandname">BookRAG Medical</div><div class="brandsub">Evidence-first document research</div></div></div>', unsafe_allow_html=True)
         current = st.session_state.get("bookrag_page", "Home")
-        st.markdown('<div class="nav-title">Workspace</div>', unsafe_allow_html=True)
-        for item in ["Home", "Documents", "Live Processing", "Ask BookRAG"]:
-            if st.button(("●  " if current == item else "○  ") + item, key=f"side_{item}", use_container_width=True):
-                _navigate(item)
-        st.markdown('<div class="nav-title">Tools</div>', unsafe_allow_html=True)
-        for item in ["Inspector", "System", "Settings"]:
-            if st.button(("●  " if current == item else "○  ") + item, key=f"side_tool_{item}", use_container_width=True):
-                _navigate(item)
-        st.markdown('<div class="nav-title">Live status</div>', unsafe_allow_html=True)
-        live_status_bar(system)
-        st.markdown('<div class="side-note">The sidebar can be collapsed with Streamlit’s menu button. Everything continues running while it is closed.</div>', unsafe_allow_html=True)
-        st.markdown('<div class="danger"><div class="nav-title" style="margin-top:0">Danger zone</div>', unsafe_allow_html=True)
-        phrase = st.text_input("Confirmation phrase", key="clear_phrase", type="password", placeholder="CLEAR ALL PDF DATA", help="Use only when you intentionally want to remove PDFs, index data and persisted ingestion state.")
-        if st.button("Delete all managed PDF data", key="side_clear", use_container_width=True, disabled=phrase.strip() != "CLEAR ALL PDF DATA"):
-            try:
-                system.clear_pdf_data()
-                st.session_state["uploaded_hashes"] = set()
-                st.session_state.pop("exact_answer", None)
-                st.session_state.pop("chat_answer", None)
-                _refresh()
-            except Exception as exc:
-                st.error(f"Cleanup failed: {exc}")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-
-def top_actions() -> None:
-    a, b, c = st.columns([1, 1, 1])
-    with a:
-        if st.button("＋ Add PDFs", key="top_add", use_container_width=True):
-            _navigate("Documents")
-    with b:
-        if st.button("⌕ Ask BookRAG", key="top_ask", use_container_width=True):
-            _navigate("Ask BookRAG")
-    with c:
-        if st.button("↻ Refresh", key="top_refresh", use_container_width=True):
-            _refresh()
-
-
-def home(system) -> None:
-    _header("Welcome to BookRAG", "A beginner-friendly local workspace for turning PDFs into a searchable, grounded knowledge base.")
-    top_actions()
-    items, ready, active = docs(system), ready_docs(system), active_docs(system)
-    st.markdown('<div class="cards">', unsafe_allow_html=True)
-    for label, value, help_text in [
-        ("Documents", len(items), "PDFs known to BookRAG"),
-        ("Ready", len(ready), "Available for questions"),
-        ("Processing", len(active), "Currently being handled"),
-        ("Search sections", total_chunks(system), "Retrieval units in the index"),
-    ]:
-        st.markdown(f'<div class="metric"><div class="metric-label">{_esc(label)}</div><div class="metric-value">{_esc(value)}</div><div class="metric-help">{_esc(help_text)}</div></div>', unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    if active:
-        live_processing_panel(system, compact=True)
-    else:
-        _upload_panel(system)
-        st.markdown('<div class="two"><div class="panel"><div class="panel-title">How it works</div><div class="muted">You do not need to understand RAG internals.</div>', unsafe_allow_html=True)
-        for number, title, body in [
-            ("1", "Upload", "Choose one or more PDF files. They are validated and saved automatically."),
-            ("2", "Watch", "BookRAG reads pages, prepares sections, creates search vectors and verifies the index."),
-            ("3", "Ask", "When a document says Ready, open Ask BookRAG and ask a question in normal language."),
-        ]:
-            st.markdown(f'<div class="guide"><div class="guide-num">{number}</div><div><b>{title}</b><div class="muted">{body}</div></div></div>', unsafe_allow_html=True)
-        st.markdown('</div><div class="panel"><div class="panel-title">Good questions</div><div class="muted">Examples users can copy.</div><div class="guide"><div class="guide-num">?</div><div>“Summarize the treatment options for condition X.”</div></div><div class="guide"><div class="guide-num">?</div><div>“What contraindications are listed?”</div></div><div class="guide"><div class="guide-num">?</div><div>“Compare X and Y using only the PDFs.”</div></div></div></div>', unsafe_allow_html=True)
-
-
-def documents_page(system) -> None:
-    _header("Documents", "Your PDF library. Upload here or inspect what has already been processed.")
-    _upload_panel(system)
-    @st.fragment(run_every="3s")
-    def live_library() -> None:
-        items = docs(system)
-        st.markdown('<div class="panel"><div class="panel-head"><div><div class="panel-title">Document library</div><div class="panel-subtitle">Live view from the persistent ingestion database.</div></div><div class="live-label"><span class="live-pulse"></span>live</div></div>', unsafe_allow_html=True)
-        if not items:
-            st.markdown('<div class="empty">No PDFs yet. Use the upload box above.</div>', unsafe_allow_html=True)
-        else:
-            headers = ["Status", "File", "Stage", "Page", "Progress", "Time", "Chunks", "Embeddings"]
-            st.markdown('<div class="table-wrap"><table><tr>' + ''.join(f'<th>{h}</th>' for h in headers) + '</tr>', unsafe_allow_html=True)
+        for group, items in [("Workspace", ["Home", "Documents", "Live Processing", "Ask BookRAG"]), ("Research tools", ["Inspector", "System", "Settings"])]:
+            st.markdown(f'<div class="navgroup">{group}</div>', unsafe_allow_html=True)
             for item in items:
-                stage, _ = _stage(item)
-                pct = _progress(item)
-                page = _int(item.get("current_page")); total = _int(item.get("total_pages"))
-                page_text = f"{page}/{total}" if total else "—"
-                elapsed = _elapsed(item.get("ingestion_started_at"), item.get("ingestion_completed_at"))
-                st.markdown('<tr>' + ''.join([
-                    f'<td>{_status(item.get("status"))}</td>',
-                    f'<td>{_esc(item.get("file_name", item.get("filename", "—")))}</td>',
-                    f'<td>{_esc(stage)}</td>',
-                    f'<td>{_esc(page_text)}</td>',
-                    f'<td>{pct * 100:.0f}%</td>',
-                    f'<td>{elapsed:.1f}s</td>',
-                    f'<td>{_esc(item.get("chunk_count", item.get("chunks", "—")))}</td>',
-                    f'<td>{_esc(item.get("embedding_count", item.get("embeddings", "—")))}</td>',
-                ]) + '</tr>', unsafe_allow_html=True)
-            st.markdown('</table></div>', unsafe_allow_html=True)
+                label = ("●  " if item == current else "○  ") + item
+                if st.button(label, key=f"nav_{item}", use_container_width=True):
+                    _navigate(item)
+        st.markdown('<div class="sidefoot"><b>Local & private</b><br>Documents, retrieval and generation remain inside your configured local runtime.</div>', unsafe_allow_html=True)
+
+
+def topbar(system, title: str):
+    active = len(active_docs(system))
+    st.markdown(f'<div class="top"><div><div class="crumb">BookRAG / Research workspace</div><div class="title">{_esc(title)}</div></div><div class="topright"><div class="chip"><span class="dot"></span>{active} processing</div><div class="chip">⌘K  Commands</div></div></div>', unsafe_allow_html=True)
+
+
+def upload_block(system):
+    st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Add research material</div><div class="sectionsub">Upload one or more PDFs. They are persisted and processing starts automatically.</div></div></div>', unsafe_allow_html=True)
+    files = st.file_uploader("PDF documents", type=["pdf"], accept_multiple_files=True, key="premium_uploader", label_visibility="collapsed")
+    if files:
+        seen = st.session_state.setdefault("uploaded_hashes", set())
+        added, errors = 0, []
+        for f in files:
+            payload = f.getvalue(); digest = hashlib.sha256(payload).hexdigest()
+            if digest in seen: continue
+            try:
+                save_pdf(Path(system.settings.incoming_dir), f.name, payload); seen.add(digest); added += 1
+            except Exception as exc: errors.append(f"{f.name}: {exc}")
+        for e in errors: st.error(e)
+        if added:
+            jid = auto_ingest(system, added)
+            if jid:
+                st.session_state["bookrag_page"] = "Live Processing"
+                st.success(f"{added} document(s) accepted · processing started")
+                st.rerun()
+            elif st.session_state.get("auto_ingest_error"):
+                st.error(st.session_state["auto_ingest_error"])
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+@st.fragment(run_every="2s")
+def global_live(system):
+    active = active_docs(system); ready = ready_docs(system)
+    label = f"{len(active)} document(s) actively processing" if active else (f"{len(ready)} document(s) ready" if ready else "Workspace idle")
+    state = "PROCESSING" if active or _job_running() else ("READY" if ready else "IDLE")
+    st.markdown(f'<div class="livebar"><span class="livepulse"></span><b>LIVE</b><span>{_esc(label)}</span><span class="grow"></span>{_status(state)}</div>', unsafe_allow_html=True)
+
+
+def home(system):
+    topbar(system, "Research workspace")
+    st.markdown('<div class="hero"><div class="kicker">Medical document intelligence</div><h1>Research with evidence, not guesses.</h1><p>Turn medical PDFs into a private, searchable knowledge base. Follow extraction in real time, inspect every page, and ask questions with transparent evidence and abstention when the library cannot support an answer.</p><div class="hero-actions">', unsafe_allow_html=True)
+    a, b = st.columns([1, 1])
+    with a:
+        if st.button("＋ Add PDFs", key="hero_add", type="primary", use_container_width=True): _navigate("Documents")
+    with b:
+        if st.button("Ask the library →", key="hero_ask", use_container_width=True): _navigate("Ask BookRAG")
+    st.markdown('</div></div>', unsafe_allow_html=True)
+    global_live(system)
+    ds, rd, ac = docs(system), ready_docs(system), active_docs(system)
+    st.markdown('<div class="grid4">', unsafe_allow_html=True)
+    for label, value, hint in [("Documents",len(ds),"managed PDFs"),("Ready",len(rd),"grounded research sources"),("Processing",len(ac),"live pipeline jobs"),("Search sections",total_chunks(system),"indexed retrieval units")]:
+        st.markdown(f'<div class="stat"><div class="statlabel">{label}</div><div class="statvalue">{value:,}</div><div class="stathint">{hint}</div></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    twocol, side = st.columns([1.45,.75])
+    with twocol:
+        st.markdown('<div class="section"><div class="sectiontitle">Continue research</div><div class="sectionsub">Your most relevant workspace actions.</div>', unsafe_allow_html=True)
+        for n, title, desc, target in [("01","Upload documents","Add PDFs and start automatic ingestion.","Documents"),("02","Watch processing","See exact page, stage and latest event.","Live Processing"),("03","Ask grounded questions","Retrieve evidence before generating an answer.","Ask BookRAG")]:
+            st.markdown(f'<div class="evidence"><div class="evidencehead"><div class="evidencetitle">{n} · {title}</div><span class="evidencemeta">{target}</span></div><div class="snippet">{desc}</div></div>', unsafe_allow_html=True)
+            if st.button(f"Open {title}", key=f"home_{n}"): _navigate(target)
         st.markdown('</div>', unsafe_allow_html=True)
-    live_library()
-
-
-def processing_page(system) -> None:
-    _header("Live Processing", "Watch exactly what BookRAG is doing. The display refreshes automatically while the worker runs.")
-    live_processing_panel(system)
-    @st.fragment(run_every="2s")
-    def timeline() -> None:
-        running = _running_job()
-        st.markdown('<div class="panel"><div class="panel-title">Job control</div><div class="panel-subtitle">Normal uploads start automatically. Recovery is only for PDFs left in Incoming after an interrupted run.</div>', unsafe_allow_html=True)
-        if running:
-            elapsed = max(0.0, time.time() - _float(running.get("started"), time.time()))
-            st.info(f"Worker running · {running.get('file_count', 0)} PDF(s) · {elapsed:.1f}s elapsed · started by {running.get('trigger', 'manual')}.")
-        waiting = sorted(Path(system.settings.incoming_dir).glob("*.pdf")) if Path(system.settings.incoming_dir).exists() else []
-        st.write(f"PDFs waiting in Incoming: **{len(waiting)}**")
-        if waiting and not running:
-            if st.button("Retry waiting PDFs", key="recover_waiting", use_container_width=True, type="secondary"):
-                try:
-                    start_ingestion(system, str(system.settings.incoming_dir), trigger="recovery")
-                    _refresh()
-                except Exception as exc:
-                    st.error(str(exc))
+    with side:
+        st.markdown('<div class="section"><div class="sectiontitle">Trust model</div><div class="sectionsub">What BookRAG does before it answers.</div>', unsafe_allow_html=True)
+        for t,d in [("Retrieve","Hybrid search finds relevant document evidence."),("Rerank","Evidence is ordered before generation."),("Ground","The answer is constrained by retrieved sources."),("Abstain","If evidence is insufficient, BookRAG can refuse to invent.")]:
+            st.markdown(f'<div class="guide"><b>{t}</b><div class="muted">{d}</div></div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
-        jobs = _snapshot_jobs()
-        if jobs:
-            st.markdown('<div class="panel"><div class="panel-title">Recent jobs</div>', unsafe_allow_html=True)
-            for job in reversed(jobs[-10:]):
-                elapsed = max(0.0, _float(job.get("finished"), time.time()) - _float(job.get("started"), time.time())) if job.get("finished") else max(0.0, time.time() - _float(job.get("started"), time.time()))
-                summary = f"{job.get('completed', 0)} completed · {job.get('failed', 0)} failed · {job.get('file_count', 0)} PDF(s) · {elapsed:.1f}s"
-                st.markdown(f'<div class="page-row"><div><b>{_esc(Path(job.get("source_dir", "Incoming")).name)}</b><small>{_esc(job.get("trigger", "manual"))}</small></div><div>{_status(job.get("status"))}</div><div>{_esc(summary)}</div><div>{_esc(job.get("error") or "")}</div></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        all_events = events(system, limit=100)
-        if all_events:
-            st.markdown('<div class="panel"><div class="panel-title">Live event timeline</div><div class="panel-subtitle">Every recorded stage/event with its UTC timestamp.</div>', unsafe_allow_html=True)
-            for event in reversed(all_events[-30:]):
-                stamp = event.get("created_at") or ""
-                name = event.get("file_name") or event.get("document_id") or "document"
-                message = event.get("message") or event.get("stage") or event.get("event_type") or "event"
-                page = f"page {event.get('current_page')} / {event.get('total_pages')}" if event.get("total_pages") else ""
-                st.markdown(f'<div class="page-row"><div><b>{_esc(name)}</b><small>{_esc(stamp)}</small></div><div>{_status(event.get("status") or event.get("stage"))}</div><div>{_esc(page)}</div><div>{_esc(message)}</div></div>', unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-    timeline()
 
 
-def ask_page(system) -> None:
-    _header("Ask BookRAG", "Ask in plain language. Answers are generated from the PDF evidence that is currently ready.")
-    available = ready_docs(system)
-    st.markdown('<div class="panel">', unsafe_allow_html=True)
-    if not available:
-        st.info("No document is ready yet. Upload a PDF and wait until its status becomes Ready.")
-    names = ["All ready documents"] + [str(d.get("file_name", d.get("filename", "Document"))) for d in available]
-    scope = st.selectbox("Search scope", names, help="Choose the whole ready library or one document.", key="ask_scope")
-    selected_filter = None
-    if scope != names[0] and available:
-        selected_filter = {"document_id": available[names.index(scope) - 1].get("document_id")}
-    q = st.text_area("Your question", key=f"ask_question_{st.session_state.get('chat_nonce', 0)}", height=150, placeholder="Example: What are the main contraindications described in the PDFs?", help="Ask for a fact, definition, summary or comparison that your PDFs can support.")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        if st.button("Get grounded answer", key="ask_run", use_container_width=True, type="primary"):
-            if not q.strip():
-                st.warning("Please enter a question first.")
-            elif not available:
-                st.warning("Wait for at least one document to become Ready.")
-            else:
-                with st.spinner("Searching documents and generating an evidence-grounded answer…"):
-                    try:
-                        st.session_state["chat_answer"] = system.answer(q.strip(), metadata_filter=selected_filter)
-                    except Exception as exc:
-                        st.error(f"The question could not be answered safely: {exc}")
-    with c2:
-        if st.button("Clear answer", key="ask_clear", use_container_width=True):
-            st.session_state.pop("chat_answer", None)
-            st.session_state["chat_nonce"] = st.session_state.get("chat_nonce", 0) + 1
-            _refresh()
-    answer = st.session_state.get("chat_answer")
-    if answer:
-        st.markdown(f'<div class="panel"><div class="panel-title">Answer</div><div class="panel-subtitle">Generated from the retrieved document evidence.</div><div style="margin-top:10px;line-height:1.7;font-size:13px;white-space:pre-wrap">{_esc(answer.get("answer", ""))}</div></div>', unsafe_allow_html=True)
-        citations = answer.get("citations", []) or []
-        if citations:
-            st.markdown("### Evidence references")
-            for citation in citations:
-                st.write(citation)
-        with st.expander("Show retrieved evidence and query trace"):
-            st.json({"evidence": answer.get("evidence", []), "query_trace": answer.get("query_trace", {})})
+def documents_page(system):
+    topbar(system, "Documents")
+    upload_block(system)
+    ds = docs(system)
+    st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Document library</div><div class="sectionsub">Search and filter the persistent ingestion state.</div></div></div>', unsafe_allow_html=True)
+    c1,c2,c3 = st.columns([2,1,1])
+    with c1: query=st.text_input("Search", placeholder="Search filename, hash or document ID", label_visibility="collapsed", key="doc_search")
+    with c2: status=st.selectbox("Status", ["All","Ready","Processing","Failed"], label_visibility="collapsed", key="doc_status")
+    with c3: sort=st.selectbox("Sort", ["Newest","Name","Status"], label_visibility="collapsed", key="doc_sort")
+    rows=[]
+    for d in ds:
+        name=str(d.get("file_name") or d.get("filename") or d.get("document_id") or "Document")
+        stt=str(d.get("status") or "UNKNOWN").upper()
+        hay=(name+" "+str(d.get("document_id",""))).lower()
+        if query and query.lower() not in hay: continue
+        if status=="Ready" and stt not in {"READY","COMPLETED"}: continue
+        if status=="Processing" and stt not in ACTIVE: continue
+        if status=="Failed" and "FAILED" not in stt: continue
+        rows.append(d)
+    if sort=="Name": rows.sort(key=lambda x:str(x.get("file_name") or x.get("filename") or "").lower())
+    elif sort=="Status": rows.sort(key=lambda x:str(x.get("status") or ""))
+    else: rows.sort(key=lambda x:str(x.get("modified_at") or x.get("ingestion_started_at") or ""), reverse=True)
+    if not rows: st.markdown('<div class="empty">No documents match this view.</div>', unsafe_allow_html=True)
+    for d in rows:
+        name=str(d.get("file_name") or d.get("filename") or d.get("document_id") or "Document"); p=_progress(d); stt=str(d.get("status") or "UNKNOWN")
+        st.markdown(f'<div class="docrow"><div class="dochead"><div><div class="docname">{_esc(name)}</div><div class="meta">{_esc(d.get("document_id"))} · {_int(d.get("file_size")):,} bytes</div></div>{_status(stt)}</div><div class="meter"><i style="width:{p*100:.1f}%"></i></div><div class="microgrid"><div class="micro"><span>Stage</span><b>{_esc(_stage(d)[0])}</b></div><div class="micro"><span>Pages</span><b>{_int(d.get("current_page"))} / {_int(d.get("total_pages"))}</b></div><div class="micro"><span>Chunks</span><b>{_int(d.get("chunk_count")):,}</b></div><div class="micro"><span>Embeddings</span><b>{_int(d.get("embedding_count")):,}</b></div></div></div>', unsafe_allow_html=True)
+        a,b=st.columns([1,5])
+        with a:
+            if st.button("Inspect", key=f"inspect_{d.get('document_id')}"): st.session_state["inspect_doc_id"]=d.get("document_id"); _navigate("Inspector")
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-def inspector_page(system) -> None:
-    _header("Inspector", "A clear troubleshooting view: document state, exact page records, events and index verification.")
-    items = docs(system)
-    if not items:
-        st.markdown('<div class="empty">No document is available yet.</div>', unsafe_allow_html=True)
-        return
-    labels = [str(d.get("file_name") or d.get("filename") or d.get("document_id")) for d in items]
-    index = st.selectbox("Choose a document", range(len(items)), format_func=lambda i: labels[i], key="inspect_doc")
-    selected = items[index]
-    stage, description = _stage(selected)
-    st.markdown('<div class="panel"><div class="panel-title">Document state</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="table-wrap"><table><tr><th>Field</th><th>Current value</th></tr><tr><td>Status</td><td>{_status(selected.get("status"))}</td></tr><tr><td>Stage</td><td>{_esc(stage)}</td></tr><tr><td>Current page</td><td>{_esc(selected.get("current_page"))} / {_esc(selected.get("total_pages"))}</td></tr><tr><td>Elapsed time</td><td>{_elapsed(selected.get("ingestion_started_at"), selected.get("ingestion_completed_at")):.2f}s</td></tr><tr><td>Chunks</td><td>{_esc(selected.get("chunk_count", "—"))}</td></tr><tr><td>Embeddings</td><td>{_esc(selected.get("embedding_count", "—"))}</td></tr><tr><td>Embedding dimension</td><td>{_esc(selected.get("embedding_dimension", "—"))}</td></tr><tr><td>Error</td><td>{_esc(selected.get("error"))}</td></tr></table></div>', unsafe_allow_html=True)
-    st.progress(_progress(selected), text=f"Pipeline progress · {_progress(selected) * 100:.0f}%")
-    st.caption(description)
-    if st.button("Verify this document's index", key="verify_index_button", type="primary", use_container_width=True):
-        try:
-            st.json(system.verify_index(selected.get("document_id")))
-        except Exception as exc:
-            st.error(f"Index verification failed: {exc}")
-    st.markdown('</div>', unsafe_allow_html=True)
-    page_rows = pages(system, str(selected.get("document_id")))
-    st.markdown('<div class="panel"><div class="panel-title">Page records</div><div class="panel-subtitle">Persisted page-by-page extraction/OCR state.</div>', unsafe_allow_html=True)
-    if page_rows:
-        for page in page_rows:
-            st.markdown(f'<div class="page-row"><div><b>Page {_int(page.get("page_number"))}</b><small>{_esc(page.get("updated_at"))}</small></div><div>{_status(page.get("extraction_status"))}</div><div>OCR: {_esc(page.get("ocr_status"))}</div><div>{len(str(page.get("text") or "")):,} chars</div></div>', unsafe_allow_html=True)
-    else:
-        st.caption("No page records have been stored yet.")
-    st.markdown('</div>', unsafe_allow_html=True)
-    with st.expander("Processing event history"):
-        st.json(events(system, str(selected.get("document_id")), limit=250))
-    with st.expander("Raw metadata"):
-        st.json(selected)
+@st.fragment(run_every="2s")
+def processing_live(system):
+    topbar(system, "Live Processing")
+    active=active_docs(system)
+    if not active:
+        st.markdown('<div class="section"><div class="empty">No document is processing right now. Upload a PDF to start a live pipeline.</div></div>', unsafe_allow_html=True); return
+    latest={str(e.get("document_id")):e for e in events(system,limit=600)}
+    for d in active:
+        did=str(d.get("document_id")); name=str(d.get("file_name") or d.get("filename") or did); stage,desc=_stage(d); p=_progress(d); current,total=_int(d.get("current_page")),_int(d.get("total_pages")); ev=latest.get(did,{})
+        st.markdown(f'<div class="section"><div class="dochead"><div><div class="docname">{_esc(name)}</div><div class="meta">{_esc(stage)} · {_elapsed(d.get("ingestion_started_at")):.1f}s elapsed</div></div>{_status(d.get("status"))}</div><div class="sectionsub">{_esc(desc)}</div>', unsafe_allow_html=True)
+        st.progress(p, text=f"Pipeline progress · {p*100:.0f}%")
+        st.markdown(f'<div class="microgrid"><div class="micro"><span>Current page</span><b>{current} / {total or "—"}</b></div><div class="micro"><span>Stage</span><b>{_esc(stage)}</b></div><div class="micro"><span>Latest event</span><b>{_esc(ev.get("message") or ev.get("event_type") or "Working…")}</b></div><div class="micro"><span>Updated</span><b>{_esc(ev.get("created_at") or d.get("modified_at") or "now")}</b></div></div>', unsafe_allow_html=True)
+        prs=pages(system,did)
+        if prs:
+            with st.expander(f"Page-level extraction · {len(prs)} records", expanded=False):
+                done=sum(1 for x in prs if str(x.get("extraction_status","")).upper()=="COMPLETED")
+                st.caption(f"{done} / {len(prs)} page records completed")
+                for pg in prs:
+                    st.markdown(f'<div class="page"><div><b>Page {_int(pg.get("page_number"))}</b><small>{_esc(pg.get("updated_at"))}</small></div><div>{_status(pg.get("extraction_status"))}</div><div>OCR · {_esc(pg.get("ocr_status") or "not required")}</div><div>{len(str(pg.get("text") or "")):,} chars</div></div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+def processing_page(system):
+    processing_live(system)
+
+
+def ask_page(system):
+    topbar(system,"Ask BookRAG")
+    available=ready_docs(system)
+    st.markdown('<div class="section"><div class="sectiontitle">Grounded research</div><div class="sectionsub">Your answer is generated only after retrieval. If the library cannot support the question, the system can abstain.</div>',unsafe_allow_html=True)
+    names=["All ready documents"]+[str(d.get("file_name") or d.get("filename") or "Document") for d in available]
+    scope=st.selectbox("Source scope",names,key="ask_scope")
+    selected=None if scope==names[0] else {"document_id":available[names.index(scope)-1].get("document_id")}
+    q=st.text_area("Question",height=120,placeholder="What does the literature say about…?",key="research_question")
+    a,b,c=st.columns([2,1,1])
+    with a:
+        run=st.button("Run grounded search",type="primary",use_container_width=True,key="ask_run")
+    with b:
+        if st.button("Clear",use_container_width=True): st.session_state.pop("answer_result",None); st.rerun()
+    with c:
+        if st.button("Inspector",use_container_width=True): _navigate("Inspector")
+    if run:
+        if not q.strip(): st.warning("Enter a research question first.")
+        elif not available: st.warning("No ready document is available yet.")
+        else:
+            with st.spinner("Retrieving evidence and composing a grounded answer…"):
+                try: st.session_state["answer_result"]=system.answer(q.strip(),metadata_filter=selected)
+                except Exception as exc: st.error(f"The answer could not be produced safely: {exc}")
+    ans=st.session_state.get("answer_result")
+    if ans:
+        st.markdown('</div>',unsafe_allow_html=True)
+        answer=str(ans.get("answer") or "")
+        st.markdown(f'<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Answer</div><div class="sectionsub">Evidence-grounded response · generated from the selected library.</div></div>{_status("ABSTAIN" if ans.get("abstained") else "GROUNDED")}</div><div style="font-size:13px;line-height:1.75;color:#dce6ef;white-space:pre-wrap">{_esc(answer)}</div></div>',unsafe_allow_html=True)
+        evs=ans.get("evidence",[]) or ans.get("citations",[]) or []
+        st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Evidence</div><div class="sectionsub">Sources retrieved for this answer. Expand the query trace only when troubleshooting.</div></div><span class="chip">'+str(len(evs))+' sources</span></div>',unsafe_allow_html=True)
+        for i,e in enumerate(evs,1):
+            if isinstance(e,dict):
+                title=e.get("file_name") or e.get("document_id") or f"Source {i}"; page=e.get("page_number") or e.get("page") or "—"; score=e.get("score") or e.get("rerank_score") or e.get("similarity") or "—"; snippet=e.get("text") or e.get("snippet") or e.get("content") or ""
+            else: title=f"Source {i}"; page="—"; score="—"; snippet=str(e)
+            st.markdown(f'<div class="evidence"><div class="evidencehead"><div class="evidencetitle">{_esc(title)}</div><div class="evidencemeta">Page {_esc(page)} · score {_esc(score)}</div></div><div class="snippet">{_esc(snippet)}</div></div>',unsafe_allow_html=True)
+        with st.expander("Query trace & raw retrieval state"):
+            st.json({"query_trace":ans.get("query_trace",{}),"citations":ans.get("citations",[]),"abstained":ans.get("abstained",False)})
+        st.markdown('</div>',unsafe_allow_html=True)
+    else: st.markdown('</div>',unsafe_allow_html=True)
+
+
+def inspector_page(system):
+    topbar(system,"Inspector")
+    ds=docs(system)
+    if not ds: st.markdown('<div class="section"><div class="empty">No document is available to inspect.</div></div>',unsafe_allow_html=True); return
+    ids=[str(d.get("document_id")) for d in ds]; chosen=st.session_state.get("inspect_doc_id")
+    default=ids.index(str(chosen)) if chosen in ids else 0
+    idx=st.selectbox("Document",range(len(ds)),index=default,format_func=lambda i:str(ds[i].get("file_name") or ds[i].get("filename") or ids[i]),key="inspect_selector")
+    d=ds[idx]; did=str(d.get("document_id")); stage,desc=_stage(d); p=_progress(d)
+    st.markdown(f'<div class="section"><div class="sectionhead"><div><div class="sectiontitle">{_esc(d.get("file_name") or d.get("filename") or did)}</div><div class="sectionsub">{_esc(desc)}</div></div>{_status(d.get("status"))}</div><div class="meter"><i style="width:{p*100:.1f}%"></i></div>',unsafe_allow_html=True)
+    vals=[("Stage",stage),("Pages",f"{_int(d.get('current_page'))} / {_int(d.get('total_pages'))}"),("Elapsed",f"{_elapsed(d.get('ingestion_started_at'),d.get('ingestion_completed_at')):.2f}s"),("Chunks",f"{_int(d.get('chunk_count')):,}"),("Embeddings",f"{_int(d.get('embedding_count')):,}"),("Embedding dimension",d.get("embedding_dimension") or "—"),("Parser",d.get("parser_version") or "—"),("Version",d.get("version_id") or d.get("content_hash") or "—")]
+    st.markdown('<div class="kv">'+''.join(f'<div class="kvitem"><div class="kvkey">{_esc(k)}</div><div class="kvvalue">{_esc(v)}</div></div>' for k,v in vals)+'</div>',unsafe_allow_html=True)
+    if d.get("error"): st.error(str(d.get("error")))
+    if st.button("Verify index",type="primary",use_container_width=True,key="verify_index"):
+        try: st.session_state["verify_result"]=system.verify_index(did)
+        except Exception as exc: st.error(str(exc))
+    if st.session_state.get("verify_result") is not None: st.json(st.session_state.pop("verify_result"))
+    st.markdown('</div>',unsafe_allow_html=True)
+    prs=pages(system,did)
+    st.markdown('<div class="section"><div class="sectiontitle">Page records</div><div class="sectionsub">Extraction and OCR state persisted by the ingestion pipeline.</div>',unsafe_allow_html=True)
+    if prs:
+        for pg in prs: st.markdown(f'<div class="page"><div><b>Page {_int(pg.get("page_number"))}</b><small>{_esc(pg.get("updated_at"))}</small></div><div>{_status(pg.get("extraction_status"))}</div><div>OCR · {_esc(pg.get("ocr_status") or "not required")}</div><div>{len(str(pg.get("text") or "")):,} chars</div></div>',unsafe_allow_html=True)
+    else: st.markdown('<div class="empty">No page records stored yet.</div>',unsafe_allow_html=True)
+    st.markdown('</div>',unsafe_allow_html=True)
+    with st.expander("Event timeline"):
+        es=events(system,did,250); st.markdown('<div class="timeline">',unsafe_allow_html=True)
+        for e in reversed(es[-40:]): st.markdown(f'<div class="event"><b>{_esc(e.get("message") or e.get("event_type") or e.get("stage") or "Event")}</b> · {_status(e.get("status") or e.get("stage"))}<small>{_esc(e.get("created_at"))} · page {_esc(e.get("current_page") or "—")} / {_esc(e.get("total_pages") or "—")}</small></div>',unsafe_allow_html=True)
+        st.markdown('</div>',unsafe_allow_html=True)
+    with st.expander("Raw state (advanced)"): st.json(d)
 
 
 @st.fragment(run_every="8s")
-def system_snapshot(system) -> None:
-    try:
-        report = system.health_report()
-    except Exception as exc:
-        report = {"ready": False, "error": str(exc), "embedding": {}, "index": {}, "audit": {}, "feature_contract": {}}
-    try:
-        ok, message, models = ollama_health(system.settings.ollama_base_url)
-    except Exception as exc:
-        ok, message, models = False, str(exc), []
-    embedding = report.get("embedding", {})
-    index = report.get("index", {})
-    audit = report.get("audit", {})
-    contract = report.get("feature_contract", {})
-    rows = [
-        ("Ollama", "ONLINE" if ok else "OFFLINE", message),
-        ("Embedding", "PASS" if embedding.get("ok") else "FAIL", embedding.get("identity") or embedding.get("error") or system.settings.embedding_model),
-        ("Vector index", str(index.get("status", "UNAVAILABLE")).upper(), index.get("error") or "Index status reported by the runtime."),
-        ("Production contract", "PASS" if contract.get("all_resolved") else "FAIL", "Application feature resolution check."),
-        ("Index audit", "PASS" if audit.get("ok", False) else "FAIL", audit.get("error") or "Consistency check."),
-    ]
-    st.markdown('<div class="panel"><div class="panel-head"><div><div class="panel-title">System health</div><div class="panel-subtitle">Live runtime diagnostics. No manual refresh is required.</div></div><div class="live-label"><span class="live-pulse"></span>8s</div></div><div class="table-wrap"><table><tr><th>Component</th><th>Status</th><th>Detail</th></tr>', unsafe_allow_html=True)
-    for label, status, detail in rows:
-        st.markdown(f'<tr><td>{_esc(label)}</td><td>{_status(status)}</td><td>{_esc(detail)}</td></tr>', unsafe_allow_html=True)
-    st.markdown('</table></div>', unsafe_allow_html=True)
-    if models:
-        st.caption("Models reported by Ollama: " + ", ".join(models))
-    st.markdown('</div>', unsafe_allow_html=True)
+def system_snapshot(system):
+    try: report=system.health_report()
+    except Exception as exc: report={"ready":False,"error":str(exc)}
+    try: ok,msg,models=ollama_health(system.settings.ollama_base_url)
+    except Exception as exc: ok,msg,models=False,str(exc),[]
+    emb=report.get("embedding",{}); idx=report.get("index",{}); contract=report.get("feature_contract",report.get("pipeline",{}))
+    rows=[("Ollama","ONLINE" if ok else "OFFLINE",msg),("Embedding","PASS" if emb.get("ok") else "UNKNOWN",emb.get("identity") or emb.get("error") or system.settings.embedding_model),("Vector index",str(idx.get("status","UNKNOWN")).upper(),idx.get("error") or "Runtime-reported index health"),("Production contract","PASS" if contract.get("all_resolved",False) else "CHECK","Feature resolution")]
+    st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">System health</div><div class="sectionsub">Live operational signals · refreshed automatically.</div></div><span class="chip"><span class="dot"></span>8s</span></div>',unsafe_allow_html=True)
+    for label,status,detail in rows: st.markdown(f'<div class="page"><div><b>{_esc(label)}</b></div><div>{_status(status)}</div><div>{_esc(detail)}</div><div></div></div>',unsafe_allow_html=True)
+    if models: st.caption("Ollama models · "+", ".join(models))
+    st.markdown('</div>',unsafe_allow_html=True)
 
 
-def system_page(system) -> None:
-    _header("System", "See the real services BookRAG depends on and what each result means.")
+def system_page(system):
+    topbar(system,"System")
     system_snapshot(system)
-    live_status_bar(system)
-    st.markdown('<div class="two"><div class="panel"><div class="panel-title">What healthy means</div><div class="guide"><div class="guide-num">✓</div><div><b>Ollama online</b><div class="muted">The local model service responds to health checks.</div></div></div><div class="guide"><div class="guide-num">✓</div><div><b>Embedding engine ready</b><div class="muted">New PDF sections can be converted into search vectors.</div></div></div><div class="guide"><div class="guide-num">✓</div><div><b>Index ready</b><div class="muted">Stored vectors and lexical records can be used for retrieval.</div></div></div></div><div class="panel"><div class="panel-title">Current runtime</div>', unsafe_allow_html=True)
-    s = system.settings
-    for label, value in [("Ollama host", s.ollama_base_url), ("Embedding model", s.embedding_model), ("Generation model", s.generation_model), ("Search results", s.top_k)]:
-        st.markdown(f'<div class="page-row"><div><b>{_esc(label)}</b></div><div></div><div></div><div>{_esc(value)}</div></div>', unsafe_allow_html=True)
-    st.markdown('</div></div>', unsafe_allow_html=True)
+    a,b=st.columns(2)
+    with a:
+        st.markdown('<div class="section"><div class="sectiontitle">Runtime profile</div><div class="sectionsub">Configured local services.</div>',unsafe_allow_html=True)
+        for k,v in [("Ollama",system.settings.ollama_base_url),("Embedding",system.settings.embedding_model),("Generation",system.settings.generation_model),("Top K",system.settings.top_k)]: st.markdown(f'<div class="kvitem" style="margin-top:7px"><div class="kvkey">{k}</div><div class="kvvalue">{_esc(v)}</div></div>',unsafe_allow_html=True)
+        st.markdown('</div>',unsafe_allow_html=True)
+    with b:
+        st.markdown('<div class="section"><div class="sectiontitle">Operational guidance</div><div class="sectionsub">How to interpret this workspace.</div>',unsafe_allow_html=True)
+        for k,v in [("Ready","Document is published to retrieval."),("Processing","Persistent page state is still changing."),("Failed","Inspect the document error and event timeline."),("Abstain","The evidence did not justify a confident answer.")]: st.markdown(f'<div class="evidence"><div class="evidencetitle">{k}</div><div class="snippet">{v}</div></div>',unsafe_allow_html=True)
+        st.markdown('</div>',unsafe_allow_html=True)
 
 
-def settings_page(system) -> None:
-    _header("Settings", "Beginner-safe settings first. Advanced deployment tuning stays behind the existing configuration system.")
-    s = system.settings
-    st.markdown('<div class="panel"><div class="panel-title">Basic runtime settings</div><div class="panel-subtitle">These controls affect how documents are searched and how answers are generated.</div>', unsafe_allow_html=True)
-    with st.form("basic_settings"):
-        host = st.text_input("Ollama host", value=str(s.ollama_base_url), help="Local HTTP address used by Ollama.")
-        embedding = st.text_input("Embedding model", value=str(s.embedding_model), help="Turns document sections into semantic search vectors.")
-        generation = st.text_input("Generation model", value=str(s.generation_model), help="Writes the grounded final answer from retrieved evidence.")
-        a, b = st.columns(2)
-        with a:
-            top_k = st.number_input("Search results", min_value=1, max_value=50, value=int(s.top_k), step=1, help="More results can improve recall, but can add noise.")
-            vector_weight = st.slider("Semantic search weight", 0.0, 1.0, float(s.vector_weight), 0.05, help="Higher values rely more on semantic similarity.")
-        with b:
-            temperature = st.slider("Answer creativity", 0.0, 1.0, float(s.temperature), 0.05, help="Lower is more deterministic; higher is more varied.")
-            neighbor = st.checkbox("Use nearby sections", value=bool(s.neighbor_expansion), help="Adds nearby chunks from the same document when useful.")
-        save = st.form_submit_button("Save settings", use_container_width=True, type="primary")
+def settings_page(system):
+    topbar(system,"Settings")
+    s=system.settings
+    st.markdown('<div class="section"><div class="sectiontitle">Research behavior</div><div class="sectionsub">Safe controls are exposed here; security validation remains in the application layer.</div>',unsafe_allow_html=True)
+    with st.form("settings_form"):
+        host=st.text_input("Ollama host",str(s.ollama_base_url)); emb=st.text_input("Embedding model",str(s.embedding_model)); gen=st.text_input("Generation model",str(s.generation_model))
+        a,b=st.columns(2)
+        with a: topk=st.number_input("Retrieval results",1,50,int(s.top_k)); vw=st.slider("Semantic weight",0.,1.,float(s.vector_weight),.05)
+        with b: temp=st.slider("Generation temperature",0.,1.,float(s.temperature),.05); neighbor=st.checkbox("Neighbor expansion",bool(s.neighbor_expansion))
+        save=st.form_submit_button("Save configuration",type="primary",use_container_width=True)
     if save:
         try:
-            ok, warnings = system.apply_settings_in_place({"ollama_base_url": host, "embedding_model": embedding, "generation_model": generation, "top_k": int(top_k), "vector_weight": float(vector_weight), "temperature": float(temperature), "neighbor_expansion": bool(neighbor)})
-            if ok:
-                st.success("Settings saved to the shared runtime.")
-            for warning in warnings or []:
-                st.warning(warning)
-        except Exception as exc:
-            st.error(f"Settings could not be saved: {exc}")
-    st.markdown('</div>', unsafe_allow_html=True)
+            ok,w=system.apply_settings_in_place({"ollama_base_url":host,"embedding_model":emb,"generation_model":gen,"top_k":int(topk),"vector_weight":float(vw),"temperature":float(temp),"neighbor_expansion":bool(neighbor)})
+            if ok: st.success("Configuration saved.")
+            for x in w or []: st.warning(x)
+        except Exception as exc: st.error(f"Settings were not saved: {exc}")
+    st.markdown('</div>',unsafe_allow_html=True)
 
 
-def main() -> None:
-    st.set_page_config(page_title="BookRAG", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
-    st.session_state.setdefault("bookrag_page", "Home")
-    st.session_state.setdefault("chat_nonce", 0)
-    st.session_state.setdefault("uploaded_hashes", set())
-    system = get_system()
-    css()
-    sidebar(system)
-    page = st.session_state.get("bookrag_page", "Home")
-    if page == "Home":
-        home(system)
-    elif page == "Documents":
-        documents_page(system)
-    elif page == "Live Processing":
-        processing_page(system)
-    elif page == "Ask BookRAG":
-        ask_page(system)
-    elif page == "Inspector":
-        inspector_page(system)
-    elif page == "System":
-        system_page(system)
-    elif page == "Settings":
-        settings_page(system)
-    else:
-        st.session_state["bookrag_page"] = "Home"
-        st.rerun()
+def main():
+    st.set_page_config(page_title="BookRAG Medical",page_icon="BR",layout="wide",initial_sidebar_state="expanded")
+    st.session_state.setdefault("bookrag_page","Home"); st.session_state.setdefault("uploaded_hashes",set())
+    system=get_system(); css(); sidebar(system)
+    page=st.session_state.get("bookrag_page","Home")
+    {"Home":home,"Documents":documents_page,"Live Processing":processing_page,"Ask BookRAG":ask_page,"Inspector":inspector_page,"System":system_page,"Settings":settings_page}.get(page,home)(system)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
