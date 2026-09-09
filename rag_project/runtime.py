@@ -23,6 +23,7 @@ def install() -> None:
         from rag_project.runtime_stability_v2 import install as install_stability_v2
         from rag_project.runtime_stability_v3 import install as install_stability_v3
         from rag_project.runtime_stability_v4 import install as install_stability_v4
+        from rag_project.runtime_stability_v5 import install as install_stability_v5
 
         install_hardening()
         install_extra()
@@ -32,7 +33,8 @@ def install() -> None:
         install_stability()
         install_stability_v2()
         install_stability_v3()
-        # Last layer: lease fencing, clear-vs-ingestion protection, and serialized
-        # production answer generation.
+        # Last layers: lease fencing, clear-vs-ingestion protection, serialized
+        # answers, and terminal-state regression protection.
         install_stability_v4()
+        install_stability_v5()
         _INSTALLED = True
