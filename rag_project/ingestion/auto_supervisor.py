@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -11,6 +12,7 @@ from typing import Any
 _LOCK = threading.RLock()
 _THREAD: threading.Thread | None = None
 _STOP = threading.Event()
+_CONTENT_CACHE: dict[str, tuple[str, str | None]] = {}
 _STATE: dict[str, Any] = {
     "enabled": False,
     "started_at": None,
@@ -72,32 +74,22 @@ def snapshot(system: Any | None = None) -> dict[str, Any]:
     return result
 
 
-def _stored_mtime(document: dict[str, Any]) -> float | None:
-    value = document.get("modified_at")
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).timestamp()
-    except (TypeError, ValueError):
-        return None
+def _file_signature(path: Path) -> str:
+    stat = path.stat()
+    return f"{stat.st_size}:{stat.st_mtime_ns}"
 
 
-def _same_file_revision(path: Path, document: dict[str, Any]) -> bool:
+def _same_content(system: Any, path: Path, document: dict[str, Any], signature: str) -> bool:
+    cache_key = str(path.resolve())
+    cached = _CONTENT_CACHE.get(cache_key)
+    if cached and cached[0] == signature:
+        return cached[1] == str(document.get("content_hash") or "")
     try:
-        stat = path.stat()
-    except OSError:
-        return False
-    recorded_size = int(document.get("file_size") or 0)
-    recorded_mtime = _stored_mtime(document)
-    if recorded_mtime is None:
-        return recorded_size == stat.st_size
-    # SQLite stores the document mtime as an ISO timestamp with microsecond
-    # precision. A sub-second tolerance avoids false "changed" detections caused
-    # by filesystem timestamp conversion while still catching real edits.
-    return recorded_size == stat.st_size and abs(recorded_mtime - stat.st_mtime) < 1.0
+        digest = str(system._hash_file(path))
+    except Exception:
+        digest = None
+    _CONTENT_CACHE[cache_key] = (signature, digest)
+    return digest is not None and digest == str(document.get("content_hash") or "")
 
 
 def _candidate(system: Any, path: Path) -> bool:
@@ -108,14 +100,15 @@ def _candidate(system: Any, path: Path) -> bool:
         status = str(document.get("status") or "").upper()
         if status in _ACTIVE:
             return False
-        same_revision = _same_file_revision(path, document)
-        if status in _TERMINAL_NO_RETRY and same_revision:
-            return False
-        if status.startswith("FAILED") and same_revision:
-            return False
+        signature = _file_signature(path)
+        same_content = _same_content(system, path, document, signature)
+        # A terminal document with the same content is intentionally left alone.
+        # A changed file is a new revision and is automatically re-indexed.
+        if status in _TERMINAL_NO_RETRY or status.startswith("FAILED"):
+            return not same_content
         if status in {"", "INTERRUPTED", "RECOVERING"}:
             return True
-        return not same_revision
+        return not same_content
     except (OSError, ValueError):
         return False
 
@@ -174,9 +167,8 @@ def _scan_once(system: Any) -> None:
                 _STATE["last_action"] = f"error on {path.name}"
                 _STATE["last_action_at"] = _now()
             _persist(system)
-        # One canonical ingestion at a time. The production system already uses
-        # a serialized local index; the next scan naturally advances to the next
-        # pending PDF.
+        # The canonical production pipeline is intentionally serialized. The
+        # next polling cycle advances to the next pending file.
         break
     _persist(system)
 
@@ -186,8 +178,7 @@ def _loop(system: Any, interval_seconds: float) -> None:
         _STATE["enabled"] = True
         _STATE["started_at"] = _STATE["started_at"] or _now()
     _persist(system)
-    # Run once immediately so files already sitting in incoming/ are discovered
-    # without waiting for the first polling interval.
+    # Immediate first scan means PDFs already present are discovered at startup.
     while not _STOP.is_set():
         try:
             _scan_once(system)
@@ -206,8 +197,9 @@ def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
 
     The supervisor is independent from the Streamlit rerun loop: once started,
     it continuously watches the configured incoming directory, recovers expired
-    leases, and invokes the production ingestion path without requiring another
-    UI click or the browser to remain on the Documents page.
+    leases, and invokes the canonical production ingestion path without another
+    UI click. Terminal failures are not retried unless the actual file content
+    changes; active work is left to the current lease owner.
     """
     global _THREAD
     with _LOCK:
