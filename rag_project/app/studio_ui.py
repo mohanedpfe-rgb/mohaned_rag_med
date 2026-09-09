@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import threading
 import time
@@ -21,6 +22,8 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+NAV_ITEMS = ["Overview", "Ingestion", "Inspector", "Settings", "Chat", "Health", "Background"]
+
 
 @st.cache_resource(show_spinner=False)
 def get_system():
@@ -38,6 +41,10 @@ def docs(system) -> list[dict[str, Any]]:
         return list(system.state_store.get_all_documents() or [])
     except Exception:
         return []
+
+
+def ready_docs(system) -> list[dict[str, Any]]:
+    return [d for d in docs(system) if str(d.get("status") or "").upper() == "READY"]
 
 
 def active_document_count(system) -> int:
@@ -64,6 +71,8 @@ def start_ingestion(system, source_dir: str) -> str:
     existing, _ = active_job()
     if existing:
         return existing
+    if not any(folder.glob("*.pdf")):
+        raise ValueError(f"No PDF files were found in {folder}.")
 
     registry = get_jobs()
     job_id = f"ingest-{time.time_ns()}"
@@ -77,16 +86,23 @@ def start_ingestion(system, source_dir: str) -> str:
     }
     with registry["lock"]:
         registry["items"][job_id] = job
+        if len(registry["items"]) > 50:
+            oldest = next(iter(registry["items"]))
+            registry["items"].pop(oldest, None)
 
     def worker() -> None:
         try:
-            job["result"] = system.ingest_directory(str(folder))
-            job["status"] = "COMPLETED"
+            result = system.ingest_directory(str(folder))
+            with registry["lock"]:
+                job["result"] = result
+                job["status"] = "COMPLETED"
         except Exception as exc:
-            job["error"] = repr(exc)
-            job["status"] = "FAILED"
+            with registry["lock"]:
+                job["error"] = repr(exc)
+                job["status"] = "FAILED"
         finally:
-            job["finished"] = time.time()
+            with registry["lock"]:
+                job["finished"] = time.time()
 
     threading.Thread(target=worker, name=f"{job_id}-worker", daemon=True).start()
     return job_id
@@ -95,6 +111,8 @@ def start_ingestion(system, source_dir: str) -> str:
 def save_pdf(incoming: Path, name: str, content: bytes) -> str:
     if not content:
         raise ValueError(f"Uploaded file '{name}' is empty.")
+    if not content.startswith(b"%PDF-"):
+        raise ValueError(f"Uploaded file '{name}' is not a valid PDF payload.")
     source = Path(name).name
     stem = Path(source).stem or "document"
     safe_stem = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem).strip(" ._") or "document"
@@ -132,9 +150,9 @@ def _metric_card(icon: str, label: str, value: Any, helper: str = "") -> None:
     st.markdown(
         f"""
         <div class="metric-card">
-          <div class="metric-top"><span class="metric-icon">{icon}</span><span class="metric-label">{label}</span></div>
-          <div class="metric-value">{value}</div>
-          <div class="metric-helper">{helper}</div>
+          <div class="metric-top"><span class="metric-icon">{icon}</span><span class="metric-label">{html.escape(label)}</span></div>
+          <div class="metric-value">{html.escape(str(value))}</div>
+          <div class="metric-helper">{html.escape(helper)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -142,8 +160,23 @@ def _metric_card(icon: str, label: str, value: Any, helper: str = "") -> None:
 
 
 def _section_title(title: str, eyebrow: str = "") -> None:
-    label = f'<div class="eyebrow">{eyebrow}</div>' if eyebrow else ""
-    st.markdown(f'{label}<div class="section-title">{title}</div>', unsafe_allow_html=True)
+    label = f'<div class="eyebrow">{html.escape(eyebrow)}</div>' if eyebrow else ""
+    st.markdown(f'{label}<div class="section-title">{html.escape(title)}</div>', unsafe_allow_html=True)
+
+
+def _navigate(page: str) -> None:
+    if page not in NAV_ITEMS:
+        return
+    st.session_state["studio_nav"] = page
+    st.rerun()
+
+
+def _format_duration(started: Any, finished: Any = None) -> float:
+    try:
+        end = float(finished or time.time())
+        return round(max(0.0, end - float(started or end)), 1)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def inject_css() -> None:
@@ -265,7 +298,7 @@ def render_sidebar(system) -> None:
                 st.error(str(exc))
 
         if job_id:
-            st.markdown(f'<span class="status-chip status-warn">● Worker running · {job_id}</span>', unsafe_allow_html=True)
+            st.markdown(f'<span class="status-chip status-warn">● Worker running · {html.escape(job_id)}</span>', unsafe_allow_html=True)
 
         st.markdown("<div class='sidebar-divider'></div>", unsafe_allow_html=True)
         st.markdown("### Maintenance")
@@ -301,10 +334,11 @@ def render_topbar(system, active_page: str) -> str:
         """,
         unsafe_allow_html=True,
     )
+    current = active_page if active_page in NAV_ITEMS else "Overview"
     nav = st.radio(
         "Studio navigation",
-        ["Overview", "Ingestion", "Inspector", "Settings", "Chat", "Health", "Background"],
-        index=["Overview", "Ingestion", "Inspector", "Settings", "Chat", "Health", "Background"].index(active_page),
+        NAV_ITEMS,
+        index=NAV_ITEMS.index(current),
         horizontal=True,
         label_visibility="collapsed",
         key="studio_nav_control",
@@ -317,7 +351,7 @@ def render_overview(system) -> None:
     items = docs(system)
     ready = sum(str(d.get("status") or "").upper() == "READY" for d in items)
     processing = active_document_count(system)
-    failed = sum(str(d.get("status") or "").upper() in {"FAILED", "INTERRUPTED"} for d in items)
+    failed = sum(str(d.get("status") or "").upper() in {"FAILED", "FAILED_EMBEDDING", "INTERRUPTED"} for d in items)
     try:
         vectors = int(system.vector_store.count())
         lexical = int(system.vector_store.lexical_count())
@@ -357,22 +391,41 @@ def render_overview(system) -> None:
                 st.info("No documents yet. Add a PDF from the sidebar, then start the ingestion queue.")
             elif failed:
                 st.warning(f"{failed} document(s) need attention. Open Ingestion for persistent error details.")
+            elif processing:
+                st.info(f"{processing} document(s) are currently being processed. Open Ingestion to watch progress.")
             else:
                 st.success("Your workspace is connected and ready for document research.")
+            quick_a, quick_b = st.columns(2)
+            with quick_a:
+                if st.button("💬 Open Chat", use_container_width=True, key="overview_open_chat"):
+                    _navigate("Chat")
+            with quick_b:
+                if st.button("⏳ View Ingestion", use_container_width=True, key="overview_open_ingestion"):
+                    _navigate("Ingestion")
     with right:
         _section_title("System snapshot", "Status")
         with st.container(border=True):
             ok, message, models = ollama_health(system.settings.ollama_base_url)
             st.markdown(f"**Ollama** · <span class='status-chip {_status_class('PASS' if ok else 'FAIL')}'>{'PASS' if ok else 'FAIL'}</span>", unsafe_allow_html=True)
             st.caption(message)
-            st.markdown(f"**Generation** · `{system.settings.generation_model}`")
-            st.markdown(f"**Embedding** · `{system.settings.embedding_model}`")
+            st.markdown(f"**Generation** · `{html.escape(str(system.settings.generation_model))}`", unsafe_allow_html=True)
+            st.markdown(f"**Embedding** · `{html.escape(str(system.settings.embedding_model))}`", unsafe_allow_html=True)
             st.caption(f"{len(models)} model(s) visible from Ollama")
+
 
 
 def render_chat(system) -> None:
     _section_title("Ask your documents", "Chat")
     st.caption("Answers are generated from retrieved evidence and the final result carries grounding and citation metadata.")
+
+    ready = ready_docs(system)
+    selection = [("All ready documents", None)] + [
+        (str(d.get("file_name") or "Unnamed document"), str(d.get("document_id"))) for d in ready
+    ]
+    selected_label = st.selectbox("Search scope", [label for label, _ in selection], key="studio_chat_scope")
+    selected_filter = dict(selection)[selected_label]
+    if not ready:
+        st.markdown('<div class="empty-state">No READY documents are available yet. Upload and index a PDF first.</div>', unsafe_allow_html=True)
 
     question = st.text_area(
         "Question",
@@ -381,13 +434,22 @@ def render_chat(system) -> None:
         height=110,
         label_visibility="collapsed",
     )
-    if st.button("🔎 Search and answer", type="primary", use_container_width=True):
+    action_col, clear_col = st.columns([4, 1])
+    with action_col:
+        ask_clicked = st.button("🔎 Search and answer", type="primary", use_container_width=True, disabled=not ready)
+    with clear_col:
+        clear_clicked = st.button("Clear", use_container_width=True)
+    if clear_clicked:
+        st.session_state.pop("console_answer", None)
+        st.session_state["studio_question"] = ""
+        st.rerun()
+    if ask_clicked:
         if not question.strip():
             st.warning("Please enter a question.")
         else:
             try:
                 with st.spinner("Retrieving evidence and generating the answer..."):
-                    result = system.answer(question.strip())
+                    result = system.answer(question.strip(), metadata_filter={"document_id": selected_filter} if selected_filter else None)
                 st.session_state["console_answer"] = result
             except Exception as exc:
                 st.session_state["console_answer"] = {"error": repr(exc)}
@@ -459,14 +521,22 @@ def render_health(system) -> None:
     except Exception as exc:
         compatibility = {"status": "ERROR", "message": str(exc)}
 
+    required = {
+        "Embedding model": str(system.settings.embedding_model),
+        "Generation model": str(system.settings.generation_model),
+    }
+    model_set = set(models)
     rows = [
         {"Component": "Ollama", "Status": "PASS" if ok else "FAIL", "Details": message},
-        {"Component": "Embedding", "Status": "PASS" if system.embedding_startup_error is None else "WARN", "Details": system.embedding_startup_error or system.settings.embedding_model},
+        {"Component": "Embedding", "Status": "PASS" if system.embedding_startup_error is None else "WARN", "Details": system.embedding_startup_error or required["Embedding model"]},
         {"Component": "Vector index", "Status": "PASS" if compatibility.get("status") == "READY" else "WARN", "Details": compatibility.get("message", compatibility.get("status", "UNKNOWN"))},
-        {"Component": "Generation", "Status": "INFO", "Details": system.settings.generation_model},
+        {"Component": "Generation model", "Status": "PASS" if required["Generation model"] in model_set else "WARN", "Details": required["Generation model"]},
     ]
     with st.container(border=True):
         st.dataframe(rows, use_container_width=True, hide_index=True)
+    missing = [name for name in required.values() if name not in model_set]
+    if ok and missing:
+        st.warning("Configured models missing from Ollama: " + ", ".join(missing))
     with st.container(border=True):
         st.markdown("**Ollama models**")
         st.write(models or "No models reported by Ollama.")
@@ -483,6 +553,7 @@ def render_ingestion(system) -> None:
         live = st.checkbox("Live refresh", value=False)
 
     rows = []
+    progress = []
     for d in docs(system)[:100]:
         metrics: dict[str, Any] = {}
         try:
@@ -490,52 +561,76 @@ def render_ingestion(system) -> None:
         except Exception:
             pass
         status = str(d.get("status") or "UNKNOWN").upper()
+        current_page = int(d.get("current_page") or 0)
+        total_pages = int(d.get("total_pages") or 0)
+        pct = min(100, int(round((100 * current_page / total_pages) if total_pages else (100 if status == "READY" else 0))) )
         rows.append(
             {
                 "Status": status,
                 "File": d.get("file_name"),
                 "Stage": d.get("current_stage"),
-                "Page": f"{d.get('current_page', 0)}/{d.get('total_pages', 0)}",
+                "Page": f"{current_page}/{total_pages}",
+                "Progress": f"{pct}%",
                 "Chunks": metrics.get("chunk_count", "—"),
                 "Embeddings": metrics.get("embedding_count", "—"),
                 "Dimension": d.get("embedding_dimension") or "—",
                 "Error": str(d.get("error") or "")[:180],
             }
         )
+        if status not in {"READY", "FAILED", "FAILED_EMBEDDING", "INTERRUPTED"}:
+            progress.append((str(d.get("file_name") or "Unnamed"), pct / 100.0))
     if rows:
         with st.container(border=True):
             st.dataframe(rows, use_container_width=True, hide_index=True)
     else:
         st.markdown('<div class="empty-state">No ingestion records yet.</div>', unsafe_allow_html=True)
 
+    if progress:
+        _section_title("Active progress", "Live")
+        for name, value in progress[:10]:
+            st.caption(name)
+            st.progress(max(0.0, min(1.0, value)))
+
     with st.expander("Recent process events", expanded=False):
         try:
             events = system.state_store.get_events(limit=200)
         except Exception:
             events = []
-        st.dataframe(
-            [
-                {
-                    "Time": e.get("created_at"),
-                    "File": e.get("file_name"),
-                    "Stage": e.get("stage"),
-                    "Status": e.get("status"),
-                    "Type": e.get("event_type"),
-                    "Message": str(e.get("message") or "")[:180],
-                    "Error": str(e.get("error") or "")[:180],
-                }
-                for e in events
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        if events:
+            st.dataframe(
+                [
+                    {
+                        "Time": e.get("created_at"),
+                        "File": e.get("file_name"),
+                        "Stage": e.get("stage"),
+                        "Status": e.get("status"),
+                        "Type": e.get("event_type"),
+                        "Message": str(e.get("message") or "")[:180],
+                        "Error": str(e.get("error") or "")[:180],
+                    }
+                    for e in events
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No process events have been recorded yet.")
 
     job_id, job = active_job()
     if job_id and job:
-        elapsed = max(0.0, time.time() - float(job.get("started") or time.time()))
+        elapsed = _format_duration(job.get("started"))
         st.info(f"Worker `{job_id}` active for {elapsed:.1f}s")
+    else:
+        last_job = st.session_state.get("studio_last_job")
+        registry = get_jobs()
+        with registry["lock"]:
+            history = registry["items"].get(last_job) if last_job else None
+        if history and history.get("status") == "COMPLETED":
+            st.success(f"Latest ingestion completed in {_format_duration(history.get('started'), history.get('finished')):.1f}s.")
+        elif history and history.get("status") == "FAILED":
+            st.error(f"Latest ingestion failed: {history.get('error') or 'unknown error'}")
     if live and (job_id or active_document_count(system) > 0):
-        time.sleep(2)
+        time.sleep(1.5)
         st.rerun()
 
 
@@ -543,14 +638,14 @@ def render_background(system) -> None:
     _section_title("Background state", "Operations")
     items = docs(system)
     job_id, _ = active_job()
+    registry = get_jobs()
+    with registry["lock"]:
+        history = list(registry["items"].items())[-20:]
     c1, c2, c3 = st.columns(3)
     c1.metric("Active documents", active_document_count(system))
     c2.metric("UI workers", 1 if job_id else 0)
     c3.metric("Tracked documents", len(items))
 
-    registry = get_jobs()
-    with registry["lock"]:
-        history = list(registry["items"].items())[-20:]
     if history:
         with st.container(border=True):
             st.dataframe(
@@ -559,8 +654,9 @@ def render_background(system) -> None:
                         "Job": jid,
                         "Status": job.get("status"),
                         "Folder": job.get("source_dir"),
-                        "Duration (s)": round(max(0.0, float(job.get("finished") or time.time()) - float(job.get("started") or time.time())), 1),
-                        "Error": job.get("error") or "",
+                        "Duration (s)": _format_duration(job.get("started"), job.get("finished")),
+                        "Result": str(job.get("result") or "")[:220],
+                        "Error": str(job.get("error") or "")[:220],
                     }
                     for jid, job in history
                 ],
@@ -570,7 +666,10 @@ def render_background(system) -> None:
     else:
         st.markdown('<div class="empty-state">No UI worker history yet.</div>', unsafe_allow_html=True)
 
-    if st.button("↻ Refresh background state", use_container_width=True):
+    if job_id:
+        if st.button("↻ Refresh background state", use_container_width=True):
+            st.rerun()
+    elif st.button("↻ Refresh background state", use_container_width=True):
         st.rerun()
 
 
@@ -581,7 +680,9 @@ def render_inspector(system) -> None:
         st.markdown('<div class="empty-state">No documents yet. Upload and index a PDF first.</div>', unsafe_allow_html=True)
         return
     labels = [f"{d.get('file_name')} — {str(d.get('document_id') or '')[:12]}" for d in items]
-    selected = st.selectbox("Document", labels, key="studio_inspector_document")
+    current_label = st.session_state.get("studio_inspector_document")
+    default_index = labels.index(current_label) if current_label in labels else 0
+    selected = st.selectbox("Document", labels, index=default_index, key="studio_inspector_document")
     document = items[labels.index(selected)]
     document_id = str(document.get("document_id"))
 
@@ -591,26 +692,44 @@ def render_inspector(system) -> None:
     c3.metric("Embedding dim", document.get("embedding_dimension") or "—")
     c4.metric("Version", str(document.get("version_id") or "")[:12] or "—")
 
+    path = Path(str(document.get("file_path") or ""))
+    if path.is_file():
+        st.caption(f"Source: `{path}` · {path.stat().st_size / (1024 * 1024):.2f} MB")
+    else:
+        st.caption("Source file is not currently present at the persisted path.")
+
+    actions = st.columns(2)
+    with actions[0]:
+        if document.get("status") == "READY" and st.button("💬 Ask about this document", use_container_width=True):
+            st.session_state["studio_chat_scope"] = str(document.get("file_name"))
+            _navigate("Chat")
+    with actions[1]:
+        if st.button("↻ Recheck index", use_container_width=True):
+            st.rerun()
+
     with st.expander("Page checkpoints", expanded=True):
         try:
             pages = system.state_store.get_pages(document_id) or []
         except Exception:
             pages = []
-        st.dataframe(
-            [
-                {
-                    "Page": p.get("page_number"),
-                    "Extraction": p.get("extraction_status"),
-                    "Method": p.get("extraction_method"),
-                    "OCR": p.get("ocr_status"),
-                    "Characters": len(p.get("text") or ""),
-                    "Error": p.get("processing_error") or "",
-                }
-                for p in pages
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+        if pages:
+            st.dataframe(
+                [
+                    {
+                        "Page": p.get("page_number"),
+                        "Extraction": p.get("extraction_status"),
+                        "Method": p.get("extraction_method"),
+                        "OCR": p.get("ocr_status"),
+                        "Characters": len(p.get("text") or ""),
+                        "Error": p.get("processing_error") or "",
+                    }
+                    for p in pages
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("No page checkpoint rows are available for this document.")
 
     with st.expander("Index verification", expanded=True):
         try:
@@ -654,7 +773,7 @@ def render_settings(system) -> None:
         embedding = st.text_input("Embedding model", value=str(current.embedding_model))
         generation = st.text_input("Generation model", value=str(current.generation_model))
         chunk_size = st.number_input("Chunk size", min_value=200, max_value=2000, value=int(current.chunk_size), step=50)
-        chunk_overlap = st.number_input("Chunk overlap", min_value=20, max_value=300, value=int(current.chunk_overlap), step=10)
+        chunk_overlap = st.number_input("Chunk overlap", min_value=20, max_value=300, value=min(int(current.chunk_overlap), max(20, int(current.chunk_size) - 1)), step=10)
         top_k = st.number_input("Top-k", min_value=1, max_value=20, value=int(current.top_k), step=1)
         temperature = st.slider("Temperature", 0.0, 1.0, value=float(current.temperature), step=0.1)
         vector_weight = st.slider("Vector weight", 0.0, 1.0, value=float(current.vector_weight), step=0.1)
@@ -662,22 +781,25 @@ def render_settings(system) -> None:
         submitted = st.form_submit_button("Apply live settings", type="primary", use_container_width=True)
 
     if submitted:
-        success, warnings = system.apply_settings_in_place(
-            {
-                "ollama_base_url": host,
-                "embedding_model": embedding,
-                "generation_model": generation,
-                "chunk_size": int(chunk_size),
-                "chunk_overlap": int(chunk_overlap),
-                "top_k": int(top_k),
-                "temperature": float(temperature),
-                "vector_weight": float(vector_weight),
-                "neighbor_expansion": bool(neighbor_expansion),
-            }
-        )
-        st.success("Live settings applied.") if success else st.error("Some settings could not be applied.")
-        for warning in warnings:
-            st.warning(warning)
+        if int(chunk_overlap) >= int(chunk_size):
+            st.error("Chunk overlap must be smaller than chunk size.")
+        else:
+            success, warnings = system.apply_settings_in_place(
+                {
+                    "ollama_base_url": host,
+                    "embedding_model": embedding,
+                    "generation_model": generation,
+                    "chunk_size": int(chunk_size),
+                    "chunk_overlap": int(chunk_overlap),
+                    "top_k": int(top_k),
+                    "temperature": float(temperature),
+                    "vector_weight": float(vector_weight),
+                    "neighbor_expansion": bool(neighbor_expansion),
+                }
+            )
+            st.success("Live settings applied.") if success else st.error("Some settings could not be applied.")
+            for warning in warnings:
+                st.warning(warning)
 
     with st.expander("Effective configuration", expanded=False):
         values: dict[str, Any] = {}
