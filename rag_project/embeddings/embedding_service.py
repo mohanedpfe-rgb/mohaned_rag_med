@@ -52,7 +52,7 @@ class EmbeddingService:
         self.base_url = validate_ollama_url(base_url) if not test_mode else base_url.rstrip("/") if base_url else ""
         self.model = sanitize_model_text(model, limit=200).strip()
         if not self.model: raise ValueError("Embedding model identifier cannot be empty.")
-        self.batch_size = max(1, min(int(batch_size), 64)); self.retries = max(1, min(int(retries), 6)); self.timeout_seconds = max(5.0, min(float(timeout_seconds), 180.0))
+        self.batch_size = max(1, min(int(batch_size), 32)); self.retries = max(0, min(int(retries), 3)); self.timeout_seconds = max(5.0, min(float(timeout_seconds), 60.0))
         self.test_mode=test_mode; self.dimension=None; self.provider="deterministic-test" if test_mode else "ollama"; self.prefer_local_transformers=bool(prefer_local_transformers)
         self.cache_size=max(0,int(cache_size)); self.cache_ttl_seconds=max(0.0,float(cache_ttl_seconds)); self._profile_fingerprint=None
         self._query_cache=OrderedDict(); self._embedding_cache=OrderedDict(); self._active_batch_size=self.batch_size; self._consecutive_timeouts=0
@@ -65,14 +65,14 @@ class EmbeddingService:
     def _check_ollama_available(self, force: bool=False) -> bool:
         if self.test_mode: return False
         now=time.monotonic()
-        if not force and self._ollama_available is not None and now-self._ollama_last_check<30: return self._ollama_available
+        if not force and self._ollama_available is not None and now-self._ollama_last_check<10: return self._ollama_available
         try:
             response=requests.get(f"{self.base_url}/api/tags",timeout=(1.5,3.0),allow_redirects=False)
             status_code=getattr(response,"status_code",200)
             if 300 <= status_code < 400: raise requests.RequestException("redirect rejected")
-            response.raise_for_status(); self._ollama_available=True
-        except requests.RequestException:
-            self._ollama_available=False; self.last_error="Ollama health probe failed"
+            response.raise_for_status(); self._ollama_available=True; self.last_error=None
+        except requests.RequestException as exc:
+            self._ollama_available=False; self.last_error=f"Ollama unavailable: {exc}"
         self._ollama_last_check=now; return self._ollama_available
     @property
     def identity(self) -> EmbeddingProfile | None:
@@ -105,7 +105,8 @@ class EmbeddingService:
         return [v for v in ordered if v is not None]
     def _ollama_embed_batch(self,texts:list[str])->list[list[float]]:
         attempt_texts=list(texts); last_error=None
-        for attempt in range(self.retries):
+        attempts=max(1,self.retries+1)
+        for attempt in range(attempts):
             if self._consecutive_timeouts>=2:self._active_batch_size=1
             if len(attempt_texts)>self._active_batch_size:
                 half=max(1,len(attempt_texts)//2); return self._ollama_embed_batch(attempt_texts[:half])+self._ollama_embed_batch(attempt_texts[half:])
@@ -123,12 +124,14 @@ class EmbeddingService:
                 self._active_batch_size=min(self.batch_size,self._active_batch_size+1); return result
             except requests.exceptions.Timeout as exc:
                 last_error=exc; self.last_error="Embedding request timed out"; self._consecutive_timeouts+=1; self._active_batch_size=max(1,self._active_batch_size//2)
-                if attempt+1<self.retries: time.sleep(min(4,1.5*(2**attempt)))
+                if attempt+1<attempts: time.sleep(min(2,0.75*(2**attempt)))
             except (requests.RequestException,ConnectionError,ValueError,KeyError,TypeError,RuntimeError) as exc:
                 last_error=exc; self.last_error=type(exc).__name__; self._ollama_available=False
-                if attempt+1<self.retries: time.sleep(min(2,0.5*(2**attempt)))
-        raise RuntimeError(f"Ollama embedding service failed after {self.retries} attempts for model {self.model!r}.") from last_error
+                if attempt+1<attempts: time.sleep(min(1.5,0.4*(2**attempt)))
+        raise RuntimeError(f"Ollama embedding service failed after {attempts} attempts for model {self.model!r}: {last_error}") from last_error
     def _transformers_embed_batch(self,texts:list[str])->list[list[float]]:
+        if not self.prefer_local_transformers:
+            raise RuntimeError("Local SentenceTransformers fallback is disabled; use the configured Ollama embedding service.")
         try:
             vectors=self._get_sentence_transformer().encode(texts,batch_size=max(1,min(self.batch_size,len(texts))),show_progress_bar=False,normalize_embeddings=False,convert_to_numpy=True); self.provider="sentence-transformers"; self.last_error=None
         except Exception as exc:
@@ -138,24 +141,14 @@ class EmbeddingService:
         self._validate(vectors,len(texts)); return [list(map(float,v)) for v in vectors]
     def _embed_batch(self,texts:list[str])->list[list[float]]:
         if not texts:return []
-        ollama_up=self._check_ollama_available()
         if self.prefer_local_transformers:
             try:return self._transformers_embed_batch(texts)
-            except Exception as exc:
-                if ollama_up:return self._ollama_embed_batch(texts)
-                raise exc
-        if ollama_up:
-            try:return self._ollama_embed_batch(texts)
-            except Exception as exc:
-                if ":" not in self.model:
-                    try:return self._transformers_embed_batch(texts)
-                    except Exception:pass
-                raise exc
-        if self.base_url:
-            try:return self._ollama_embed_batch(texts)
-            except Exception:pass
-        if ":" not in self.model:return self._transformers_embed_batch(texts)
-        raise RuntimeError(f"No embedding backend available at {self.base_url!r} for model {self.model!r}.")
+            except Exception:
+                if not self._check_ollama_available():
+                    raise
+        if not self._check_ollama_available():
+            raise RuntimeError(f"Embedding backend unavailable: Ollama at {self.base_url!r} did not respond to its health check. Start Ollama and ensure model {self.model!r} is installed.")
+        return self._ollama_embed_batch(texts)
     def _validate(self,vectors:list[list[float]],expected_count:int)->None:
         if len(vectors)!=expected_count or not vectors:raise ValueError("Embedding service returned an unexpected number of vectors.")
         dimension=len(vectors[0])
