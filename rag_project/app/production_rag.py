@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict
 
+from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import robust_ingestor
 from rag_project.intelligence.god_mode import _god_answer, audit_god_mode_index
@@ -22,6 +24,16 @@ class ProductionRAGSystem(ResilientRAGSystem):
         super().__init__(settings)
         self._production_feature_contract = validate_feature_contract()
 
+    def _new_cancel_flag(self, document_id: str):
+        flag = rag_system_module._IngestCancelFlag()
+        with rag_system_module._INGEST_LOCK:
+            rag_system_module._INGEST_CANCEL_FLAGS[document_id] = flag
+        return flag
+
+    def _remove_cancel_flag(self, document_id: str) -> None:
+        with rag_system_module._INGEST_LOCK:
+            rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
+
     def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
         """Use incremental ingestion so large PDFs do not stall at the final write."""
         self.embedding_startup_error = None
@@ -35,8 +47,14 @@ class ProductionRAGSystem(ResilientRAGSystem):
         return robust_ingestor.robust_ingest_file(self, pdf_path)
 
     def cancel_all_ingests(self) -> int:
-        """Cancel ingestion jobs owned by the resilient ingestion pipeline."""
-        return robust_ingestor.cancel_all_ingests()
+        """Cancel ingestion jobs owned by the shared ingestion registry."""
+        with rag_system_module._INGEST_LOCK:
+            count = 0
+            for flag in rag_system_module._INGEST_CANCEL_FLAGS.values():
+                if not flag.cancelled:
+                    flag.cancel()
+                    count += 1
+            return count
 
     def answer(self, question: str, metadata_filter: Dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._production_feature_contract["all_resolved"]:
@@ -87,6 +105,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             "feature_count": 44,
             "incremental_ingestion": True,
             "bounded_embedding_commit": True,
+            "durable_page_checkpoints": True,
         }
         index_status = str(checks.get("index", {}).get("status", "READY")).upper()
         checks["ready"] = bool(
