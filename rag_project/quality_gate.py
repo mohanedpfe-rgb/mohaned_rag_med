@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -30,14 +31,32 @@ def _as_list(value: Any) -> list[Any]:
         return []
 
 
+def _sqlite_connect(database: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(database, timeout=30)
+    connection.execute("PRAGMA busy_timeout = 30000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
+    return connection
+
+
 def validate_runtime_contract(system: Any) -> dict[str, Any]:
     """Fail fast on broken composition instead of discovering missing APIs mid-ingestion."""
     vector_store = getattr(system, "vector_store", None)
-    missing = [name for name in REQUIRED_VECTOR_METHODS if not callable(getattr(vector_store, name, None))]
+    missing = [
+        name for name in REQUIRED_VECTOR_METHODS
+        if not callable(getattr(vector_store, name, None))
+    ]
     settings = getattr(system, "settings", None)
     required_dirs = {
         name: getattr(settings, name, None)
-        for name in ("incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir", "log_dir")
+        for name in (
+            "incoming_dir",
+            "processed_dir",
+            "failed_dir",
+            "archive_dir",
+            "vector_db_dir",
+            "log_dir",
+        )
     }
     path_errors: list[str] = []
     for name, value in required_dirs.items():
@@ -59,8 +78,7 @@ def validate_runtime_contract(system: Any) -> dict[str, Any]:
     }
 
 
-def audit_index_consistency(system: Any, document_id: str | None = None) -> dict[str, Any]:
-    """Compare persistent Chroma records against the SQLite lexical mirror."""
+def _collect_consistency_records(system: Any, document_id: str | None) -> dict[str, Any]:
     vector_store = system.vector_store
     lexical_db = Path(vector_store.lexical_database)
     where = {"document_id": document_id} if document_id else None
@@ -74,11 +92,28 @@ def audit_index_consistency(system: Any, document_id: str | None = None) -> dict
     vector_map: dict[str, tuple[str, dict[str, Any]]] = {}
     for index, raw_id in enumerate(vector_ids):
         item_id = str(raw_id)
-        metadata = vector_meta[index] if index < len(vector_meta) and isinstance(vector_meta[index], dict) else {}
-        vector_map[item_id] = (str(vector_docs[index]) if index < len(vector_docs) else "", dict(metadata))
+        metadata = (
+            vector_meta[index]
+            if index < len(vector_meta) and isinstance(vector_meta[index], dict)
+            else {}
+        )
+        document = vector_docs[index] if index < len(vector_docs) else ""
+        vector_map[item_id] = (str(document), dict(metadata))
 
-    with sqlite3.connect(lexical_db) as connection:
-        rows = connection.execute("SELECT id, document, metadata, index_state FROM lexical_documents").fetchall()
+    with _sqlite_connect(lexical_db) as connection:
+        if document_id:
+            rows = connection.execute(
+                """
+                SELECT id, document, metadata, index_state
+                FROM lexical_documents
+                WHERE json_extract(metadata, '$.document_id') = ?
+                """,
+                (str(document_id),),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT id, document, metadata, index_state FROM lexical_documents"
+            ).fetchall()
 
     lexical_map: dict[str, tuple[str, dict[str, Any], str]] = {}
     for raw_id, document, metadata_json, index_state in rows:
@@ -86,22 +121,40 @@ def audit_index_consistency(system: Any, document_id: str | None = None) -> dict
             metadata = json.loads(metadata_json)
         except (TypeError, ValueError, json.JSONDecodeError):
             metadata = {}
-        if document_id and str(metadata.get("document_id")) != str(document_id):
-            continue
-        lexical_map[str(raw_id)] = (str(document), metadata, str(index_state).upper())
+        lexical_map[str(raw_id)] = (
+            str(document),
+            metadata,
+            str(index_state).upper(),
+        )
+    return {"vector": vector_map, "lexical": lexical_map}
 
+
+def audit_index_consistency(system: Any, document_id: str | None = None) -> dict[str, Any]:
+    """Compare persistent Chroma records against the SQLite lexical mirror."""
+    records = _collect_consistency_records(system, document_id)
+    vector_map = records["vector"]
+    lexical_map = records["lexical"]
     vector_ready = {
-        item_id for item_id, (_, metadata) in vector_map.items()
+        item_id
+        for item_id, (_, metadata) in vector_map.items()
         if str(metadata.get("index_state", "READY")).upper() == "READY"
     }
-    lexical_ready = {item_id for item_id, (_, _, state) in lexical_map.items() if state == "READY"}
+    lexical_ready = {
+        item_id
+        for item_id, (_, _, state) in lexical_map.items()
+        if state == "READY"
+    }
     vector_only = sorted(vector_ready - lexical_ready)
     lexical_only = sorted(lexical_ready - vector_ready)
     mismatched: list[str] = []
     for item_id in sorted(vector_ready & lexical_ready):
         vector_doc, vector_metadata = vector_map[item_id]
         lexical_doc, lexical_metadata, _ = lexical_map[item_id]
-        if vector_doc != lexical_doc or vector_metadata.get("document_id") != lexical_metadata.get("document_id") or vector_metadata.get("version_id") != lexical_metadata.get("version_id"):
+        if (
+            vector_doc != lexical_doc
+            or vector_metadata.get("document_id") != lexical_metadata.get("document_id")
+            or vector_metadata.get("version_id") != lexical_metadata.get("version_id")
+        ):
             mismatched.append(item_id)
 
     return {
@@ -114,24 +167,76 @@ def audit_index_consistency(system: Any, document_id: str | None = None) -> dict
     }
 
 
+def quick_index_health(system: Any, document_id: str | None = None) -> dict[str, Any]:
+    """Perform a bounded startup check without traversing every stored record."""
+    vector_store = system.vector_store
+    try:
+        where = {"document_id": document_id} if document_id else None
+        vector_count = int(vector_store.collection.count()) if where is None else len(
+            _as_list(vector_store.collection.get(where=where, include=[]).get("ids"))
+        )
+        lexical_db = Path(vector_store.lexical_database)
+        with _sqlite_connect(lexical_db) as connection:
+            if document_id:
+                row = connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM lexical_documents
+                    WHERE index_state = 'READY'
+                      AND json_extract(metadata, '$.document_id') = ?
+                    """,
+                    (str(document_id),),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM lexical_documents WHERE index_state = 'READY'"
+                ).fetchone()
+        lexical_count = int(row[0] if row else 0)
+        ready = vector_count == lexical_count
+        return {
+            "valid": ready,
+            "mode": "quick",
+            "vector_count": vector_count,
+            "lexical_count": lexical_count,
+        }
+    except Exception as exc:
+        return {"valid": False, "mode": "quick", "error": type(exc).__name__}
+
+
 def repair_index_consistency(system: Any, document_id: str | None = None) -> dict[str, Any]:
     """Rebuild only the lexical mirror from the authoritative vector records."""
     vector_store = system.vector_store
     audit = audit_index_consistency(system, document_id)
     scope = str(document_id) if document_id else None
     where = {"document_id": document_id} if document_id else None
-    records = vector_store.collection.get(where=where, include=["documents", "metadatas"])
+    records = vector_store.collection.get(
+        where=where,
+        include=["documents", "metadatas"],
+    )
     vector_ids = _as_list(records.get("ids"))
     vector_docs = _as_list(records.get("documents"))
     vector_meta = _as_list(records.get("metadatas"))
 
     expected: dict[str, tuple[str, dict[str, Any]]] = {}
     for index, raw_id in enumerate(vector_ids):
-        metadata = vector_meta[index] if index < len(vector_meta) and isinstance(vector_meta[index], dict) else {}
-        expected[str(raw_id)] = (str(vector_docs[index]) if index < len(vector_docs) else "", dict(metadata))
+        metadata = (
+            vector_meta[index]
+            if index < len(vector_meta) and isinstance(vector_meta[index], dict)
+            else {}
+        )
+        document = vector_docs[index] if index < len(vector_docs) else ""
+        expected[str(raw_id)] = (str(document), dict(metadata))
 
-    with sqlite3.connect(vector_store.lexical_database) as connection:
-        rows = connection.execute("SELECT id, metadata FROM lexical_documents").fetchall()
+    with _sqlite_connect(vector_store.lexical_database) as connection:
+        if scope:
+            rows = connection.execute(
+                "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
+                (scope,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT id, metadata FROM lexical_documents"
+            ).fetchall()
         delete_ids: list[str] = []
         for raw_id, metadata_json in rows:
             try:
@@ -143,7 +248,10 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
             if str(raw_id) not in expected:
                 delete_ids.append(str(raw_id))
         if delete_ids:
-            connection.executemany("DELETE FROM lexical_documents WHERE id = ?", [(item_id,) for item_id in delete_ids])
+            connection.executemany(
+                "DELETE FROM lexical_documents WHERE id = ?",
+                [(item_id,) for item_id in delete_ids],
+            )
 
     source_docs: list[str] = []
     source_meta: list[dict[str, Any]] = []
@@ -163,21 +271,36 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
     }
 
 
-def run_quality_gate(system: Any, *, repair_drift: bool = True) -> dict[str, Any]:
-    """Run deterministic checks and repair recoverable index drift."""
+def run_quality_gate(
+    system: Any,
+    *,
+    repair_drift: bool = True,
+    deep_audit: bool | None = None,
+) -> dict[str, Any]:
+    """Run a cheap startup gate and an optional full consistency audit."""
     contract = validate_runtime_contract(system)
     if not contract["ok"]:
         return {"ready": False, "contract": contract, "index": None}
 
-    index = audit_index_consistency(system)
+    if deep_audit is None:
+        deep_audit = str(os.getenv("BOOKRAG_DEEP_QUALITY_AUDIT", "false")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    quick = quick_index_health(system)
+    index = audit_index_consistency(system) if deep_audit else quick
     repair = None
     if repair_drift and not index["valid"]:
         repair = repair_index_consistency(system)
-        index = repair["after"]
+        index = repair["after"] if deep_audit else quick_index_health(system)
 
     return {
         "ready": bool(contract["ok"] and index["valid"]),
         "contract": contract,
         "index": index,
         "repair": repair,
+        "audit_mode": "deep" if deep_audit else "quick",
     }
