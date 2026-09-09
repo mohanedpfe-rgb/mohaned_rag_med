@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import secrets
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,7 +22,7 @@ def _truthy(value: str | None) -> bool:
 
 
 def require_auth() -> None:
-    """Require an explicit local admin password before exposing the application."""
+    """Require an explicit admin password before exposing the application."""
     password = os.getenv(AUTH_ENV, "").strip()
     if len(password) < 12:
         st.error(
@@ -31,7 +32,7 @@ def require_auth() -> None:
         )
         st.stop()
 
-    now = __import__("time").time()
+    now = time.time()
     if st.session_state.get("bookrag_authenticated"):
         if now - float(st.session_state.get("bookrag_auth_at", 0)) <= 1800:
             return
@@ -50,6 +51,7 @@ def require_auth() -> None:
         if secrets.compare_digest(attempt, password):
             st.session_state["bookrag_authenticated"] = True
             st.session_state["bookrag_auth_at"] = now
+            st.session_state["bookrag_failed_attempts"] = 0
             st.rerun()
         st.session_state["bookrag_failed_attempts"] = int(st.session_state.get("bookrag_failed_attempts", 0)) + 1
         st.error("Invalid password.")
@@ -60,14 +62,16 @@ def require_auth() -> None:
 
 
 def clear_confirmation_ui() -> None:
-    """Render a second, typed confirmation for destructive deletion."""
+    """Render a typed confirmation and synchronize the legacy checkbox gate."""
     with st.sidebar:
-        st.text_input(
+        phrase = st.text_input(
             "Type CLEAR ALL PDF DATA to enable deletion",
             key="bookrag_clear_phrase",
             type="password",
             placeholder=CLEAR_PHRASE,
+            label_visibility="collapsed",
         )
+    st.session_state["exact_confirm"] = secrets.compare_digest(phrase, CLEAR_PHRASE)
 
 
 def require_clear_confirmation() -> None:
