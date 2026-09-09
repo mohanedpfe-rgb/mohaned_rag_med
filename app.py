@@ -7,6 +7,7 @@ import streamlit as st
 from rag_project.app import bookrag_ui
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.bookrag_ui import main as ui_main
+from rag_project.app.live_runtime import render_live_runtime
 from rag_project.ingestion.auto_supervisor import start as start_auto_supervisor
 from rag_project.security import (
     register_session_upload,
@@ -95,10 +96,13 @@ def main() -> None:
     if not require_auth():
         return
     system = _secure_system()
-    # Start one autonomous, process-level watcher after authentication. The UI
-    # remains a consumer of durable state; ingestion does not depend on a button
-    # click or on the browser session staying on the Documents page.
-    start_auto_supervisor(system, interval_seconds=3.0)
+    # Start one autonomous process-level watcher after authentication. Ingestion
+    # is no longer coupled to a UI button or to the current browser page.
+    start_auto_supervisor(system, interval_seconds=1.0)
+    # The runtime rail is independently refreshed every second. It reads durable
+    # SQLite state plus supervisor diagnostics, so the user sees live processing
+    # even while browsing another BookRAG page.
+    render_live_runtime(system)
     ui_main()
 
 
