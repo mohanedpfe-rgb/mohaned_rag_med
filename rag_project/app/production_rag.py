@@ -32,14 +32,13 @@ class ProductionRAGSystem(ResilientRAGSystem):
             rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
 
     def _archive_duplicate_upload(self, pdf_path: str | Path, document_id: str, result: dict[str, Any]) -> dict[str, Any]:
-        """Remove a successfully deduplicated upload from the incoming queue.
-
-        A duplicate must not remain in ``incoming`` forever because the autonomous
-        supervisor will continue to discover it on every reconciliation cycle.
-        Archive failures are reported as warnings and never change a successful
-        deduplication into a failed ingestion result.
-        """
+        """Archive a deduplicated upload only when it came from the incoming queue."""
         source = Path(pdf_path)
+        incoming_root = Path(self.settings.incoming_dir).resolve()
+        try:
+            source.resolve().relative_to(incoming_root)
+        except ValueError:
+            return result
         if not source.is_file():
             return result
         try:
@@ -52,13 +51,13 @@ class ProductionRAGSystem(ResilientRAGSystem):
             if target.exists():
                 target = archive_dir / f"{source.stem}-duplicate-{content_hash[:12]}-{document_id[:8]}{source.suffix}"
             source.replace(target)
-            result = dict(result)
-            result["archived_duplicate"] = str(target)
-            return result
+            updated = dict(result)
+            updated["archived_duplicate"] = str(target)
+            return updated
         except OSError as exc:
-            result = dict(result)
-            result["archive_warning"] = f"Duplicate was skipped but could not be archived: {type(exc).__name__}"
-            return result
+            updated = dict(result)
+            updated["archive_warning"] = f"Duplicate was skipped but could not be archived: {type(exc).__name__}"
+            return updated
 
     def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
         """Single authoritative ingestion implementation with duplicate cleanup."""
@@ -114,11 +113,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             identity = self.embedding_service.identity
             startup_error = getattr(self, "embedding_startup_error", None)
             embedding_ok = startup_error is None and identity is not None
-            checks["embedding"] = {
-                "ok": embedding_ok,
-                "identity": identity,
-                "error": startup_error if not embedding_ok else None,
-            }
+            checks["embedding"] = {"ok": embedding_ok, "identity": identity, "error": startup_error if not embedding_ok else None}
         except Exception as exc:
             checks["embedding"] = {"ok": False, "error": type(exc).__name__}
         try:
