@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import ipaddress
 import os
 import re
@@ -14,9 +13,6 @@ from urllib.parse import urlparse
 
 import streamlit as st
 
-AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
-# SHA-256 of the permanent default BookRAG administrator password.
-DEFAULT_ADMIN_PASSWORD_SHA256 = "2e42eb3297ed1906d0e4695cb5cf87691ab178e03d06a53dce866e29522ce686"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
@@ -24,9 +20,6 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_PDF_PAGES = 500
 MAX_QUERY_CHARS = 4000
-AUTH_SESSION_SECONDS = 1800
-MAX_FAILED_AUTH = 5
-MIN_ADMIN_PASSWORD_LENGTH = 12
 GLOBAL_CONCURRENT_INGESTS = 2
 GLOBAL_CONCURRENT_ANSWERS = 4
 MAX_FILENAME_CHARS = 180
@@ -75,53 +68,9 @@ def sanitize_log_text(value: object) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
-def _configured_admin_passwords() -> tuple[str, ...]:
-    """Return SHA-256 digests for the permanent default and optional local password."""
-    values = [DEFAULT_ADMIN_PASSWORD_SHA256]
-    override = os.getenv(AUTH_ENV, "").strip()
-    if override and len(override) >= MIN_ADMIN_PASSWORD_LENGTH:
-        values.append(hashlib.sha256(override.encode("utf-8")).hexdigest())
-    return tuple(values)
-
-
-def require_auth() -> bool:
-    """Authenticate with the permanent BookRAG default password or an optional local password."""
-    password_hashes = _configured_admin_passwords()
-    now = time.time()
-
-    if st.session_state.get("bookrag_authenticated"):
-        if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
-            return True
-        st.session_state.pop("bookrag_authenticated", None)
-        st.session_state.pop("bookrag_auth_at", None)
-        audit_event("session_expired")
-
-    st.markdown("## Unlock BookRAG")
-    st.caption("Enter your local BookRAG administrator password to open the workspace.")
-    attempt = st.text_input("Admin password", type="password", key="bookrag_login_password", autocomplete="current-password")
-    if st.button("Unlock BookRAG", type="primary", key="bookrag_unlock"):
-        attempt_hash = hashlib.sha256(attempt.encode("utf-8")).hexdigest()
-        unlocked = any(secrets.compare_digest(attempt_hash, expected) for expected in password_hashes)
-        if unlocked:
-            st.session_state["bookrag_authenticated"] = True
-            st.session_state["bookrag_auth_at"] = now
-            st.session_state["bookrag_failed_attempts"] = 0
-            st.session_state.pop("bookrag_login_password", None)
-            audit_event("login_success")
-            st.rerun()
-        st.session_state["bookrag_failed_attempts"] = int(st.session_state.get("bookrag_failed_attempts", 0)) + 1
-        audit_event("login_failure")
-        st.error("Invalid administrator password.")
-        if st.session_state["bookrag_failed_attempts"] >= MAX_FAILED_AUTH:
-            audit_event("login_lockout")
-            st.warning("Too many failed attempts in this session. Restart Streamlit to reset the lock.")
-            st.stop()
-    st.stop()
-
-
 def clear_confirmation_ui() -> None:
     with st.sidebar:
-        phrase = st.text_input("Type CLEAR ALL PDF DATA to enable deletion", key="bookrag_clear_phrase", type="password", placeholder=CLEAR_PHRASE, label_visibility="collapsed")
+        phrase = st.text_input("Type CLEAR ALL PDF DATA to enable deletion", key="bookrag_clear_phrase", placeholder=CLEAR_PHRASE, label_visibility="collapsed")
     st.session_state["exact_confirm"] = secrets.compare_digest(phrase, CLEAR_PHRASE)
 
 
