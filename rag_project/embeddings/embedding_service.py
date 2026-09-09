@@ -15,6 +15,20 @@ import requests
 from rag_project.security import sanitize_model_text, validate_ollama_url
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Normalize array-like backend values without evaluating truthiness."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 class EmbeddingProfile:
     """Immutable identity for a specific embedding configuration and index profile."""
     def __init__(self, provider: str, model: str | None = None, dimension: int | None = None, *, model_name: str | None = None, model_version: str | None = None, normalization: str = "none", metric: str = "cosine", implementation_version: str = "embedding-v2", configuration: dict[str, Any] | None = None, creation_timestamp: str | None = None):
@@ -55,7 +69,7 @@ class EmbeddingService:
         self.batch_size = max(1, min(int(batch_size), 32)); self.retries = max(0, min(int(retries), 3)); self.timeout_seconds = max(5.0, min(float(timeout_seconds), 60.0))
         self.test_mode=test_mode; self.dimension=None; self.provider="deterministic-test" if test_mode else "ollama"; self.prefer_local_transformers=bool(prefer_local_transformers)
         self.cache_size=max(0,int(cache_size)); self.cache_ttl_seconds=max(0.0,float(cache_ttl_seconds)); self._profile_fingerprint=None
-        self._query_cache=OrderedDict(); self._embedding_cache=OrderedDict(); self._active_batch_size=self.batch_size; self._consecutive_timeouts=0
+        self._query_cache=OrderedDict(); self._embedding_cache=OrderedDict(); self._cache_lock=threading.RLock(); self._active_batch_size=self.batch_size; self._consecutive_timeouts=0
         self._inference_semaphore=threading.BoundedSemaphore(max(1,int(max_concurrency))); self._sentence_transformer=None; self._ollama_available=None; self._ollama_last_check=0.0; self.last_error=None
     def _get_sentence_transformer(self):
         if self._sentence_transformer is None:
@@ -90,19 +104,22 @@ class EmbeddingService:
         texts=[sanitize_model_text(t,limit=12000) for t in texts]
         if self.test_mode:return [self._test_embedding(t) for t in texts]
         ordered=[None]*len(texts); missing=[]; missing_indices=[]; prefix=self._profile_fingerprint or "no_profile"
-        for i,text in enumerate(texts):
-            key=f"{prefix}::{text}"; cached=self._embedding_cache.get(key)
-            if cached is not None: ordered[i]=cached
-            else: missing_indices.append(i); missing.append(text)
+        with self._cache_lock:
+            for i,text in enumerate(texts):
+                key=f"{prefix}::{text}"; cached=self._embedding_cache.get(key)
+                if cached is not None: ordered[i]=list(cached)
+                else: missing_indices.append(i); missing.append(text)
         if missing:
             with self._inference_semaphore: new=self._embed_batch(missing)
+            new = _as_list(new)
             if len(new)!=len(missing): raise RuntimeError("Embedding backend returned an unexpected result count.")
-            for offset,(i,text) in enumerate(zip(missing_indices,missing,strict=True)):
-                vector=new[offset]; key=f"{prefix}::{text}"; self._embedding_cache[key]=vector
-                if self.cache_size and len(self._embedding_cache)>self.cache_size:self._embedding_cache.popitem(last=False)
-                ordered[i]=vector
+            with self._cache_lock:
+                for offset,(i,text) in enumerate(zip(missing_indices,missing,strict=True)):
+                    vector = list(_as_list(new[offset])); key=f"{prefix}::{text}"; self._embedding_cache[key]=vector
+                    if self.cache_size and len(self._embedding_cache)>self.cache_size:self._embedding_cache.popitem(last=False)
+                    ordered[i]=vector
         if any(v is None for v in ordered):raise RuntimeError("Embedding backend returned incomplete results.")
-        return [v for v in ordered if v is not None]
+        return [list(v) for v in ordered if v is not None]
     def _ollama_embed_batch(self,texts:list[str])->list[list[float]]:
         attempt_texts=list(texts); last_error=None
         attempts=max(1,self.retries+1)
@@ -120,8 +137,9 @@ class EmbeddingService:
                 elif isinstance(payload.get("embedding"),list): result=[payload["embedding"]]
                 elif isinstance(payload.get("data"),list): result=[item["embedding"] for item in payload["data"]]
                 else: raise ValueError("Embedding response did not contain embeddings.")
+                result = _as_list(result)
                 self._validate(result,len(attempt_texts)); self.provider="ollama"; self.last_error=None; self._consecutive_timeouts=0; self._ollama_available=True
-                self._active_batch_size=min(self.batch_size,self._active_batch_size+1); return result
+                self._active_batch_size=min(self.batch_size,self._active_batch_size+1); return [list(_as_list(vector)) for vector in result]
             except requests.exceptions.Timeout as exc:
                 last_error=exc; self.last_error="Embedding request timed out"; self._consecutive_timeouts+=1; self._active_batch_size=max(1,self._active_batch_size//2)
                 if attempt+1<attempts: time.sleep(min(2,0.75*(2**attempt)))
@@ -137,7 +155,8 @@ class EmbeddingService:
         except Exception as exc:
             self.last_error=type(exc).__name__; self._sentence_transformer=None; raise RuntimeError("SentenceTransformers fallback failed.") from exc
         if isinstance(vectors,np.ndarray):vectors=vectors.tolist()
-        if isinstance(vectors,list) and vectors and not isinstance(vectors[0],list):vectors=[list(vectors)]
+        vectors = _as_list(vectors)
+        if vectors and not isinstance(vectors[0],list):vectors=[list(vectors)]
         self._validate(vectors,len(texts)); return [list(map(float,v)) for v in vectors]
     def _embed_batch(self,texts:list[str])->list[list[float]]:
         if not texts:return []
@@ -150,22 +169,30 @@ class EmbeddingService:
             raise RuntimeError(f"Embedding backend unavailable: Ollama at {self.base_url!r} did not respond to its health check. Start Ollama and ensure model {self.model!r} is installed.")
         return self._ollama_embed_batch(texts)
     def _validate(self,vectors:list[list[float]],expected_count:int)->None:
-        if len(vectors)!=expected_count or not vectors:raise ValueError("Embedding service returned an unexpected number of vectors.")
-        dimension=len(vectors[0])
-        if dimension==0 or any(len(v)!=dimension or any(not isinstance(x,(int,float)) or not math.isfinite(x) for x in v) for v in vectors):raise ValueError("Embedding vectors have inconsistent dimensions.")
-        if any(math.sqrt(sum(float(x)*float(x) for x in v))<=1e-12 for v in vectors):raise ValueError("Embedding vectors must have a non-zero norm.")
+        vectors = _as_list(vectors)
+        if len(vectors)!=expected_count or len(vectors)==0:raise ValueError("Embedding service returned an unexpected number of vectors.")
+        normalized = [_as_list(vector) for vector in vectors]
+        dimension=len(normalized[0])
+        if dimension==0 or any(len(v)!=dimension or any(not isinstance(x,(int,float)) or not math.isfinite(x) for x in v) for v in normalized):raise ValueError("Embedding vectors have inconsistent dimensions.")
+        if any(math.sqrt(sum(float(x)*float(x) for x in v))<=1e-12 for v in normalized):raise ValueError("Embedding vectors must have a non-zero norm.")
         if self.dimension is None:self.dimension=dimension
         elif self.dimension!=dimension:raise ValueError(f"Embedding dimension changed from {self.dimension} to {dimension}.")
     def embed_query(self,query:str)->list[float]:
-        query=sanitize_model_text(query,limit=4000); key=query.strip(); now=time.monotonic(); cached=self._query_cache.get(key)
-        if cached and now-cached[0]<=self.cache_ttl_seconds:self._query_cache.move_to_end(key); return list(cached[1])
-        vectors=self.embed_texts([query]);
+        query=sanitize_model_text(query,limit=4000); key=query.strip(); now=time.monotonic()
+        with self._cache_lock:
+            cached=self._query_cache.get(key)
+            if cached is not None and now-cached[0]<=self.cache_ttl_seconds:
+                self._query_cache.move_to_end(key); return list(cached[1])
+            if cached is not None: self._query_cache.pop(key, None)
+        vectors=self.embed_texts([query])
         if not vectors:raise RuntimeError("No embedding was produced for the query.")
         vector=list(vectors[0])
-        if self.cache_size:self._query_cache[key]=(now,vector); self._query_cache.move_to_end(key)
-        while len(self._query_cache)>self.cache_size:self._query_cache.popitem(last=False)
+        with self._cache_lock:
+            if self.cache_size:
+                self._query_cache[key]=(now,vector); self._query_cache.move_to_end(key)
+                while len(self._query_cache)>self.cache_size:self._query_cache.popitem(last=False)
         return vector
     def validate_embedding(self,vector:list[float]|tuple[float,...])->None:self._validate([list(vector)],1)
-    def validate_batch(self,vectors:list[list[float]])->None:self._validate(vectors,len(vectors))
+    def validate_batch(self,vectors:list[list[float]])->None:self._validate(vectors,len(_as_list(vectors)))
     def _test_embedding(self,text:str)->list[float]:
         vector=[byte/255.0 for byte in hashlib.sha256(text.encode("utf-8")).digest()]; self._validate([vector],1); return vector
