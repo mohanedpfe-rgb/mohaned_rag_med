@@ -35,8 +35,8 @@ class Settings:
     ingestion_db_path: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2] / "data" / "ingestion.sqlite3")
     page_batch_size: int = 16
     chunk_batch_size: int = 32
-    embedding_batch_size: int = 4
-    embedding_retries: int = 4
+    embedding_batch_size: int = 16
+    embedding_retries: int = 2
     embedding_timeout_seconds: float = 180.0
     embedding_test_mode: bool = False
     lexical_mode: str = "hybrid"
@@ -110,9 +110,9 @@ class Settings:
         self.vector_weight = max(0.0, min(float(self.vector_weight), 1.0))
         self.page_batch_size = max(1, int(self.page_batch_size))
         self.chunk_batch_size = max(1, int(self.chunk_batch_size))
-        self.embedding_batch_size = max(1, int(self.embedding_batch_size))
-        self.embedding_retries = max(0, int(self.embedding_retries))
-        self.embedding_timeout_seconds = max(1.0, float(self.embedding_timeout_seconds))
+        self.embedding_batch_size = max(1, min(int(self.embedding_batch_size), 32))
+        self.embedding_retries = max(0, min(int(self.embedding_retries), 3))
+        self.embedding_timeout_seconds = max(30.0, min(float(self.embedding_timeout_seconds), 300.0))
         self.generation_timeout_seconds = max(1.0, float(self.generation_timeout_seconds))
         self.generation_latency_budget_seconds = max(1.0, float(self.generation_latency_budget_seconds))
         self.generation_max_output_tokens = max(32, int(self.generation_max_output_tokens))
