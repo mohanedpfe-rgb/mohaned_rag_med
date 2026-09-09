@@ -4,9 +4,9 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-from rag_project.app import canva_exact_ui
+from rag_project.app import bookrag_ui
 from rag_project.app import rag_system as rag_system_module
-from rag_project.app.canva_exact_ui import main as exact_main
+from rag_project.app.bookrag_ui import main as ui_main
 from rag_project.security import (
     register_session_upload,
     require_auth,
@@ -17,16 +17,16 @@ from rag_project.security import (
     validate_storage_path,
 )
 
-# Defensive compatibility guard: ingestion code uses a UTC timestamp helper.
-# Keep the canonical implementation in state_store, but guarantee the RAG module
-# always has a callable symbol even when a stale deployment/import cache survives.
+# Defensive compatibility guard for older/stale deployments where the helper may
+# be absent from the imported RAG module even though the canonical helper exists
+# in the persistent ingestion state store.
 if not callable(getattr(rag_system_module, "utc_now", None)):
     rag_system_module.utc_now = lambda: datetime.now(timezone.utc).isoformat()
 
-_ORIGINAL_GET_SYSTEM = canva_exact_ui.get_system
-_ORIGINAL_SAVE_PDF = canva_exact_ui.save_pdf
-_ORIGINAL_START_INGESTION = canva_exact_ui.start_ingestion
-_ORIGINAL_OLLAMA_HEALTH = canva_exact_ui.ollama_health
+_ORIGINAL_GET_SYSTEM = bookrag_ui.get_system
+_ORIGINAL_SAVE_PDF = bookrag_ui.save_pdf
+_ORIGINAL_START_INGESTION = bookrag_ui.start_ingestion
+_ORIGINAL_OLLAMA_HEALTH = bookrag_ui.ollama_health
 
 
 def _secure_system():
@@ -46,7 +46,10 @@ def _secure_system():
         clean = dict(updates or {})
         if "ollama_base_url" in clean:
             clean["ollama_base_url"] = validate_ollama_url(clean["ollama_base_url"])
-        for key in ("incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir", "log_dir", "ingestion_db_path"):
+        for key in (
+            "incoming_dir", "processed_dir", "failed_dir", "archive_dir",
+            "vector_db_dir", "log_dir", "ingestion_db_path",
+        ):
             if key in clean:
                 clean[key] = validate_storage_path(system.settings.project_root, clean[key], key)
         return original_apply(clean)
@@ -61,9 +64,8 @@ def _secure_system():
     return system
 
 
-# Preserve Streamlit's cache clear method for the UI's Recreate runtime action.
 _secure_system.clear = getattr(_ORIGINAL_GET_SYSTEM, "clear", lambda: None)
-canva_exact_ui.get_system = _secure_system
+bookrag_ui.get_system = _secure_system
 
 
 def _secure_save_pdf(incoming, name, content):
@@ -74,25 +76,24 @@ def _secure_save_pdf(incoming, name, content):
     return _ORIGINAL_SAVE_PDF(safe_incoming, name, content)
 
 
-def _secure_start_ingestion(system, source_dir):
+def _secure_start_ingestion(system, source_dir, *, trigger="manual"):
     safe_source = validate_storage_path(system.settings.project_root, source_dir, "incoming folder")
-    return _ORIGINAL_START_INGESTION(system, str(safe_source))
+    return _ORIGINAL_START_INGESTION(system, str(safe_source), trigger=trigger)
 
 
 def _secure_ollama_health(base_url):
     return _ORIGINAL_OLLAMA_HEALTH(validate_ollama_url(base_url))
 
 
-canva_exact_ui.save_pdf = _secure_save_pdf
-canva_exact_ui.start_ingestion = _secure_start_ingestion
-canva_exact_ui.ollama_health = _secure_ollama_health
+bookrag_ui.save_pdf = _secure_save_pdf
+bookrag_ui.start_ingestion = _secure_start_ingestion
+bookrag_ui.ollama_health = _secure_ollama_health
 
 
 def main() -> None:
-    st.set_page_config(page_title="BookRAG Studio", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
     if not require_auth():
         return
-    exact_main()
+    ui_main()
 
 
 if __name__ == "__main__":
