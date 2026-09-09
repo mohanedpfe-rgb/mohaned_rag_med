@@ -563,7 +563,7 @@ def render_ingestion(system) -> None:
         status = str(d.get("status") or "UNKNOWN").upper()
         current_page = int(d.get("current_page") or 0)
         total_pages = int(d.get("total_pages") or 0)
-        pct = min(100, int(round((100 * current_page / total_pages) if total_pages else (100 if status == "READY" else 0))) )
+        pct = min(100, int(round((100 * current_page / total_pages) if total_pages else (100 if status == "READY" else 0))))
         rows.append(
             {
                 "Status": status,
@@ -666,10 +666,7 @@ def render_background(system) -> None:
     else:
         st.markdown('<div class="empty-state">No UI worker history yet.</div>', unsafe_allow_html=True)
 
-    if job_id:
-        if st.button("↻ Refresh background state", use_container_width=True):
-            st.rerun()
-    elif st.button("↻ Refresh background state", use_container_width=True):
+    if st.button("↻ Refresh background state", use_container_width=True):
         st.rerun()
 
 
