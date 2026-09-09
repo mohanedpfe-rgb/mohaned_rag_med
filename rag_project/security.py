@@ -20,12 +20,11 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_UPLOAD_BYTES = 500 * 1024 * 1024
 MAX_PDF_PAGES = 500
 MAX_QUERY_CHARS = 4000
-MAX_EVIDENCE_CHARS = 12000
-MAX_CONVERSATION_CHARS = 8000
 AUTH_SESSION_SECONDS = 1800
 MAX_FAILED_AUTH = 5
 GLOBAL_CONCURRENT_INGESTS = 2
 GLOBAL_CONCURRENT_ANSWERS = 4
+MAX_FILENAME_CHARS = 180
 
 _INGEST_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_INGESTS)
 _ANSWER_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_ANSWERS)
@@ -55,7 +54,6 @@ def _session_actor() -> str:
 
 
 def audit_event(action: str, *, detail: str = "") -> None:
-    """Write a minimal local audit record without secrets or document contents."""
     from datetime import datetime, timezone
     log_dir = Path(os.getenv("LOG_DIR", "logs")).expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +71,6 @@ def sanitize_log_text(value: object) -> str:
 
 
 def require_auth() -> None:
-    """Require an explicit administrator password before exposing the application."""
     password = os.getenv(AUTH_ENV, "").strip()
     if len(password) < 12:
         st.error("BookRAG is locked because BOOKRAG_ADMIN_PASSWORD is not configured with a password of at least 12 characters.")
@@ -169,10 +166,22 @@ def validate_query(value: str) -> str:
 
 
 def validate_pdf_payload(name: str, content: bytes) -> None:
+    safe_name = Path(name).name
+    if len(safe_name) > MAX_FILENAME_CHARS:
+        raise ValueError("PDF filename is too long.")
     if len(content) > MAX_UPLOAD_BYTES:
-        raise ValueError(f"Uploaded file '{Path(name).name}' exceeds the 50 MB security limit.")
+        raise ValueError(f"Uploaded file '{safe_name}' exceeds the 50 MB security limit.")
     if not content.startswith(b"%PDF-"):
-        raise ValueError(f"Uploaded file '{Path(name).name}' is not a valid PDF payload.")
+        raise ValueError(f"Uploaded file '{safe_name}' is not a valid PDF payload.")
+    try:
+        import fitz
+        pdf = fitz.open(stream=content, filetype="pdf")
+        try:
+            validate_pdf_page_count(pdf.page_count)
+        finally:
+            pdf.close()
+    except Exception as exc:
+        raise ValueError(f"Uploaded file '{safe_name}' failed PDF structural validation.") from exc
 
 
 def validate_pdf_page_count(page_count: int) -> int:
@@ -220,107 +229,64 @@ def release_answer_slot() -> None:
 
 
 def consume_rate_limit(bucket: str, *, limit: int, window_seconds: float) -> bool:
-    now = time.monotonic()
-    key = f"{_session_actor()}::{bucket}"
+    now = time.monotonic(); key = f"{_session_actor()}::{bucket}"
     with _RATE_LOCK:
         start, count = _RATE_STATE.get(key, (now, 0))
-        if now - start >= window_seconds:
-            start, count = now, 0
-        if count >= limit:
-            return False
-        _RATE_STATE[key] = (start, count + 1)
-        return True
+        if now - start >= window_seconds: start, count = now, 0
+        if count >= limit: return False
+        _RATE_STATE[key] = (start, count + 1); return True
 
 
 def enforce_private_permissions(root: Path) -> None:
-    if os.name == "nt":
-        return
+    if os.name == "nt": return
     root = Path(root)
-    if not root.exists():
-        return
+    if not root.exists(): return
     try:
         root.chmod(0o700)
         for path in root.rglob("*"):
-            if path.is_dir():
-                path.chmod(0o700)
-            elif path.is_file():
-                path.chmod(0o600)
+            if path.is_dir(): path.chmod(0o700)
+            elif path.is_file(): path.chmod(0o600)
     except OSError:
         pass
 
 
 def harden_system(system):
-    """Install idempotent core guards so security does not depend on a particular UI launcher."""
-    if getattr(system, "_bookrag_security_hardened", False):
-        return system
-    root = Path(system.settings.project_root).expanduser().resolve()
-    enforce_private_permissions(root)
-    for attr in ("incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir", "log_dir", "ingestion_db_path"):
-        value = getattr(system.settings, attr, None)
-        if value is not None:
-            validate_storage_path(root, value, attr)
-    original_clear = system.clear_pdf_data
-    original_apply = system.apply_settings_in_place
-    original_ingest_directory = system.ingest_directory
-    original_ingest_file = system.ingest_file
-    original_answer = system.answer
-
+    if getattr(system, "_bookrag_security_hardened", False): return system
+    root = Path(system.settings.project_root).expanduser().resolve(); enforce_private_permissions(root)
+    for attr in ("incoming_dir","processed_dir","failed_dir","archive_dir","vector_db_dir","log_dir","ingestion_db_path"):
+        value=getattr(system.settings,attr,None)
+        if value is not None: validate_storage_path(root,value,attr)
+    original_clear=system.clear_pdf_data; original_apply=system.apply_settings_in_place
+    original_ingest_directory=system.ingest_directory; original_ingest_file=system.ingest_file; original_answer=system.answer
     def guarded_clear():
-        require_clear_confirmation()
-        audit_event("clear_start")
-        try:
-            return original_clear()
-        finally:
-            audit_event("clear_finish")
-
+        require_clear_confirmation(); audit_event("clear_start")
+        try:return original_clear()
+        finally:audit_event("clear_finish")
     def guarded_apply(updates):
-        clean = dict(updates or {})
-        if "ollama_base_url" in clean:
-            clean["ollama_base_url"] = validate_ollama_url(clean["ollama_base_url"])
-        for key in ("incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir", "log_dir", "ingestion_db_path"):
-            if key in clean:
-                clean[key] = validate_storage_path(root, clean[key], key)
+        clean=dict(updates or {})
+        if "ollama_base_url" in clean: clean["ollama_base_url"]=validate_ollama_url(clean["ollama_base_url"])
+        for key in ("incoming_dir","processed_dir","failed_dir","archive_dir","vector_db_dir","log_dir","ingestion_db_path"):
+            if key in clean: clean[key]=validate_storage_path(root,clean[key],key)
         return original_apply(clean)
-
     def guarded_ingest_directory(directory=None):
-        source = directory if directory is not None else system.settings.incoming_dir
-        source = validate_storage_path(root, source, "ingestion directory")
-        if not acquire_ingest_slot(0.1):
-            raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
-        try:
-            audit_event("ingest_start", detail=str(source))
-            return original_ingest_directory(str(source))
-        finally:
-            release_ingest_slot()
-            audit_event("ingest_finish", detail=str(source))
-
+        source=validate_storage_path(root,directory if directory is not None else system.settings.incoming_dir,"ingestion directory")
+        if not acquire_ingest_slot(0.1): raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
+        try:audit_event("ingest_start",detail=str(source)); return original_ingest_directory(str(source))
+        finally:release_ingest_slot(); audit_event("ingest_finish",detail=str(source))
     def guarded_ingest_file(pdf_path):
-        candidate = validate_storage_path(root, pdf_path, "PDF path")
-        if candidate.suffix.lower() != ".pdf" or not candidate.is_file():
-            raise ValueError("Unsupported or missing PDF.")
-        size = candidate.stat().st_size
-        if size > MAX_UPLOAD_BYTES:
-            raise ValueError("PDF exceeds the 50 MB security limit.")
+        candidate=validate_storage_path(root,pdf_path,"PDF path")
+        if candidate.suffix.lower() != ".pdf" or not candidate.is_file(): raise ValueError("Unsupported or missing PDF.")
+        size=candidate.stat().st_size
+        if size>MAX_UPLOAD_BYTES: raise ValueError("PDF exceeds the 50 MB security limit.")
         with candidate.open("rb") as handle:
-            if handle.read(5) != b"%PDF-":
-                raise ValueError("PDF payload failed the required file signature check.")
+            payload=handle.read(min(size,MAX_UPLOAD_BYTES+1))
+        validate_pdf_payload(candidate.name,payload)
         return original_ingest_file(candidate)
-
-    def guarded_answer(question, metadata_filter=None):
-        if not consume_rate_limit("answer", limit=30, window_seconds=60):
-            raise RuntimeError("Query rate limit exceeded; wait before sending more questions.")
+    def guarded_answer(question,metadata_filter=None):
+        if not consume_rate_limit("answer",limit=30,window_seconds=60): raise RuntimeError("Query rate limit exceeded; wait before sending more questions.")
         validate_query(question)
-        if not acquire_answer_slot(0.1):
-            raise RuntimeError("Global answer concurrency limit reached; try again shortly.")
-        try:
-            return original_answer(question, metadata_filter)
-        finally:
-            release_answer_slot()
-
-    system.clear_pdf_data = guarded_clear
-    system.apply_settings_in_place = guarded_apply
-    system.ingest_directory = guarded_ingest_directory
-    system.ingest_file = guarded_ingest_file
-    system.answer = guarded_answer
-    system._bookrag_security_hardened = True
+        if not acquire_answer_slot(0.1): raise RuntimeError("Global answer concurrency limit reached; try again shortly.")
+        try:return original_answer(question,metadata_filter)
+        finally:release_answer_slot()
+    system.clear_pdf_data=guarded_clear; system.apply_settings_in_place=guarded_apply; system.ingest_directory=guarded_ingest_directory; system.ingest_file=guarded_ingest_file; system.answer=guarded_answer; system._bookrag_security_hardened=True
     return system
