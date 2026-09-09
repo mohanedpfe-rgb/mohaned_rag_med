@@ -12,6 +12,8 @@ from typing import Any
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from rag_project.ingestion.responsive_recovery import recover_orphaned_documents
+
 _LOCK = threading.RLock()
 _THREAD: threading.Thread | None = None
 _OBSERVER: Observer | None = None
@@ -284,10 +286,15 @@ def _scan_once(system: Any) -> None:
         recovered = int(system.state_store.recover_stale_documents() or 0)
     except Exception:
         recovered = 0
-    if recovered:
+    try:
+        orphaned = recover_orphaned_documents(system, set(_WORKING), stale_seconds=90.0)
+    except Exception:
+        orphaned = 0
+    total_recovered = recovered + orphaned
+    if total_recovered:
         with _LOCK:
-            _STATE["recovered"] += recovered
-            _STATE["last_action"] = f"recovered {recovered} stale job(s)"
+            _STATE["recovered"] += total_recovered
+            _STATE["last_action"] = f"recovered {total_recovered} stale/orphaned job(s)"
             _STATE["last_action_at"] = _now()
         _persist(system)
 
@@ -297,7 +304,9 @@ def _scan_once(system: Any) -> None:
         candidates = []
     _trim_caches({str(p.resolve()) for p in candidates})
 
-    if candidates and not _WORKING:
+    with _LOCK:
+        has_worker = bool(_WORKING)
+    if candidates and not has_worker:
         for path in candidates:
             if _candidate(system, path):
                 _dispatch(system, path)
