@@ -26,13 +26,27 @@ GOD_MODE_FEATURES = (
 )
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Normalize sequence-like metadata without implicit NumPy/array truth evaluation."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 def _clean(value: str) -> str:
-    return re.sub(r"\s+", " ", value or "").strip()[:1600]
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:1600]
 
 
 def _metadata_boost(hit: Any, plan: QueryPlan) -> float:
     meta = hit.metadata or {}
-    types = {str(x).casefold() for x in (meta.get("evidence_types") or [])}
+    types = {str(x).casefold() for x in _as_list(meta.get("evidence_types"))}
     boost = 1.0
     if plan.needs_table and ("table" in types or meta.get("table_id") or meta.get("is_table")):
         boost *= plan.score_boosts.get("table", 1.0)
@@ -41,7 +55,7 @@ def _metadata_boost(hit: Any, plan: QueryPlan) -> float:
     if plan.needs_multi_hop and (meta.get("parent_id") or meta.get("section_id") or meta.get("section_title")):
         boost *= plan.score_boosts.get("parent", 1.0)
     enriched = enrich_text(str(hit.text or ""))
-    if set(plan.entities).intersection(enriched.get("keywords") or []):
+    if set(plan.entities).intersection(_as_list(enriched.get("keywords"))):
         boost *= plan.score_boosts.get("entity", 1.0)
     return boost
 
@@ -53,7 +67,7 @@ def _diversify(hits: Sequence[Any], limit: int) -> list[Any]:
     for hit in sorted(hits, key=lambda h: float(getattr(h, "score", 0.0)), reverse=True):
         meta = hit.metadata or {}
         doc = str(meta.get("document_id") or getattr(hit, "doc_id", ""))
-        page_values = meta.get("page_numbers") or []
+        page_values = _as_list(meta.get("page_numbers"))
         page = str(page_values[0]) if page_values else "?"
         if docs.get(doc, 0) >= 3 or ((doc, page) in pages and len(chosen) < limit // 2):
             continue
@@ -141,7 +155,6 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         from rag_project.retrieval.metadata_filter import MetadataFilter
         where = MetadataFilter.build(metadata_filter)
     except Exception:
-        # A malformed metadata filter must never broaden retrieval accidentally.
         return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
     if not hits:
@@ -165,7 +178,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     ground = grounding_decision(claims, min_supported_ratio=0.60)
     safe_answer, firewall_used = citation_firewall(answer, claims)
     contradiction = contradiction_report(claims)
-    evidence_conf = evidence_confidence(retrieval=min(1.0, max((float(h.score) for h in selected), default=0.0)), rerank=min(1.0, max((float(h.score) for h in selected), default=0.0)), entailment=sum(c.support for c in claims) / max(len(claims), 1) if claims else 0.0, quality=sum(min(1.0, len(enrich_text(h.text).get("keywords") or []) / 12.0) for h in selected) / max(len(selected), 1), contradiction=1.0 if contradiction.get("has_contradiction") else 0.0)
+    evidence_conf = evidence_confidence(retrieval=min(1.0, max((float(h.score) for h in selected), default=0.0)), rerank=min(1.0, max((float(h.score) for h in selected), default=0.0)), entailment=sum(c.support for c in claims) / max(len(claims), 1) if claims else 0.0, quality=sum(min(1.0, len(_as_list(enrich_text(h.text).get("keywords"))) / 12.0) for h in selected) / max(len(selected), 1), contradiction=1.0 if contradiction.get("has_contradiction") else 0.0)
     if not ground.get("allow") or contradiction.get("has_contradiction"):
         safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
     citations = self.citation_manager.validate(self.citation_manager.build(selected), selected)
