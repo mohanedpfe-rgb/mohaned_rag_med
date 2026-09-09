@@ -1,6 +1,7 @@
 import streamlit as st
 
 from rag_project.app import canva_exact_ui
+from rag_project.app.canva_exact_ui import main as exact_main
 from rag_project.security import (
     clear_confirmation_ui,
     register_session_upload,
@@ -118,7 +119,7 @@ def main() -> None:
     original_page_config = canva_exact_ui.st.set_page_config
     canva_exact_ui.st.set_page_config = lambda *args, **kwargs: None
     try:
-        canva_exact_ui.main()
+        exact_main()
     finally:
         canva_exact_ui.st.set_page_config = original_page_config
     st.markdown(_EXACT_RUNTIME_CSS, unsafe_allow_html=True)
