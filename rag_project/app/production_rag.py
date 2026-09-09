@@ -32,11 +32,13 @@ class ProductionRAGSystem(ResilientRAGSystem):
             rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
 
     def _archive_duplicate_upload(self, pdf_path: str | Path, document_id: str, result: dict[str, Any]) -> dict[str, Any]:
-        """Archive a deduplicated upload only when it came from the incoming queue."""
+        """Archive a deduplicated upload only when it came from the configured incoming queue."""
         source = Path(pdf_path)
-        incoming_root = Path(self.settings.incoming_dir).resolve()
+        incoming_dir = getattr(self.settings, "incoming_dir", None)
+        if incoming_dir is None:
+            return result
         try:
-            source.resolve().relative_to(incoming_root)
+            source.resolve().relative_to(Path(incoming_dir).resolve())
         except ValueError:
             return result
         if not source.is_file():
