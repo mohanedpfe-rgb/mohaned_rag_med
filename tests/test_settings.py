@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rag_project.configuration.settings import Settings
 
 
@@ -63,3 +65,13 @@ def test_universal_mode_defaults_to_safe_coverage(monkeypatch, tmp_path: Path) -
     assert settings.auto_ocr is True
     assert settings.universal_pdf_mode is True
     assert settings.answer_verification_enabled is True
+
+
+def test_runtime_paths_must_stay_inside_project_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("INCOMING_DIR", "../outside")
+
+    with pytest.raises(ValueError, match="incoming_dir"):
+        Settings.from_env()
+
+    assert not (tmp_path.parent / "outside").exists()
