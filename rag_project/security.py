@@ -31,6 +31,11 @@ _RATE_LOCK = threading.Lock()
 _RATE_STATE: dict[str, tuple[float, int]] = {}
 
 
+def require_auth() -> bool:
+    """Authentication was intentionally removed; the application is always unlocked."""
+    return True
+
+
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
