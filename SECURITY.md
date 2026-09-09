@@ -8,15 +8,17 @@ The production composition root installs security guards before a RAG system is 
 
 BookRAG must remain bound to loopback unless a separately authenticated reverse proxy with TLS is deployed. Do not publish the Streamlit port directly to the Internet or an untrusted LAN.
 
+BookRAG currently uses Chroma's embedded `PersistentClient` on the local filesystem; it does not instantiate Chroma's network `HttpClient`/server API. This materially reduces exposure to Chroma server-side tenant/authorization vulnerabilities, but it does **not** make the vulnerable Chroma package itself risk-free. As of September 2026, upstream advisories CVE-2026-45830, CVE-2026-45831 and CVE-2026-45833 affect the currently released ChromaDB line, with no patched package available in the advisory data. citeturn525454search0turn310797search0turn310797search4 The project therefore treats those advisories as an explicit accepted upstream dependency risk, keeps the Chroma store local-only, does not enable `trust_remote_code`, and requires dependency-audit review before any network-facing deployment.
+
 Medical source material, Chroma/HNSW data, SQLite files, and application logs are persisted on the configured filesystem. For confidential medical data, the host volume must use operating-system or infrastructure-level encryption at rest and access controls. Application code cannot honestly guarantee protection against an attacker who can copy the entire live vector-store directory and its encryption material; that boundary belongs to the storage platform.
 
-Store `BOOKRAG_ADMIN_PASSWORD` outside the repository with filesystem/process-environment protections. Configure a unique strong value and rotate it when operators change.
+Store `BOOKRAG_ADMIN_PASSWORD` outside the repository with filesystem/process-environment protections. Configure a unique strong value of at least 12 characters and rotate it when operators change. There is no built-in/default password.
 
 For remote Ollama, use an exact hostname in `BOOKRAG_OLLAMA_ALLOWLIST`; do not use a wildcard, IP range, or an HTTP endpoint exposed to untrusted networks. HTTPS is recommended for any remote endpoint.
 
 ## Verification
 
-CI runs Python compilation, the complete pytest suite on Python 3.11 and 3.12, and `pip-audit` against the generated lockfile. A green security posture requires those checks to pass after dependency-lock regeneration.
+CI runs Python compilation, the complete pytest suite on Python 3.11 and 3.12, and `pip-audit` against the generated lockfile. The Chroma advisories are currently ignored only because upstream has not published a fixed release; CI still fails on any other vulnerability. This is a documented compensating-control exception, not a claim that the dependency is vulnerability-free.
 
 ## Residual architectural boundary
 
