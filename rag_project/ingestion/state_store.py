@@ -14,7 +14,7 @@ def utc_now() -> str:
 
 _ALLOWED_DOCUMENT_UPDATE_KEYS = {
     "content_hash", "file_path", "file_name", "file_size", "created_at", "modified_at",
-    "ingestion_started_at", "current_stage", "current_page", "total_pages", "status", "error",
+    "ingestion_started_at", "ingestion_completed_at", "current_stage", "current_page", "total_pages", "status", "error",
     "parser_version", "ocr_config", "chunking_config", "embedding_model", "embedding_dimension",
     "index_state", "version_id", "lease_owner", "lease_expires_at", "heartbeat_at",
     "ingestion_metrics",
