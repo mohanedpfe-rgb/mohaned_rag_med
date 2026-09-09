@@ -12,13 +12,25 @@ import streamlit as st
 AUTH_ENV = "BOOKRAG_ADMIN_PASSWORD"
 REMOTE_OLLAMA_ENV = "BOOKRAG_ALLOW_REMOTE_OLLAMA"
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
+MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_SESSION_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_PDF_PAGES = 500
 MAX_QUERY_CHARS = 4000
 
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def max_pdf_pages() -> int:
+    raw = os.getenv(MAX_PDF_PAGES_ENV, str(MAX_PDF_PAGES)).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = MAX_PDF_PAGES
+    return max(1, min(value, 5000))
 
 
 def require_auth() -> None:
@@ -128,3 +140,23 @@ def validate_pdf_payload(name: str, content: bytes) -> None:
         raise ValueError(f"Uploaded file '{Path(name).name}' exceeds the 50 MB security limit.")
     if not content.startswith(b"%PDF-"):
         raise ValueError(f"Uploaded file '{Path(name).name}' is not a valid PDF payload.")
+
+
+def validate_pdf_page_count(page_count: int) -> int:
+    count = int(page_count)
+    limit = max_pdf_pages()
+    if count < 0:
+        raise ValueError("PDF page count cannot be negative.")
+    if count > limit:
+        raise ValueError(f"PDF has {count} pages; the security limit is {limit} pages.")
+    return count
+
+
+def register_session_upload(size_bytes: int) -> None:
+    size = int(size_bytes)
+    if size < 0:
+        raise ValueError("Upload size cannot be negative.")
+    total = int(st.session_state.get("bookrag_upload_bytes", 0))
+    if total + size > MAX_SESSION_UPLOAD_BYTES:
+        raise ValueError("This session exceeded the 500 MB cumulative upload security limit.")
+    st.session_state["bookrag_upload_bytes"] = total + size
