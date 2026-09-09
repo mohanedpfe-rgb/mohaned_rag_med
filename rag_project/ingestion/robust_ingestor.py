@@ -15,13 +15,7 @@ from rag_project.utils.text_utils import detect_language
 
 
 def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
-    """Fault-tolerant ingestion with bounded memory and durable progress checkpoints.
-
-    Unlike the legacy path, embeddings are committed in small batches as they are
-    produced. A large PDF therefore never waits until the very end for its first
-    index write, and a failure can be cleaned up without retaining the whole index
-    in Python memory.
-    """
+    """Fault-tolerant ingestion with bounded memory and durable progress checkpoints."""
     started = time.perf_counter()
     stage_started = started
     stage_timings: dict[str, float] = {}
@@ -114,11 +108,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
     cancel_flag = system._new_cancel_flag(document_id)
     try:
-        if not system.state_store.heartbeat_document(
-            document_id,
-            worker_id,
-            lease_seconds=system.settings.ingestion_lease_seconds,
-        ):
+        if not system.state_store.heartbeat_document(document_id, worker_id, lease_seconds=system.settings.ingestion_lease_seconds):
             raise RuntimeError("Ingestion lease was lost before processing started.")
 
         last_heartbeat = time.perf_counter()
@@ -128,11 +118,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             nonlocal last_heartbeat
             now = time.perf_counter()
             if force or now - last_heartbeat >= heartbeat_interval:
-                if not system.state_store.heartbeat_document(
-                    document_id,
-                    worker_id,
-                    lease_seconds=system.settings.ingestion_lease_seconds,
-                ):
+                if not system.state_store.heartbeat_document(document_id, worker_id, lease_seconds=system.settings.ingestion_lease_seconds):
                     raise RuntimeError("Ingestion lease expired during processing.")
                 last_heartbeat = now
 
@@ -142,6 +128,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
         classification = DocumentClassifier.classify(file_path)
         total_pages = int(classification.get("page_count") or 0)
+        system.state_store.transition_document_state(document_id, "VALIDATING", total_pages=total_pages, current_page=0)
         system.state_store.record_event(
             document_id,
             stage="VALIDATING",
@@ -152,16 +139,11 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             total_pages=total_pages,
             file_name=file_path.name,
         )
-        system.state_store.transition_document_state(
-            document_id,
-            "VALIDATING",
-            total_pages=total_pages,
-            current_page=0,
-        )
         mark("classification")
         renew(force=True)
         check_cancel()
 
+        system.state_store.transition_document_state(document_id, "EXTRACTING", current_page=0, total_pages=total_pages)
         system.state_store.record_event(
             document_id,
             stage="EXTRACTING",
@@ -173,7 +155,6 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             total_pages=total_pages,
             file_name=file_path.name,
         )
-        system.state_store.transition_document_state(document_id, "EXTRACTING", current_page=0, total_pages=total_pages)
 
         extractor = PDFExtractor(
             system.state_store,
@@ -185,40 +166,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         pages = extractor.extract_iter(file_path, document_id)
         chunker = SemanticChunker(system.settings.chunk_size, system.settings.chunk_overlap)
         chunk_batches = chunker.chunk_page_batches(pages, batch_size=system.settings.page_batch_size)
-        mark("extraction_setup")
-
-        system.state_store.transition_document_state(document_id, "CHUNKING", current_page=0, total_pages=total_pages)
-        system.state_store.record_event(
-            document_id,
-            stage="CHUNKING",
-            status="RUNNING",
-            event_type="chunk",
-            message="Reading extracted pages and preparing searchable sections",
-            details={"page_batch_size": system.settings.page_batch_size, "chunk_size": system.settings.chunk_size, "chunk_overlap": system.settings.chunk_overlap},
-            total_pages=total_pages,
-            file_name=file_path.name,
-        )
-        mark("chunking")
-
-        system._ensure_embedding_dimension()
-        if system.embedding_startup_error is not None:
-            raise RuntimeError(f"FAILED_EMBEDDING: {system.embedding_startup_error}")
-        system.vector_store.set_expected_identity(system.embedding_service.identity)
-        compatibility = system.vector_store.compatibility_report(system.embedding_service.identity)
-        if compatibility.get("status") != "READY":
-            raise RuntimeError(f"FAILED_EMBEDDING: {compatibility.get('message', 'embedding index incompatible')}")
-
-        system.state_store.transition_document_state(document_id, "EMBEDDING", current_page=0, total_pages=total_pages)
-        system.state_store.record_event(
-            document_id,
-            stage="EMBEDDING",
-            status="RUNNING",
-            event_type="embedding",
-            message="Creating embeddings and committing them in small batches",
-            details={"embedding_batch_size": system.settings.embedding_batch_size},
-            total_pages=total_pages,
-            file_name=file_path.name,
-        )
+        mark("extract_pipeline_setup")
 
         chunk_count = 0
         embedding_count = 0
@@ -226,12 +174,51 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         embedding_ms = 0.0
         indexing_ms = 0.0
         current_page = 0
+        embedding_stage_started = False
 
         for batch_number, batch in enumerate(chunk_batches, start=1):
             if not batch:
                 continue
             check_cancel()
             renew()
+
+            page_numbers = [page for chunk in batch for page in chunk.page_numbers]
+            current_page = min(total_pages, max(page_numbers, default=current_page))
+            if not embedding_stage_started:
+                system.state_store.transition_document_state(document_id, "CHUNKING", current_page=current_page, total_pages=total_pages)
+                system.state_store.record_event(
+                    document_id,
+                    stage="CHUNKING",
+                    status="RUNNING",
+                    event_type="chunk",
+                    message=f"Prepared first searchable batch through page {current_page} of {total_pages}",
+                    details={"page_batch_size": system.settings.page_batch_size, "chunk_size": system.settings.chunk_size, "chunk_overlap": system.settings.chunk_overlap},
+                    current_page=current_page,
+                    total_pages=total_pages,
+                    file_name=file_path.name,
+                )
+                system._ensure_embedding_dimension()
+                if system.embedding_startup_error is not None:
+                    raise RuntimeError(f"FAILED_EMBEDDING: {system.embedding_startup_error}")
+                system.vector_store.set_expected_identity(system.embedding_service.identity)
+                compatibility = system.vector_store.compatibility_report(system.embedding_service.identity)
+                if compatibility.get("status") != "READY":
+                    raise RuntimeError(f"FAILED_EMBEDDING: {compatibility.get('message', 'embedding index incompatible')}")
+                system.state_store.transition_document_state(document_id, "EMBEDDING", current_page=current_page, total_pages=total_pages)
+                system.state_store.record_event(
+                    document_id,
+                    stage="EMBEDDING",
+                    status="RUNNING",
+                    event_type="embedding",
+                    message="Creating embeddings and committing them in small batches",
+                    details={"embedding_batch_size": system.settings.embedding_batch_size},
+                    current_page=current_page,
+                    total_pages=total_pages,
+                    file_name=file_path.name,
+                )
+                mark("chunking")
+                embedding_stage_started = True
+
             if document_language is None:
                 document_language = detect_language(" ".join(chunk.text for chunk in batch))
 
@@ -257,8 +244,6 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                         "version_id": content_hash,
                     }
                 )
-            page_numbers = [page for chunk in batch for page in chunk.page_numbers]
-            current_page = min(total_pages, max(page_numbers, default=current_page))
 
             embedding_started = time.perf_counter()
             try:
@@ -266,11 +251,10 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 if len(vectors) != len(documents):
                     raise RuntimeError(f"Embedding backend returned {len(vectors)} vectors for {len(documents)} chunks")
                 system.embedding_service.validate_batch(vectors)
-                embedding_count += len(vectors)
-                embedding_ms += (time.perf_counter() - embedding_started) * 1000
             except Exception as exc:
                 embedding_ms += (time.perf_counter() - embedding_started) * 1000
                 raise RuntimeError(f"FAILED_EMBEDDING: {exc}") from exc
+            embedding_ms += (time.perf_counter() - embedding_started) * 1000
 
             renew(force=True)
             check_cancel()
@@ -278,6 +262,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             system.vector_store.add_documents(documents, metadatas, vectors, ids)
             indexing_ms += (time.perf_counter() - indexing_started) * 1000
             chunk_count += len(batch)
+            embedding_count += len(vectors)
 
             system.state_store.update_document(
                 document_id,
@@ -305,7 +290,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 stage="EMBEDDING",
                 status="RUNNING",
                 event_type="embedding_batch",
-                message=f"Batch {batch_number}: indexed {len(batch)} chunks",
+                message=f"Batch {batch_number}: {len(batch)} chunks indexed through page {current_page}/{total_pages}",
                 details={"batch": batch_number, "chunks_total": chunk_count, "embeddings_total": embedding_count},
                 current_page=current_page,
                 total_pages=total_pages,
