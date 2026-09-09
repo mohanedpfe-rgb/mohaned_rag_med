@@ -58,6 +58,7 @@ def runtime_contract() -> dict[str, Any]:
     return {
         "composition_root": "rag_project.application.create_rag_system",
         "canonical_service": "rag_project.app.production_rag.ProductionRAGSystem",
+        "service": "ProductionRAGSystem",
         "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
         "runtime_policy": "rag_project.runtime.install",
         "storage_policy": "rag_project.storage.vector_store_runtime.install",
