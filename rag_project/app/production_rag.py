@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import threading
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
@@ -35,7 +34,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             rag_system_module._INGEST_CANCEL_FLAGS.pop(document_id, None)
 
     def ingest_file(self, pdf_path: str | Any) -> dict[str, Any]:
-        """Use incremental ingestion so large PDFs do not stall at the final write."""
+        """Use incremental ingestion and fail fast when embeddings are unavailable."""
         self.embedding_startup_error = None
         self._ensure_embedding_dimension()
         if self.embedding_startup_error:
@@ -45,6 +44,23 @@ class ProductionRAGSystem(ResilientRAGSystem):
                 "error": f"FAILED_EMBEDDING: {self.embedding_startup_error}",
             }
         return robust_ingestor.robust_ingest_file(self, pdf_path)
+
+    def ingest_directory(self, directory: str | Any | None = None) -> List[Dict[str, Any]]:
+        """Process PDFs serially in production to avoid Chroma/SQLite contention.
+
+        The ingestion pipeline is already incremental, so serial execution keeps
+        the shared local vector database responsive while still exposing live
+        page/batch progress for the active document.
+        """
+        from pathlib import Path
+
+        source_dir = Path(directory) if directory else self.settings.incoming_dir
+        source_dir.mkdir(parents=True, exist_ok=True)
+        results: List[Dict[str, Any]] = []
+        for pdf_path in sorted(source_dir.glob("*.pdf")):
+            result = self.ingest_file(pdf_path)
+            results.append(result)
+        return results
 
     def cancel_all_ingests(self) -> int:
         """Cancel ingestion jobs owned by the shared ingestion registry."""
@@ -106,6 +122,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             "incremental_ingestion": True,
             "bounded_embedding_commit": True,
             "durable_page_checkpoints": True,
+            "serialized_local_index_writes": True,
         }
         index_status = str(checks.get("index", {}).get("status", "READY")).upper()
         checks["ready"] = bool(
