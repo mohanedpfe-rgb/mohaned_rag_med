@@ -17,12 +17,12 @@ _EXACT_RUNTIME_CSS = """
 [data-testid="stMarkdownContainer"] .index-metric:nth-of-type(1){left:731px!important;width:161px!important}
 [data-testid="stMarkdownContainer"] .index-metric:nth-of-type(2){left:868px!important;width:162px!important}
 [data-testid="stMarkdownContainer"] .index-metric:nth-of-type(3){left:1006px!important;width:161px!important}
-.query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:250px!important;box-sizing:border-box!important;z-index:7!important}
-.health-panel{position:fixed!important;left:388px!important;top:680px!important;width:802px!important;height:250px!important;box-sizing:border-box!important;z-index:7!important}
-.inspector-panel{position:fixed!important;left:1210px!important;top:680px!important;width:573px!important;height:250px!important;box-sizing:border-box!important;z-index:8!important}
-.query-panel .panel-title{margin-top:0!important}.health-panel .panel-head{margin-bottom:24px!important}.inspector-panel .panel-head{margin-bottom:18px!important}
-[class*="st-key-exact_overview_q"]{position:fixed!important;left:408px!important;top:650px!important;width:760px!important;z-index:15!important}
-[class*="st-key-exact_overview_ask"]{position:fixed!important;left:408px!important;top:752px!important;width:190px!important;z-index:16!important}
+.query-panel{position:fixed!important;left:388px!important;top:600px!important;width:802px!important;height:74px!important;box-sizing:border-box!important;z-index:7!important;overflow:visible!important}
+.health-panel{position:fixed!important;left:388px!important;top:694px!important;width:802px!important;height:236px!important;box-sizing:border-box!important;z-index:7!important}
+.inspector-panel{position:fixed!important;left:1210px!important;top:694px!important;width:573px!important;height:236px!important;box-sizing:border-box!important;z-index:8!important}
+.query-panel .panel-title{margin-top:0!important}.health-panel .panel-head{margin-bottom:18px!important}.inspector-panel .panel-head{margin-bottom:18px!important}
+[class*="st-key-exact_overview_q"]{position:fixed!important;left:408px!important;top:642px!important;width:760px!important;z-index:15!important}
+[class*="st-key-exact_overview_ask"]{position:fixed!important;left:408px!important;top:748px!important;width:190px!important;z-index:16!important}
 [data-testid="stSidebar"]{position:fixed!important;left:91px!important;top:112px!important;width:251px!important;height:855px!important;z-index:20!important}
 [data-testid="stSidebar"] .brand{position:fixed!important;left:169px!important;top:154px!important;width:175px!important;height:45px!important;margin:0!important}
 [data-testid="stSidebar"] .nav-label{display:none!important}
