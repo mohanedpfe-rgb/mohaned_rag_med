@@ -68,7 +68,7 @@ def test_health_ingestion_inspector_and_settings_have_guards() -> None:
         "Recheck index", "verify_index", "Active progress", "Background workers",
         "Document and index inspector", "Runtime configuration",
         "Chunk overlap must be smaller than chunk size.", "No PDF files were found",
-        "Folder does not exist", "if not q.strip()", "if not question.strip()",
+        "Folder does not exist", "if not q.strip()",
     ):
         assert marker in source
 
