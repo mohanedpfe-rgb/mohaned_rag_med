@@ -96,11 +96,20 @@ _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _LONG_ID = re.compile(r"\b\d{8,}\b")
 
 
+def _redact_phone_match(match: re.Match[str]) -> str:
+    candidate = match.group(0)
+    # A plain digit run is handled by _LONG_ID below; phone redaction is reserved
+    # for explicit international notation or numbers containing separators.
+    if candidate.lstrip().startswith("+") or re.search(r"[\s().-]", candidate):
+        return "[REDACTED_PHONE]"
+    return candidate
+
+
 def redact_sensitive_text(text: str) -> str:
     """Best-effort diagnostic redaction; never intended as a clinical de-identification system."""
     value = str(text or "")
     value = _EMAIL.sub("[REDACTED_EMAIL]", value)
-    value = _PHONENUMBER.sub("[REDACTED_PHONE]", value)
+    value = _PHONENUMBER.sub(_redact_phone_match, value)
     value = _LONG_ID.sub("[REDACTED_ID]", value)
     return value
 
