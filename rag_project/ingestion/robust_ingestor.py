@@ -191,9 +191,19 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         system.state_store.transition_document_state(document_id, "INDEXING", current_page=total_pages, total_pages=total_pages, embedding_dimension=system.embedding_service.dimension)
         system.state_store.record_event(document_id, stage="INDEXING", status="RUNNING", event_type="index_write", message=f"Finalizing {chunk_count} indexed chunks", details={"chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         mark("embedding_and_incremental_index")
-        validation = system.vector_store.validate_document_index(document_id, content_hash)
-        if not validation.get("valid") or validation.get("count") != embedding_count:
-            raise RuntimeError("FAILED_EMBEDDING: committed index validation failed: " + "; ".join(validation.get("issues", [])))
+
+        validation = None
+        validation_attempts = 3
+        for attempt in range(1, validation_attempts + 1):
+            validation = system.vector_store.validate_document_index(document_id, content_hash)
+            if validation.get("valid") and validation.get("count") == embedding_count:
+                break
+            if attempt < validation_attempts:
+                time.sleep(0.25 * attempt)
+        if not validation or not validation.get("valid") or validation.get("count") != embedding_count:
+            issues = "; ".join(validation.get("issues", [])) if validation else "no validation result"
+            actual_count = validation.get("count") if validation else None
+            raise RuntimeError(f"FAILED_INDEXING: committed index validation failed (expected {embedding_count}, found {actual_count}): {issues}")
 
         system.state_store.transition_document_state(document_id, "VALIDATING_INDEX", current_page=total_pages, total_pages=total_pages)
         system.state_store.record_event(document_id, stage="VALIDATING_INDEX", status="RUNNING", event_type="validation", message="Index integrity passed; preparing atomic publication", details={"version_id": content_hash, "chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
@@ -221,8 +231,6 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         )
         published = True
 
-        # Observability is deliberately non-critical after publication. A telemetry/database
-        # event failure must never trigger rollback of an already published searchable version.
         try:
             system.state_store.record_event(document_id, stage="READY", status="READY", event_type="completion", message="Document ready for retrieval and grounded questions", details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         except Exception:
@@ -247,24 +255,29 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     except Exception as exc:
         system.logger.exception("Failed to process %s", file_path.name)
         if published:
-            # The durable state already says READY and the new version is visible. Do not
-            # destroy a successfully published index because of a late non-critical failure.
             return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed.", "error": type(exc).__name__}
         try:
             system.vector_store.delete_version(document_id, content_hash)
             system.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
         except Exception:
             system.logger.exception("Failed to remove partial index for %s", file_path.name)
-        failure_stage = "FAILED_EMBEDDING" if str(exc).startswith("FAILED_EMBEDDING:") else ("FAILED_EXTRACTION" if "extract" in str(exc).casefold() else "FAILED")
+        failure_text = str(exc)
+        if failure_text.startswith("FAILED_EMBEDDING:"):
+            failure_stage = "FAILED_EMBEDDING"
+        elif failure_text.startswith("FAILED_INDEXING:"):
+            failure_stage = "FAILED_INDEXING"
+        elif "extract" in failure_text.casefold():
+            failure_stage = "FAILED_EXTRACTION"
+        else:
+            failure_stage = "FAILED"
         try:
-            system.state_store.transition_document_state(document_id, failure_stage, error=str(exc), current_page=current_page if "current_page" in locals() else 0, total_pages=total_pages if "total_pages" in locals() else 0)
+            system.state_store.transition_document_state(document_id, failure_stage, error=failure_text, current_page=current_page if "current_page" in locals() else 0, total_pages=total_pages if "total_pages" in locals() else 0)
         except Exception:
             try:
-                system.state_store.update_document(document_id, current_stage=failure_stage, status=failure_stage, error=str(exc))
+                system.state_store.update_document(document_id, current_stage=failure_stage, status=failure_stage, error=failure_text)
             except Exception:
                 system.logger.exception("Failed to persist ingestion failure state for %s", file_path.name)
 
-        # Restore the previous processed file when a publication step failed.
         if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
             try:
                 previous_target_backup.replace(target)
@@ -289,7 +302,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                     shutil.copy2(quarantine_source, failed_path)
             except OSError:
                 system.logger.exception("Failed to quarantine %s", file_path.name)
-        return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": str(exc)}
+        return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text}
     finally:
         system.state_store.release_document(document_id, worker_id)
         system._remove_cancel_flag(document_id)
