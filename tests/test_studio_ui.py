@@ -7,28 +7,17 @@ def _source(path: str) -> str:
     return (Path(__file__).resolve().parents[1] / path).read_text(encoding="utf-8")
 
 
-def test_active_app_uses_current_functional_runtime() -> None:
+def test_active_app_uses_new_bookrag_ui() -> None:
     app = _source("app.py")
-    exact = _source("rag_project/app/canva_exact_ui.py")
-    assert "from rag_project.app.canva_exact_ui import main as exact_main" in app
-    assert "exact_main()" in app
-    for marker in (
-        "BookRAG Studio",
-        "Index them",
-        "Documents",
-        "Ingestion",
-        "Chat",
-        "Inspector",
-        "Health",
-        "Settings",
-        "Background",
-        "Delete all managed PDF data",
-    ):
-        assert marker in exact
+    ui = _source("rag_project/app/bookrag_ui.py")
+    assert "from rag_project.app.bookrag_ui import main as ui_main" in app
+    assert "ui_main()" in app
+    for marker in ("BookRAG", "Home", "Documents", "Live Processing", "Ask BookRAG", "Inspector", "System", "Settings"):
+        assert marker in ui
 
 
-def test_real_rag_actions_are_wired() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
+def test_ui_is_functional_and_uses_real_rag_runtime() -> None:
+    source = _source("rag_project/app/bookrag_ui.py")
     for marker in (
         "create_rag_system",
         "system.answer",
@@ -36,117 +25,78 @@ def test_real_rag_actions_are_wired() -> None:
         "system.clear_pdf_data",
         "system.verify_index",
         "system.health_report",
-        "st.rerun",
-        "get_system.clear",
         "apply_settings_in_place",
+        "@st.fragment(run_every=\"2s\")",
     ):
         assert marker in source
 
 
-def test_upload_deduplication_validation_and_auto_start_are_real() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
+def test_upload_starts_processing_automatically() -> None:
+    source = _source("rag_project/app/bookrag_ui.py")
     for marker in (
+        'accept_multiple_files=True',
         "hashlib.sha256",
         "if digest in saved",
         'content.startswith(b"%PDF-")',
-        "incoming.mkdir",
-        "incoming / f",
-        "def auto_start_after_upload",
         'trigger="upload"',
-        "Indexing started automatically",
+        "Automatic processing is now running.",
+        "auto_ingest(system, added)",
     ):
         assert marker in source
 
 
-def test_navigation_and_functional_pages_exist() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
+def test_exact_page_progress_is_persisted_every_page() -> None:
+    source = _source("rag_project/parsing/pdf_extractor.py")
+    assert "current_page=physical_page,total_pages=page_count" in source
+    assert "upsert_page(document_id,physical_page" in source
+
+
+def test_live_page_inspection_uses_persisted_pages_and_events() -> None:
+    source = _source("rag_project/app/bookrag_ui.py")
     for marker in (
-        '"Overview"',
-        '"Documents"',
-        '"Index them"',
-        '"Ingestion"',
-        '"Inspector"',
-        '"Settings"',
-        '"Chat"',
-        '"Health"',
-        '"Background"',
-        'st.session_state["studio_nav"]',
-        "def sidebar",
-        "def overview",
-        "def chat",
-        "def health",
-        "def ingestion",
-        "def background",
-        "def inspector",
-        "def settings",
-    ):
-        assert marker in source
-
-
-def test_chat_has_scope_grounding_and_evidence_trace() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
-    for marker in (
-        "Document scope",
-        "selected_filter",
-        "metadata_filter",
-        "system.answer",
-        "console_answer",
-        "studio_chat_nonce",
-        "Evidence references",
-        "evidence",
-        "query_trace",
-        "Show evidence and query trace",
-    ):
-        assert marker in source
-
-
-def test_live_ingestion_monitoring_is_real() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
-    for marker in (
-        '@st.fragment(run_every="2s")',
-        '@st.fragment(run_every="3s")',
-        "_document_progress",
-        "_latest_events_by_document",
+        "state_store.get_pages",
         "state_store.get_events",
-        "Estimated pipeline progress",
-        "Live pipeline",
-        "Worker activity",
+        "Page-by-page progress",
+        "Current page",
+        "Elapsed time",
+        "Live event timeline",
+        "updates every 2s",
     ):
         assert marker in source
 
 
-def test_health_inspector_settings_and_recovery_are_beginner_friendly() -> None:
-    source = _source("rag_project/app/canva_exact_ui.py")
+def test_beginner_friendly_labels_and_help_exist() -> None:
+    source = _source("rag_project/app/bookrag_ui.py")
     for marker in (
-        "ollama_health",
-        "Overall readiness",
-        "Recheck health now",
-        "Verify this document's index",
-        "Current stage",
-        "Basic settings",
-        "Advanced configuration",
-        "Chunk overlap must be smaller than chunk size.",
-        "There are no PDF files waiting in Incoming.",
-        "Folder does not exist",
-        "Manual recovery",
-        "Retry waiting PDFs",
+        "How it works",
+        "Good questions",
+        "Search scope",
+        "Semantic search weight",
+        "Answer creativity",
+        "Use nearby sections",
+        "What healthy means",
+        "You do not need to understand RAG internals.",
     ):
         assert marker in source
 
 
-def test_ui_layout_is_responsive_and_normal_flow() -> None:
-    app = _source("app.py")
-    exact = _source("rag_project/app/canva_exact_ui.py")
-    assert "position:fixed" not in app
-    assert "position:fixed" not in exact
+def test_professional_sidebar_and_responsive_layout() -> None:
+    source = _source("rag_project/app/bookrag_ui.py")
     for marker in (
-        "block-container",
-        "overflow:auto",
-        "min-width:0",
-        "grid-template-columns",
-        "@media",
-        "glass-note",
+        "[data-testid=\"stSidebar\"]",
+        "border-right:1px solid",
         "linear-gradient",
-        "--accent",
+        "box-shadow",
+        "@media(max-width:1000px)",
+        "@media(max-width:650px)",
+        "overflow:auto",
     ):
-        assert marker in exact
+        assert marker in source
+    assert "position:fixed" not in source
+
+
+def test_utc_guard_remains_in_entrypoint() -> None:
+    app = _source("app.py")
+    state_store = _source("rag_project/ingestion/state_store.py")
+    assert "datetime.now(timezone.utc).isoformat()" in app
+    assert "def utc_now()" in state_store
