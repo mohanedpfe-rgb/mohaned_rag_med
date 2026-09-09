@@ -71,7 +71,7 @@ def start_ingestion(system, source_dir: str) -> str:
     existing, _ = active_job()
     if existing:
         return existing
-    if not any(folder.glob("*.pdf")):
+    if not any(path.is_file() and path.suffix.lower() == ".pdf" for path in folder.iterdir()):
         raise ValueError(f"No PDF files were found in {folder}.")
 
     registry = get_jobs()
@@ -419,18 +419,26 @@ def render_chat(system) -> None:
     st.caption("Answers are generated from retrieved evidence and the final result carries grounding and citation metadata.")
 
     ready = ready_docs(system)
-    selection = [("All ready documents", None)] + [
-        (str(d.get("file_name") or "Unnamed document"), str(d.get("document_id"))) for d in ready
-    ]
-    selected_label = st.selectbox("Search scope", [label for label, _ in selection], key="studio_chat_scope")
-    selected_filter = dict(selection)[selected_label]
+    options: list[tuple[str, str | None]] = [("All ready documents", None)]
+    for document in ready:
+        name = str(document.get("file_name") or "Unnamed document")
+        doc_id = str(document.get("document_id") or "")
+        label = f"{name} — {doc_id[:12]}" if doc_id else name
+        options.append((label, doc_id or None))
+    option_labels = [label for label, _ in options]
+    current_scope = st.session_state.get("studio_chat_scope")
+    selected_index = option_labels.index(current_scope) if current_scope in option_labels else 0
+    selected_label = st.selectbox("Search scope", option_labels, index=selected_index, key="studio_chat_scope")
+    selected_filter = dict(options)[selected_label]
+
     if not ready:
         st.markdown('<div class="empty-state">No READY documents are available yet. Upload and index a PDF first.</div>', unsafe_allow_html=True)
 
+    chat_nonce = int(st.session_state.get("studio_chat_nonce", 0))
     question = st.text_area(
         "Question",
         placeholder="Example: What methodology does the document describe?",
-        key="studio_question",
+        key=f"studio_question_{chat_nonce}",
         height=110,
         label_visibility="collapsed",
     )
@@ -441,7 +449,7 @@ def render_chat(system) -> None:
         clear_clicked = st.button("Clear", use_container_width=True)
     if clear_clicked:
         st.session_state.pop("console_answer", None)
-        st.session_state["studio_question"] = ""
+        st.session_state["studio_chat_nonce"] = chat_nonce + 1
         st.rerun()
     if ask_clicked:
         if not question.strip():
@@ -698,7 +706,9 @@ def render_inspector(system) -> None:
     actions = st.columns(2)
     with actions[0]:
         if document.get("status") == "READY" and st.button("💬 Ask about this document", use_container_width=True):
-            st.session_state["studio_chat_scope"] = str(document.get("file_name"))
+            doc_id = str(document.get("document_id") or "")
+            scope_label = f"{document.get('file_name')} — {doc_id[:12]}" if doc_id else str(document.get("file_name") or "Unnamed document")
+            st.session_state["studio_chat_scope"] = scope_label
             _navigate("Chat")
     with actions[1]:
         if st.button("↻ Recheck index", use_container_width=True):
