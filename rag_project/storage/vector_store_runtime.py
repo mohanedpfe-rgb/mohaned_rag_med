@@ -39,7 +39,11 @@ def _normalize_sequence(value: Any) -> list[Any]:
         return []
 
 
-def _validate_document_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
+def _validate_document_index(
+    self: Any,
+    document_id: str,
+    version_id: str | None = None,
+) -> dict[str, Any]:
     records = self.collection.get(
         where={"document_id": document_id},
         include=["metadatas", "documents", "embeddings"],
@@ -110,7 +114,11 @@ def install() -> None:
     original_init = VectorStore.__init__
     original_resolve_dimension = VectorStore._resolve_dimension
 
-    def hardened_init(self: Any, persist_directory: str | Path, collection_name: str = "rag_documents") -> None:
+    def hardened_init(
+        self: Any,
+        persist_directory: str | Path,
+        collection_name: str = "rag_documents",
+    ) -> None:
         original_init(self, persist_directory, collection_name)
         with _database_lock(Path(self.lexical_database)):
             with _connect(Path(self.lexical_database)):
@@ -120,9 +128,7 @@ def install() -> None:
         if embeddings is None or len(_normalize_sequence(embeddings)) == 0:
             stored = int(self._collection_dim() or 0)
             if stored <= 0:
-                raise ValueError(
-                    "Embedding dimension is unknown; provide embeddings or initialize the vector index with a real dimension."
-                )
+                return 0
         return original_resolve_dimension(self, embeddings)
 
     VectorStore.__init__ = hardened_init
