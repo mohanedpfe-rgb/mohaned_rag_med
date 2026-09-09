@@ -63,7 +63,7 @@ def _boot_start() -> None:
             from rag_project.app import rag_system as rag_system_module
             from rag_project.app.bookrag_ui import main as ui_main
             from rag_project.app.live_runtime import render_live_runtime
-            from rag_project.ingestion.auto_supervisor import start as start_auto_supervisor
+            from rag_project.ingestion.responsive_supervisor import start as start_auto_supervisor
             from rag_project.application import create_rag_system
             from rag_project.configuration.settings import Settings
             from rag_project.security import (
