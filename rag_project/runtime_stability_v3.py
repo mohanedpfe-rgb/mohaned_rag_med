@@ -15,11 +15,11 @@ _ANSWER_LOCK = threading.RLock()
 
 
 def _stable_production_ingest(self: Any, pdf_path: str | Path) -> dict[str, Any]:
-    """Route the production subclass through the final ingestion guard."""
-    from rag_project.runtime_stability_v2 import _safe_ingest_file
+    """Compatibility bridge: production now has one canonical ingestion path."""
+    from rag_project.ingestion.robust_ingestor import robust_ingest_file
 
     with _PROCESS_INGEST_LOCK:
-        return _safe_ingest_file(self, pdf_path)
+        return robust_ingest_file(self, pdf_path)
 
 
 def _safe_clear(self: Any) -> None:
@@ -42,10 +42,7 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
     except Exception:
         identity = None
     try:
-        index = self.vector_store.compatibility_report(identity) if identity is not None else {
-            "status": "UNKNOWN",
-            "message": "Embedding identity has not been discovered yet.",
-        }
+        index = self.vector_store.compatibility_report(identity) if identity is not None else {"status": "UNKNOWN", "message": "Embedding identity has not been discovered yet."}
     except Exception as exc:
         index = {"status": "UNAVAILABLE", "error": str(exc)}
     try:
@@ -57,12 +54,7 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
         audit = {"ok": True, "mode": "lightweight", "vector_count": vector_count}
     return {
         "ready": bool(available is True and index.get("status") in {"READY", "OK"}),
-        "embedding": {
-            "ok": available is True,
-            "identity": identity,
-            "error": None if available is not False else last_error,
-            "dimension": getattr(embedding_service, "dimension", None),
-        },
+        "embedding": {"ok": available is True, "identity": identity, "error": None if available is not False else last_error, "dimension": getattr(embedding_service, "dimension", None)},
         "index": index,
         "audit": audit,
         "feature_contract": getattr(self, "_production_feature_contract", {"all_resolved": True}),
@@ -72,22 +64,17 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
 
 
 def _locked_answer(self: Any, question: str, metadata_filter=None):
-    """Serialize expensive local generation and keep first-use embedding probes bounded."""
     with _ANSWER_LOCK:
         return self._runtime_v3_original_answer(question, metadata_filter)
 
 
 def _guard_transition(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
-    """Reject impossible stage regressions and stale page-counter rollbacks."""
     record = self.get_document(document_id)
     if not record:
         raise ValueError(f"Document {document_id!r} does not exist.")
     current = str(record.get("current_stage") or "DISCOVERED").upper()
     target = str(new_stage).upper()
-    terminal = {
-        "READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR",
-        "FAILED_EMBEDDING", "FAILED_INDEXING", "DEGRADED_LEXICAL", "QUARANTINED",
-    }
+    terminal = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "DEGRADED_LEXICAL", "QUARANTINED"}
     if current in {"READY", "COMPLETED"} and target not in terminal:
         raise RuntimeError(f"Invalid state regression: {current} -> {target}")
     if current.startswith("FAILED") and target not in terminal:
@@ -101,7 +88,6 @@ def _guard_transition(self: Any, document_id: str, new_stage: str, **values: Any
 
 
 def _merge_metrics(document: dict[str, Any]) -> dict[str, Any]:
-    """Promote durable metrics into document fields expected by the UI."""
     raw = document.get("ingestion_metrics")
     metrics: dict[str, Any] = {}
     if raw:
@@ -131,14 +117,11 @@ def _enriched_document(self: Any, document_id: str) -> dict[str, Any] | None:
 
 
 def _bounded_discover_dimension(self: Any) -> int:
-    """Perform dimension discovery with a short probe budget, then restore settings."""
     original_timeout = float(self.timeout_seconds)
     original_retries = int(self.retries)
     try:
         if not self._check_ollama_available(force=False):
-            raise RuntimeError(
-                f"Embedding backend unavailable: Ollama at {self.base_url!r} did not respond to its health check."
-            )
+            raise RuntimeError(f"Embedding backend unavailable: Ollama at {self.base_url!r} did not respond to its health check.")
         self.timeout_seconds = min(original_timeout, float(os.getenv("RAG_DIMENSION_TIMEOUT", "15")))
         self.retries = 0
         return self._runtime_v3_original_discover_dimension()
@@ -148,11 +131,9 @@ def _bounded_discover_dimension(self: Any) -> int:
 
 
 def _table_worker(pdf_path: str, page_index: int, queue: Any) -> None:
-    """Extract one page's tables in a killable process."""
     try:
         import fitz
         from rag_project.utils.text_utils import clean_text
-
         pdf = fitz.open(pdf_path)
         try:
             page = pdf[page_index]
@@ -180,17 +161,13 @@ def _table_worker(pdf_path: str, page_index: int, queue: Any) -> None:
 
 
 def _timed_table_extract(page: Any) -> str:
-    """Hard-timeout table extraction after heuristic signal routing."""
     try:
         text = str(page.get_text("text") or "")
         image_count = len(page.get_images(full=True))
     except Exception:
         return ""
     lowered = text.casefold()
-    signal = any(marker in lowered for marker in (
-        "table", "tableau", "tabla", "tab. ", "|", "treatment", "dose", "dosage",
-        "laboratory", "laboratoire", "reference range", "result",
-    )) or image_count >= 2
+    signal = any(marker in lowered for marker in ("table", "tableau", "tabla", "tab. ", "|", "treatment", "dose", "dosage", "laboratory", "laboratoire", "reference range", "result")) or image_count >= 2
     if not signal:
         return ""
     parent = getattr(page, "parent", None)
@@ -232,7 +209,6 @@ def install() -> None:
     with _LOCK:
         if _INSTALLED:
             return
-
         from rag_project.app.production_rag import ProductionRAGSystem
         from rag_project.ingestion.state_store import IngestionStateStore
         from rag_project.embeddings.embedding_service import EmbeddingService
@@ -241,36 +217,28 @@ def install() -> None:
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_ingest_file"):
             ProductionRAGSystem._runtime_v3_original_ingest_file = ProductionRAGSystem.ingest_file
             ProductionRAGSystem.ingest_file = _stable_production_ingest
-
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_clear"):
             ProductionRAGSystem._runtime_v3_original_clear = ProductionRAGSystem.clear_pdf_data
             ProductionRAGSystem.clear_pdf_data = _safe_clear
-
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_answer"):
             ProductionRAGSystem._runtime_v3_original_answer = ProductionRAGSystem.answer
             ProductionRAGSystem.answer = _locked_answer
-
         if not hasattr(ProductionRAGSystem, "_runtime_v3_detailed_health_report"):
             ProductionRAGSystem._runtime_v3_detailed_health_report = ProductionRAGSystem.health_report
             ProductionRAGSystem.health_report_fast = _health_report_fast
             ProductionRAGSystem.health_report = _health_report_fast
-
         if not hasattr(IngestionStateStore, "_runtime_v3_original_transition"):
             IngestionStateStore._runtime_v3_original_transition = IngestionStateStore.transition_document_state
             IngestionStateStore.transition_document_state = _guard_transition
-
         if not hasattr(IngestionStateStore, "_runtime_v3_original_get_all_documents"):
             IngestionStateStore._runtime_v3_original_get_all_documents = IngestionStateStore.get_all_documents
             IngestionStateStore.get_all_documents = _enriched_documents
-
         if not hasattr(IngestionStateStore, "_runtime_v3_original_get_document"):
             IngestionStateStore._runtime_v3_original_get_document = IngestionStateStore.get_document
             IngestionStateStore.get_document = _enriched_document
-
         if not hasattr(EmbeddingService, "_runtime_v3_original_discover_dimension"):
             EmbeddingService._runtime_v3_original_discover_dimension = EmbeddingService.discover_dimension
             EmbeddingService.discover_dimension = _bounded_discover_dimension
-
         PDFExtractor._runtime_v3_original_extract_tables = getattr(PDFExtractor, "_extract_tables", None)
         PDFExtractor._extract_tables = staticmethod(_timed_table_extract)
         _INSTALLED = True
