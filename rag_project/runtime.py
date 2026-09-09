@@ -8,11 +8,12 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Install cross-cutting infrastructure safeguards exactly once."""
+    """Install the production runtime policy exactly once, in deterministic order."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
+
         from rag_project.runtime_hardening import install as install_hardening
         from rag_project.runtime_hardening_extra import install as install_extra
         from rag_project.runtime_recovery import install as install_recovery
@@ -21,6 +22,7 @@ def install() -> None:
         from rag_project.runtime_stability import install as install_stability
         from rag_project.runtime_stability_v2 import install as install_stability_v2
         from rag_project.runtime_stability_v3 import install as install_stability_v3
+        from rag_project.runtime_stability_v4 import install as install_stability_v4
 
         install_hardening()
         install_extra()
@@ -29,7 +31,8 @@ def install() -> None:
         install_final()
         install_stability()
         install_stability_v2()
-        # Final application-level corrections: the production subclass override,
-        # non-blocking health snapshots, answer serialization, and state monotonicity.
         install_stability_v3()
+        # Final application-level policy: process scheduling, query concurrency,
+        # page watchdogs, safe clear semantics, and consistency auditing.
+        install_stability_v4()
         _INSTALLED = True
