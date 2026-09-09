@@ -31,6 +31,7 @@ jobs:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
+        # Embedding backend tests mock both the HTTP call and local Ollama health probe.
         run: python -m pytest -q
 
   security-audit:
