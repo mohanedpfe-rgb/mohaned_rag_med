@@ -42,14 +42,14 @@ def _ollama_embed_batch(self: Any, texts: list[str]) -> list[list[float]]:
                 result = [item["embedding"] for item in payload["data"]]
             else:
                 raise ValueError("Embedding response did not contain embeddings.")
-            result = self._as_list(result) if hasattr(self, "_as_list") else list(result)
+            result = list(result)
             self._validate(result, len(attempt_texts))
             self.provider = "ollama"
             self.last_error = None
             self._consecutive_timeouts = 0
             self._ollama_available = True
             self._active_batch_size = min(self.batch_size, self._active_batch_size + 1)
-            return [list(self._as_list(vector)) if hasattr(self, "_as_list") else list(vector) for vector in result]
+            return [list(vector) for vector in result]
         except requests.exceptions.Timeout as exc:
             last_error = exc
             self.last_error = "Embedding request timed out"
@@ -77,8 +77,7 @@ def install() -> None:
         return
     from rag_project.embeddings.embedding_service import EmbeddingService
 
-    original = EmbeddingService._ollama_embed_batch
-    _ollama_embed_batch.__wrapped__ = original
+    _ollama_embed_batch.__wrapped__ = EmbeddingService._ollama_embed_batch
     EmbeddingService._ollama_embed_batch = _ollama_embed_batch
     _INSTALLED = True
 
