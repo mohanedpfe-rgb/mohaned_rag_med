@@ -1,7 +1,6 @@
 # Source requirements; the lowest supported Python version drives the shared lock.
 streamlit>=1.38.0,<2.0
 pymupdf>=1.27.1,<2.0
-pymupdf4llm>=0.0.4,<1.0
 sentence-transformers>=3.0.1,<6.0
 chromadb>=0.5.15,<2.0
 requests>=2.32.0,<3.0
