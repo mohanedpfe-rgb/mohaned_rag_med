@@ -14,22 +14,21 @@ from rag_project.security import (
 
 _RESPONSIVE_RUNTIME_CSS = """
 <style>
-/* One normal document flow: no floating canvas and no second page scroll layer. */
-:root{--bookrag-sidebar-width:252px;--bookrag-content-max:1440px}
+/* Let Streamlit own sidebar visibility/collapse; only constrain page flow. */
+:root{--bookrag-content-max:1440px}
 html,body,[data-testid="stApp"],[data-testid="stAppViewContainer"]{min-height:100%;overflow-x:hidden!important}
 [data-testid="stAppViewContainer"]{overflow:visible!important}
 [data-testid="stAppViewContainer"]>section.main{min-width:0!important}
 .studio-shell{display:none!important}
-.block-container{position:relative!important;box-sizing:border-box!important;width:calc(100% - var(--bookrag-sidebar-width))!important;max-width:var(--bookrag-content-max)!important;margin-left:var(--bookrag-sidebar-width)!important;margin-right:0!important;padding:32px 32px 64px!important;min-width:0!important}
-[data-testid="stSidebar"]{position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:0!important;width:var(--bookrag-sidebar-width)!important;min-width:var(--bookrag-sidebar-width)!important;height:100vh!important;max-height:100vh!important;overflow:hidden!important;z-index:100!important}
-[data-testid="stSidebar"]>div:first-child{box-sizing:border-box!important;height:100%!important;max-height:100%!important;overflow-y:auto!important;overflow-x:hidden!important}
+.block-container{position:relative!important;box-sizing:border-box!important;width:100%!important;max-width:var(--bookrag-content-max)!important;margin:0 auto!important;padding:32px 32px 64px!important;min-width:0!important}
+[data-testid="stSidebar"]{z-index:100!important;overflow:visible!important}
+[data-testid="stSidebar"]>div:first-child{box-sizing:border-box!important;max-height:100vh!important;overflow-y:auto!important;overflow-x:hidden!important}
 [data-testid="stHorizontalBlock"],[data-testid="stVerticalBlock"],[data-testid="stColumn"]{min-width:0!important;max-width:100%!important;box-sizing:border-box!important}
-/* Regression guards for the original fixed Canva layout. */
 .index-grid,.row-grid{display:grid!important;grid-template-columns:minmax(0,1.4fr) minmax(300px,1fr)!important;gap:16px!important;width:100%!important}
 .index-panel,.settings-panel,.query-panel,.health-panel,.inspector-panel{width:100%!important;max-width:100%!important;height:auto!important}
 .data-wrap{max-width:100%!important;overflow:auto!important}.answer,.glass-note{max-width:100%!important;overflow-wrap:anywhere!important;word-break:break-word!important}
-@media(max-width:1200px){:root{--bookrag-sidebar-width:220px}.block-container{padding:28px 22px 56px!important}.index-grid,.row-grid{grid-template-columns:minmax(0,1fr)!important}}
-@media(max-width:760px){.block-container{width:100%!important;max-width:100%!important;margin-left:0!important;padding:20px 14px 44px!important}.index-grid,.row-grid{grid-template-columns:1fr!important}}
+@media(max-width:1100px){.index-grid,.row-grid{grid-template-columns:minmax(0,1fr)!important}.block-container{padding:28px 22px 56px!important}}
+@media(max-width:760px){.block-container{width:100%!important;max-width:100%!important;padding:20px 14px 44px!important}.index-grid,.row-grid{grid-template-columns:1fr!important}}
 </style>
 """
 
@@ -70,8 +69,6 @@ def _secure_system():
     return system
 
 
-# Preserve the Streamlit cache-resource control surface used by the UI's
-# "Recreate runtime" action after installing the security facade.
 _secure_system.clear = getattr(_ORIGINAL_GET_SYSTEM, "clear", lambda: None)
 canva_exact_ui.get_system = _secure_system
 
