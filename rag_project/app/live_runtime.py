@@ -68,28 +68,43 @@ def _progress(document: dict[str, Any]) -> float:
     return min(0.99, max(0.0, value))
 
 
-def _safe_documents(system: Any) -> list[dict[str, Any]]:
+def _safe_documents(system: Any) -> tuple[list[dict[str, Any]], bool]:
     try:
-        return list(system.state_store.get_all_documents() or [])
+        return list(system.state_store.get_all_documents() or []), True
     except Exception:
-        return []
+        return [], False
 
 
-def _safe_events(system: Any, limit: int = 8) -> list[dict[str, Any]]:
+def _safe_events(system: Any, limit: int = 8) -> tuple[list[dict[str, Any]], bool]:
     try:
-        return list(system.state_store.get_events(None, limit=limit) or [])
+        return list(system.state_store.get_events(None, limit=limit) or []), True
     except Exception:
-        return []
+        return [], False
+
+
+def _sync_full_app_after_terminal_transition(active: list[dict[str, Any]], state_read_ok: bool) -> None:
+    if not state_read_ok:
+        return
+    was_active = bool(st.session_state.get("bookrag_runtime_was_active", False))
+    if active:
+        st.session_state["bookrag_runtime_was_active"] = True
+        return
+    if not was_active:
+        return
+    st.session_state["bookrag_runtime_was_active"] = False
+    st.rerun(scope="app")
 
 
 @st.fragment(run_every="1s")
 def render_live_runtime(system: Any) -> None:
-    """Render live runtime state without blocking on document ingestion."""
-    documents = _safe_documents(system)
+    """Render runtime state and resynchronize the full UI after ingestion completes."""
+    documents, state_read_ok = _safe_documents(system)
     active = [doc for doc in documents if str(doc.get("status") or "").upper() in _ACTIVE]
     ready = sum(1 for doc in documents if str(doc.get("status") or "").upper() in {"READY", "COMPLETED"})
+    _sync_full_app_after_terminal_transition(active, state_read_ok)
+
     supervisor = supervisor_snapshot(system)
-    events = _safe_events(system)
+    events, _ = _safe_events(system)
     latest = events[-1] if events else {}
 
     with st.container(border=True):
