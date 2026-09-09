@@ -9,7 +9,7 @@ from typing import Any
 
 import streamlit as st
 
-from rag_project.security import require_auth
+from rag_project.auth import require_auth
 
 st.set_page_config(
     page_title="BookRAG Medical",
