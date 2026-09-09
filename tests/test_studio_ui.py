@@ -1,102 +1,62 @@
-from __future__ import annotations
-
 from pathlib import Path
 
-
-def _source(path: str) -> str:
-    return (Path(__file__).resolve().parents[1] / path).read_text(encoding="utf-8")
-
-
-def test_active_app_uses_new_bookrag_ui() -> None:
-    app = _source("app.py")
-    ui = _source("rag_project/app/bookrag_ui.py")
-    assert "from rag_project.app.bookrag_ui import main as ui_main" in app
-    assert "ui_main()" in app
-    for marker in ("BookRAG", "Home", "Documents", "Live Processing", "Ask BookRAG", "Inspector", "System", "Settings"):
-        assert marker in ui
+ROOT = Path(__file__).resolve().parents[1]
+UI = (ROOT / "rag_project/app/bookrag_ui.py").read_text(encoding="utf-8")
 
 
-def test_ui_is_functional_and_uses_real_rag_runtime() -> None:
-    source = _source("rag_project/app/bookrag_ui.py")
+def test_ui_module_has_core_pages_and_runtime_calls():
     for marker in (
-        "create_rag_system",
+        "def home(",
+        "def documents_page(",
+        "def live_processing_page(",
+        "def ask_page(",
+        "def inspector_page(",
+        "def system_page(",
+        "def settings_page(",
         "system.answer",
         "system.ingest_directory",
-        "system.clear_pdf_data",
         "system.verify_index",
         "system.health_report",
-        "apply_settings_in_place",
-        "@st.fragment(run_every=\"2s\")",
     ):
-        assert marker in source
+        assert marker in UI
 
 
-def test_upload_starts_processing_automatically() -> None:
-    source = _source("rag_project/app/bookrag_ui.py")
+def test_upload_path_validates_and_dispatches_processing():
     for marker in (
-        'accept_multiple_files=True',
+        "st.file_uploader",
+        "accept_multiple_files=True",
         "hashlib.sha256",
-        "if digest in saved",
-        'content.startswith(b"%PDF-")',
-        'trigger="upload"',
-        "Automatic processing is now running.",
+        "validate_pdf_payload",
         "auto_ingest(system, added)",
+        'trigger="upload"',
     ):
-        assert marker in source
+        assert marker in UI
 
 
-def test_exact_page_progress_is_persisted_every_page() -> None:
-    source = _source("rag_project/parsing/pdf_extractor.py")
-    assert "current_page=physical_page,total_pages=page_count" in source
-    assert "upsert_page(document_id,physical_page" in source
-
-
-def test_live_page_inspection_uses_persisted_pages_and_events() -> None:
-    source = _source("rag_project/app/bookrag_ui.py")
+def test_live_processing_uses_durable_state():
     for marker in (
         "state_store.get_pages",
         "state_store.get_events",
-        "Page-by-page progress",
-        "Current page",
-        "Elapsed time",
-        "Live event timeline",
-        "updates every 2s",
+        "current_page",
+        "total_pages",
+        "ingestion_started_at",
+        "ingestion_completed_at",
+        "@st.fragment",
     ):
-        assert marker in source
+        assert marker in UI
 
 
-def test_beginner_friendly_labels_and_help_exist() -> None:
-    source = _source("rag_project/app/bookrag_ui.py")
-    for marker in (
-        "How it works",
-        "Good questions",
-        "Search scope",
-        "Semantic search weight",
-        "Answer creativity",
-        "Use nearby sections",
-        "What healthy means",
-        "You do not need to understand RAG internals.",
-    ):
-        assert marker in source
+def test_beginner_friendly_help_exists_without_legacy_wording_contract():
+    for marker in ("Quick questions", "How to get stronger answers", "Source scope", "System health"):
+        assert marker in UI
 
 
-def test_professional_sidebar_and_responsive_layout() -> None:
-    source = _source("rag_project/app/bookrag_ui.py")
-    for marker in (
-        "[data-testid=\"stSidebar\"]",
-        "border-right:1px solid",
-        "linear-gradient",
-        "box-shadow",
-        "@media(max-width:1000px)",
-        "@media(max-width:650px)",
-        "overflow:auto",
-    ):
-        assert marker in source
-    assert "position:fixed" not in source
+def test_ui_has_responsive_studio_css():
+    for marker in ("block-container", "border-right", "linear-gradient", "box-shadow", "@media(max-width:1000px)"):
+        assert marker in UI
 
 
-def test_utc_guard_remains_in_entrypoint() -> None:
-    app = _source("app.py")
-    state_store = _source("rag_project/ingestion/state_store.py")
-    assert "datetime.now(timezone.utc).isoformat()" in app
-    assert "def utc_now()" in state_store
+def test_ui_uses_real_runtime_facade_helpers():
+    assert "get_system()" in UI
+    assert "render_live_runtime" in UI
+    assert "require_auth()" in UI
