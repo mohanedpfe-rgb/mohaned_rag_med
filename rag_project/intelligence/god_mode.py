@@ -9,6 +9,7 @@ from rag_project.intelligence.atomic_versioning import install as install_atomic
 from rag_project.intelligence.evidence_guard import citation_firewall, contradiction_report, evidence_confidence, grounding_decision, verify_claims
 from rag_project.intelligence.index_auditor import audit_index
 from rag_project.intelligence.pdf_intelligence import enrich_text
+from rag_project.intelligence.production_contract import sanitize_trace
 from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
 
 GOD_MODE_FEATURES = (
@@ -169,7 +170,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     query_id = str(uuid.uuid4())
     trace = {"query_id": query_id, "original_query": question, "rewritten_query": plan.normalized, "retrieval_method": "multi_query_hybrid", "candidate_count": len(hits), "selected_count": len(selected), "generation_path": generation_path, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}, "claims": [c.to_dict() for c in claims], "grounding": ground, "contradiction_report": contradiction, "firewall_used": firewall_used}
     try:
-        self.state_store.record_query_trace(query_id, trace)
+        self.state_store.record_query_trace(query_id, sanitize_trace(trace))
     except Exception:
         self.logger.exception("Failed to record query trace")
     self.conversation_memory.add(question, safe_answer)
