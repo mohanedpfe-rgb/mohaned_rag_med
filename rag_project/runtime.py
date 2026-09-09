@@ -8,10 +8,11 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Install infrastructure policies exactly once.
+    """Install cross-cutting infrastructure policies exactly once.
 
-    Answer behavior is composed explicitly by ProductionRAGSystem; this function
-    no longer monkey-patches RAGSystem.answer at import/startup time.
+    Answer behavior is owned by ``ProductionRAGSystem`` and is never installed by
+    global monkey-patching.  The runtime layer is limited to ingestion/index
+    safety policies that existing low-level components depend on.
     """
     global _INSTALLED
     with _INSTALL_LOCK:
@@ -22,12 +23,10 @@ def install() -> None:
         from rag_project.runtime_recovery import install as install_recovery
         from rag_project.runtime_quality_gate import install as install_quality
         from rag_project.runtime_final_gate import install as install_final
-        from rag_project.intelligence.god_mode import install as install_god_mode
 
         install_hardening()
         install_extra()
         install_recovery()
         install_quality()
         install_final()
-        install_god_mode()
         _INSTALLED = True
