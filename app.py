@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import streamlit as st
+
 from rag_project.security import require_auth
+
+# This is the only Streamlit configuration command in the launcher and runs
+# before any other Streamlit UI call on every script rerun.
+st.set_page_config(
+    page_title="BookRAG Medical",
+    page_icon="BR",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 
 def main() -> None:
-    # Keep the pre-auth path deliberately tiny. Heavy RAG, vector-store, PDF and
-    # UI modules are imported only after the user has unlocked the application.
+    # Keep the pre-auth path deliberately tiny. The full RAG/UI stack is imported
+    # only after authentication succeeds, so the unlock page does not initialize
+    # Chroma, PDF/OCR, retrieval, reranking or generation components.
     if not require_auth():
         return
 
-    import streamlit as st
     from datetime import datetime, timezone
 
     from rag_project.app import bookrag_ui
@@ -26,14 +37,8 @@ def main() -> None:
         validate_storage_path,
     )
 
-    # Page configuration must be applied exactly once. It is intentionally
-    # deferred until after authentication so the unlock screen remains cheap.
-    st.set_page_config(
-        page_title="BookRAG Medical",
-        page_icon="BR",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+    # The UI module contains an old set_page_config call. Suppress it after the
+    # canonical launcher configuration above to avoid duplicate configuration.
     bookrag_ui.st.set_page_config = lambda *args, **kwargs: None
 
     if not callable(getattr(rag_system_module, "utc_now", None)):
