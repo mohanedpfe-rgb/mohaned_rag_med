@@ -136,8 +136,7 @@ def _get_lazy_system() -> Any:
 
 
 def _clamped_settings_for_runtime() -> Any:
-    system = _get_lazy_system()
-    return system.settings
+    return _get_lazy_system().settings
 
 
 def _boot_start() -> None:
@@ -160,10 +159,8 @@ def _boot_start() -> None:
             from rag_project.application import create_rag_system
             from rag_project.security import (
                 register_session_upload,
-                require_clear_confirmation,
                 validate_ollama_url,
                 validate_pdf_payload,
-                validate_query,
                 validate_storage_path,
             )
 
@@ -175,35 +172,11 @@ def _boot_start() -> None:
             original_start_ingestion = bookrag_ui.start_ingestion
             original_ollama_health = bookrag_ui.ollama_health
 
+            # The application composition root already installs the complete security
+            # facade around the production service. Avoid wrapping those methods twice:
+            # duplicate wrappers previously consumed rate/concurrency slots and emitted
+            # duplicate audit events on every request.
             system = create_rag_system(_clamped_settings_for_runtime())
-            if not getattr(system, "_bookrag_security_wrapped", False):
-                original_clear = system.clear_pdf_data
-                original_apply = system.apply_settings_in_place
-                original_answer = system.answer
-
-                def guarded_clear() -> None:
-                    require_clear_confirmation()
-                    original_clear()
-
-                def guarded_apply(updates):
-                    clean = dict(updates or {})
-                    if "ollama_base_url" in clean:
-                        clean["ollama_base_url"] = validate_ollama_url(clean["ollama_base_url"])
-                    for key in (
-                        "incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir",
-                        "log_dir", "ingestion_db_path",
-                    ):
-                        if key in clean:
-                            clean[key] = validate_storage_path(system.settings.project_root, clean[key], key)
-                    return original_apply(clean)
-
-                def guarded_answer(question, metadata_filter=None):
-                    return original_answer(validate_query(question), metadata_filter)
-
-                system.clear_pdf_data = guarded_clear
-                system.apply_settings_in_place = guarded_apply
-                system.answer = guarded_answer
-                system._bookrag_security_wrapped = True
 
             def secure_system():
                 return _get_lazy_system()
@@ -233,8 +206,10 @@ def _boot_start() -> None:
                     error=None,
                 )
         except Exception as exc:
+            # Never expose raw exception text from a background bootstrap thread;
+            # exceptions can contain filesystem paths, endpoint details or local config.
             with _BOOT_LOCK:
-                _BOOT.update(status="error", error=f"{type(exc).__name__}: {exc}")
+                _BOOT.update(status="error", error=f"{type(exc).__name__}")
 
     threading.Thread(target=worker, name="bookrag-runtime-bootstrap", daemon=True).start()
 
@@ -246,7 +221,7 @@ def _render_boot_banner() -> None:
     if status == "starting":
         st.info("BookRAG services are loading in the background. The workspace is already available.")
     elif status == "error":
-        st.error(f"BookRAG runtime is unavailable: {error}")
+        st.error(f"BookRAG runtime is unavailable: {error or 'bootstrap failed'}. Check the application logs for details.")
 
 
 def main() -> None:
@@ -261,8 +236,6 @@ def main() -> None:
     from rag_project.app.bookrag_ui import main as ui_main
     from rag_project.app.live_runtime import render_live_runtime
 
-    # Navigation always receives the lightweight facade. It transparently delegates
-    # to the real service as soon as the background bootstrap publishes it.
     bookrag_ui.get_system = lambda: _get_lazy_system()
 
     _render_boot_banner()
