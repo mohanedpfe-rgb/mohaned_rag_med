@@ -14,7 +14,7 @@ from rag_project.application import create_rag_system
 from rag_project.configuration.settings import Settings
 
 PAGES = ["Overview", "Documents", "Index them", "Ingestion", "Chat", "Inspector", "Health", "Settings", "Background"]
-ACTIVE_STAGES = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING"}
+ACTIVE_STAGES = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING", "INTERRUPTED", "RECOVERING"}
 
 
 def _esc(value: Any) -> str:
@@ -46,7 +46,7 @@ def docs(system) -> list[dict[str, Any]]:
 
 
 def ready_docs(system) -> list[dict[str, Any]]:
-    return [d for d in docs(system) if str(d.get("status", "")).upper() == "READY"]
+    return [d for d in docs(system) if str(d.get("status", "")).upper() in {"READY", "COMPLETED"}]
 
 
 def active_document_count(system) -> int:
@@ -61,9 +61,9 @@ def _status_class(value: Any) -> str:
     state = str(value or "UNKNOWN").upper()
     if state in {"READY", "PASS", "COMPLETED", "HEALTHY", "OK"}:
         return "good"
-    if state in {"FAILED", "FAIL", "ERROR", "UNAVAILABLE", "ABSTAIN"}:
+    if state in {"FAILED", "FAIL", "ERROR", "UNAVAILABLE", "ABSTAIN", "INTERRUPTED"}:
         return "bad"
-    if state in {"RUNNING", "PROCESSING", "BUILDING", "WARN", "WARNING"}:
+    if state in {"RUNNING", "PROCESSING", "BUILDING", "WARN", "WARNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "RECOVERING"}:
         return "warn"
     return "neutral"
 
@@ -80,6 +80,20 @@ def _navigate(page: str) -> None:
 
 def _refresh() -> None:
     st.rerun()
+
+
+def _set_job_state(job: dict[str, Any], **updates: Any) -> None:
+    registry = get_jobs()
+    with registry["lock"]:
+        job.update(updates)
+
+
+def _running_job(registry: dict[str, Any]) -> dict[str, Any] | None:
+    with registry["lock"]:
+        for job in reversed(list(registry["items"].values())):
+            if job.get("status") == "RUNNING":
+                return job
+    return None
 
 
 def start_ingestion(system, source_dir: str) -> str:
@@ -101,18 +115,30 @@ def start_ingestion(system, source_dir: str) -> str:
             if job.get("status") == "RUNNING":
                 return jid
         jid = f"ingest-{time.time_ns()}"
-        registry["items"][jid] = {"id": jid, "status": "RUNNING", "started": time.time(), "finished": None, "result": None, "error": None, "source_dir": str(folder), "file_count": len(pdfs)}
+        registry["items"][jid] = {
+            "id": jid,
+            "status": "RUNNING",
+            "started": time.time(),
+            "finished": None,
+            "result": None,
+            "error": None,
+            "source_dir": str(folder),
+            "file_count": len(pdfs),
+            "file_names": [p.name for p in pdfs],
+            "trigger": "upload" if st.session_state.get("studio_auto_ingest") else "manual",
+        }
 
     def worker() -> None:
-        job = registry["items"][jid]
         try:
-            job["result"] = system.ingest_directory(str(folder))
-            job["status"] = "COMPLETED"
+            result = system.ingest_directory(str(folder))
+            completed = sum(1 for row in (result or []) if row.get("status") in {"success", "skipped"})
+            failed = sum(1 for row in (result or []) if row.get("status") == "failed")
+            state = "FAILED" if failed and completed == 0 else "COMPLETED"
+            _set_job_state(job, result=result, completed=completed, failed=failed, status=state)
         except Exception as exc:
-            job["error"] = str(exc)
-            job["status"] = "FAILED"
+            _set_job_state(job, error=str(exc), status="FAILED")
         finally:
-            job["finished"] = time.time()
+            _set_job_state(job, finished=time.time())
 
     threading.Thread(target=worker, name=f"{jid}-worker", daemon=True).start()
     return jid
@@ -196,23 +222,48 @@ def sidebar(system) -> None:
             if st.button(("●  " if current == item else "○  ") + item, key=f"nav_admin_{item}", use_container_width=True): _navigate(item)
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="nav-label">Add documents</div>', unsafe_allow_html=True)
+        st.caption("Upload one or more PDFs. Indexing starts automatically after the files are saved.")
         uploads = st.file_uploader("PDF files", type=["pdf"], accept_multiple_files=True, key="exact_uploads")
         if uploads:
             saved = st.session_state.setdefault("saved_pdf_hashes", set())
             incoming = Path(system.settings.incoming_dir)
             added = 0
+            failures = 0
             for upload in uploads:
-                payload = upload.getvalue(); digest = hashlib.sha256(payload).hexdigest()
-                if digest in saved: continue
+                payload = upload.getvalue()
+                digest = hashlib.sha256(payload).hexdigest()
+                if digest in saved:
+                    continue
                 try:
-                    save_pdf(incoming, upload.name, payload); saved.add(digest); added += 1
-                except Exception as exc: st.error(str(exc))
-            if added: st.success(f"Added {added} PDF{'s' if added != 1 else ''} to Incoming.")
-        if st.button("Start indexing", key="exact_start", use_container_width=True, type="primary"):
+                    save_pdf(incoming, upload.name, payload)
+                    saved.add(digest)
+                    added += 1
+                except Exception as exc:
+                    failures += 1
+                    st.error(str(exc))
+            if added:
+                # The upload itself is the trigger. Save the complete batch first,
+                # then start one shared ingestion worker for the Incoming folder.
+                st.session_state["studio_auto_ingest"] = True
+                try:
+                    job_id = start_ingestion(system, str(incoming))
+                    st.session_state["studio_last_job"] = job_id
+                    st.session_state["studio_auto_ingest"] = False
+                    st.session_state["studio_auto_ingest_message"] = f"Added {added} PDF{'s' if added != 1 else ''}. Indexing started automatically."
+                    st.session_state["studio_nav"] = "Ingestion"
+                    st.rerun()
+                except Exception as exc:
+                    st.session_state["studio_auto_ingest"] = False
+                    st.error(f"Upload succeeded, but automatic indexing could not start: {exc}")
+            elif failures == 0 and uploads:
+                st.caption("Those files are already saved in this session; existing ingestion continues without duplication.")
+        if st.button("Retry pending / failed files", key="exact_start", use_container_width=True):
             try:
+                st.session_state["studio_auto_ingest"] = False
                 st.session_state["studio_last_job"] = start_ingestion(system, str(system.settings.incoming_dir))
                 _navigate("Ingestion")
-            except Exception as exc: st.error(str(exc))
+            except Exception as exc:
+                st.error(str(exc))
         if st.button("Recreate runtime", key="exact_recreate", use_container_width=True):
             get_system.clear(); _navigate("Overview")
         st.markdown('<div class="sidebar-divider"></div>', unsafe_allow_html=True)
@@ -224,9 +275,11 @@ def sidebar(system) -> None:
                 st.session_state["bookrag_clear_phrase"] = ""
                 st.session_state["saved_pdf_hashes"] = set()
                 st.session_state.pop("exact_answer", None); st.session_state.pop("console_answer", None)
+                st.session_state.pop("studio_last_job", None)
                 _refresh()
-            except Exception as exc: st.error(f"Cleanup failed: {exc}")
-        st.markdown('<div class="sidebar-note">One shared runtime for documents, indexing, chat, inspector, health, and settings.</div>', unsafe_allow_html=True)
+            except Exception as exc:
+                st.error(f"Cleanup failed: {exc}")
+        st.markdown('<div class="sidebar-note">One shared runtime for documents, indexing, chat, inspector, health, and settings. Upload is now the normal ingestion trigger.</div>', unsafe_allow_html=True)
 
 
 def topbar() -> None:
@@ -242,6 +295,8 @@ def topbar() -> None:
 def overview(system) -> None:
     items, ready, active = docs(system), ready_docs(system), active_document_count(system)
     _header("Overview", "Control the complete local RAG workflow from one stable workspace.")
+    last_message = st.session_state.pop("studio_auto_ingest_message", None)
+    if last_message: st.success(last_message)
     st.markdown('<div class="section"><div class="section-title">Workspace status</div><div class="section-subtitle">Persistent document state and the same runtime are shared by every page.</div><div class="metric-grid">', unsafe_allow_html=True)
     for label, value in [("Documents", len(items)), ("Ready", len(ready)), ("Processing", active), ("Vector chunks", total_chunks(system))]:
         st.markdown(f'<div class="metric"><div class="metric-label">{_esc(label)}</div><div class="metric-value">{_esc(value)}</div></div>', unsafe_allow_html=True)
@@ -287,22 +342,31 @@ def documents(system) -> None:
 
 
 def ingestion(system, *, index_mode: bool = False) -> None:
-    _header("Index them" if index_mode else "Ingestion", "Run and monitor the same indexing worker used by the rest of the application.")
+    _header("Index them" if index_mode else "Ingestion", "Upload is the primary trigger; this page monitors the shared indexing worker and document pipeline.")
     registry = get_jobs()
-    with registry["lock"]: jobs = list(registry["items"].values())
-    running = next((job for job in reversed(jobs) if job.get("status") == "RUNNING"), None)
-    st.markdown('<div class="section"><div class="section-title">Indexing pipeline</div><div class="section-subtitle">A single worker record is shared with Background and reflected in document state.</div>', unsafe_allow_html=True)
+    with registry["lock"]:
+        jobs = list(registry["items"].values())
+    running = _running_job(registry)
+    st.markdown('<div class="section"><div class="section-title">Indexing pipeline</div><div class="section-subtitle">The upload event starts one shared worker. Document state is durable in SQLite and visible here.</div>', unsafe_allow_html=True)
     if running:
         elapsed = max(0.0, time.time() - float(running.get("started", time.time())))
-        st.info(f"Indexing in progress · {Path(running.get('source_dir', '')).name} · {elapsed:.1f}s · {running.get('file_count', '?')} PDF(s)")
+        st.info(f"Indexing in progress · {Path(running.get('source_dir', '')).name} · {elapsed:.1f}s · {running.get('file_count', '?')} PDF(s) · trigger={running.get('trigger', 'unknown')}")
         st.progress(0.35, text="PDF indexing pipeline active…")
     else:
         st.caption("No indexing worker is currently running.")
-    if st.button("Start indexing incoming folder", key="ingestion_start_main", use_container_width=True, type="primary"):
-        try:
-            st.session_state["studio_last_job"] = start_ingestion(system, str(system.settings.incoming_dir))
-            _refresh()
-        except Exception as exc: st.error(str(exc))
+    if st.session_state.get("studio_last_job"):
+        last_job_id = st.session_state["studio_last_job"]
+        job = next((item for item in jobs if item.get("id") == last_job_id), None)
+        if job:
+            if job.get("status") == "COMPLETED":
+                result = job.get("result") or []
+                st.success(f"Latest job completed: {job.get('completed', 0)} succeeded/skipped, {job.get('failed', 0)} failed.")
+                if result:
+                    with st.expander("Job result details"):
+                        st.json(result)
+            elif job.get("status") == "FAILED":
+                st.error(str(job.get("error") or "Indexing failed."))
+        
     items = docs(system)
     if items:
         st.markdown('<div class="data-wrap"><table class="data-table"><tr><th>Status</th><th>File</th><th>Stage</th><th>Page</th><th>Chunks</th><th>Embeddings</th><th>Dimension</th><th>Error</th></tr>', unsafe_allow_html=True)
@@ -312,14 +376,17 @@ def ingestion(system, *, index_mode: bool = False) -> None:
         st.markdown('</table></div>', unsafe_allow_html=True)
     else:
         st.markdown('<div class="glass-note">No document records are available.</div>', unsafe_allow_html=True)
-    last = next((job for job in reversed(jobs) if job.get("status") in {"COMPLETED", "FAILED"}), None)
-    if last and last.get("status") == "COMPLETED": st.success("Latest indexing job completed successfully.")
-    elif last and last.get("status") == "FAILED": st.error(str(last.get("error") or "Indexing failed."))
-    a, b = st.columns(2)
-    with a:
-        if st.button("Refresh progress", key="ingestion_refresh", use_container_width=True): _refresh()
-    with b:
-        if st.button("Background workers", key="ingestion_background", use_container_width=True): _navigate("Background")
+    if st.button("Refresh progress", key="ingestion_refresh", use_container_width=True): _refresh()
+    with st.expander("Retry control", expanded=False):
+        st.caption("Normal workflow does not require this control. It is retained only for explicit recovery of files left in Incoming after a failed or interrupted run.")
+        if st.button("Retry incoming files", key="ingestion_retry", use_container_width=True):
+            try:
+                st.session_state["studio_auto_ingest"] = False
+                st.session_state["studio_last_job"] = start_ingestion(system, str(system.settings.incoming_dir))
+                _refresh()
+            except Exception as exc:
+                st.error(str(exc))
+    if st.button("Background workers", key="ingestion_background", use_container_width=True): _navigate("Background")
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -407,7 +474,11 @@ def settings(system) -> None:
             st.error("Chunk overlap must be smaller than chunk size.")
         else:
             updates = {"ollama_base_url": host, "embedding_model": embedding, "generation_model": generation, "chunk_size": int(chunk), "chunk_overlap": int(overlap), "top_k": int(top_k), "temperature": float(temperature), "vector_weight": float(vector_weight), "neighbor_expansion": bool(neighbor)}
-            try: st.success(f"Settings applied: {system.apply_settings_in_place(updates)}")
+            try:
+                ok, warnings = system.apply_settings_in_place(updates)
+                if warnings:
+                    for warning in warnings: st.warning(warning)
+                st.success("Settings applied to the shared runtime." if ok else "Settings were not applied.")
             except Exception as exc: st.error(f"Settings could not be applied: {exc}")
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -416,11 +487,14 @@ def background(system) -> None:
     _header("Background", "Observe the shared indexing worker and completed jobs without losing context.")
     registry = get_jobs()
     with registry["lock"]: jobs = list(registry["items"].values())
-    st.markdown('<div class="section"><div class="section-title">Worker activity</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section"><div class="section-title">Worker activity</div><div class="section-subtitle">A single registry is shared across the workspace pages in this Streamlit process.</div>', unsafe_allow_html=True)
     if not jobs: st.markdown('<div class="glass-note">No background jobs have been started in this application session.</div>', unsafe_allow_html=True)
     for job in reversed(jobs):
         started = float(job.get("started") or time.time()); finished = float(job.get("finished") or time.time()); elapsed = max(0.0, finished - started)
-        st.markdown(f'<div class="event"><div class="event-copy">{_esc(Path(job.get("source_dir", "")).name)}<div class="event-meta">{_esc(job.get("error") or f"{job.get('file_count', 0)} PDF(s)")} · {elapsed:.1f}s</div></div>{_status(job.get("status"))}</div>', unsafe_allow_html=True)
+        detail = job.get("error") or f"{job.get('file_count', 0)} PDF(s) · trigger={job.get('trigger', 'unknown')}"
+        if job.get("status") == "COMPLETED":
+            detail += f" · ok={job.get('completed', 0)} failed={job.get('failed', 0)}"
+        st.markdown(f'<div class="event"><div class="event-copy">{_esc(Path(job.get("source_dir", "")).name)}<div class="event-meta">{_esc(detail)} · {elapsed:.1f}s</div></div>{_status(job.get("status"))}</div>', unsafe_allow_html=True)
     if st.button("Refresh workers", key="exact_background_refresh", use_container_width=True): _refresh()
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -429,6 +503,7 @@ def main() -> None:
     st.set_page_config(page_title="BookRAG Studio", page_icon="📚", layout="wide", initial_sidebar_state="expanded")
     st.session_state.setdefault("studio_nav", "Overview")
     st.session_state.setdefault("studio_chat_nonce", 0)
+    st.session_state.setdefault("saved_pdf_hashes", set())
     system = get_system()
     css()
     sidebar(system)
