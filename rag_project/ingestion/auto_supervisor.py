@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import uuid
@@ -18,6 +19,7 @@ _STOP = threading.Event()
 _WAKE = threading.Event()
 _CONTENT_CACHE: dict[str, tuple[str, str | None]] = {}
 _STABILITY: dict[str, tuple[str, float]] = {}
+_LOCK_HANDLE: int | None = None
 _STATE: dict[str, Any] = {
     "enabled": False,
     "watchdog": False,
@@ -41,6 +43,7 @@ _ACTIVE = {
 }
 _TERMINAL_NO_RETRY = {"READY", "COMPLETED", "DEGRADED_LEXICAL", "QUARANTINED"}
 _STABLE_SECONDS = 0.75
+_CACHE_MAX = 1024
 
 
 def _now() -> str:
@@ -49,6 +52,10 @@ def _now() -> str:
 
 def _state_path(system: Any) -> Path:
     return Path(system.settings.log_dir).resolve() / "auto_supervisor_state.json"
+
+
+def _lock_path(system: Any) -> Path:
+    return Path(system.settings.log_dir).resolve() / "auto_supervisor.lock"
 
 
 def _persist(system: Any) -> None:
@@ -61,7 +68,6 @@ def _persist(system: Any) -> None:
         temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
         temp.replace(target)
     except Exception:
-        # Diagnostics must never stop ingestion.
         pass
 
 
@@ -83,8 +89,72 @@ def _load_persisted_state(system: Any) -> None:
 
 def snapshot(system: Any | None = None) -> dict[str, Any]:
     with _LOCK:
-        result = dict(_STATE)
-    return result
+        return dict(_STATE)
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _acquire_process_lock(system: Any) -> bool:
+    global _LOCK_HANDLE
+    path = _lock_path(system)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        payload = f"{os.getpid()}\n{_now()}\n"
+        os.write(handle, payload.encode("utf-8"))
+        _LOCK_HANDLE = handle
+        return True
+    except FileExistsError:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            pid = int(lines[0]) if lines else -1
+        except (OSError, ValueError):
+            pid = -1
+        if pid > 0 and _process_alive(pid):
+            return False
+        try:
+            path.unlink()
+        except OSError:
+            return False
+        try:
+            handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(handle, f"{os.getpid()}\n{_now()}\n".encode("utf-8"))
+            _LOCK_HANDLE = handle
+            return True
+        except OSError:
+            return False
+    except OSError:
+        return False
+
+
+def _release_process_lock(system: Any) -> None:
+    global _LOCK_HANDLE
+    handle = _LOCK_HANDLE
+    _LOCK_HANDLE = None
+    if handle is not None:
+        try:
+            os.close(handle)
+        except OSError:
+            pass
+    try:
+        path = _lock_path(system)
+        if path.is_file():
+            try:
+                pid = int(path.read_text(encoding="utf-8").splitlines()[0])
+            except (OSError, ValueError, IndexError):
+                pid = -1
+            if pid == os.getpid():
+                path.unlink()
+    except OSError:
+        pass
 
 
 def _file_signature(path: Path) -> str:
@@ -116,10 +186,21 @@ def _same_content(system: Any, path: Path, document: dict[str, Any], signature: 
     return digest is not None and digest == str(document.get("content_hash") or "")
 
 
+def _trim_caches(existing_paths: set[str] | None = None) -> None:
+    with _LOCK:
+        if existing_paths is not None:
+            for cache in (_CONTENT_CACHE, _STABILITY):
+                for key in list(cache):
+                    if key not in existing_paths:
+                        cache.pop(key, None)
+        for cache in (_CONTENT_CACHE, _STABILITY):
+            while len(cache) > _CACHE_MAX:
+                cache.pop(next(iter(cache)))
+
+
 def _candidate(system: Any, path: Path) -> bool:
     try:
         signature = _file_signature(path)
-        # Avoid ingesting a PDF while an external copier/editor is still writing it.
         if not _stable_enough(path, signature):
             return False
         document = system.state_store.get_by_path(str(path.resolve()))
@@ -163,6 +244,7 @@ def _scan_once(system: Any) -> None:
         )
     except OSError:
         candidates = []
+    _trim_caches({str(p.resolve()) for p in candidates})
 
     for path in candidates:
         if not _candidate(system, path):
@@ -254,35 +336,47 @@ def _loop(system: Any, interval_seconds: float) -> None:
     incoming = Path(system.settings.incoming_dir).resolve()
     incoming.mkdir(parents=True, exist_ok=True)
     _load_persisted_state(system)
+    if not _acquire_process_lock(system):
+        with _LOCK:
+            _STATE["enabled"] = False
+            _STATE["watchdog"] = False
+            _STATE["last_action"] = "another supervisor process owns this project"
+        _persist(system)
+        return
     with _LOCK:
         _STATE["enabled"] = True
         _STATE["started_at"] = _STATE["started_at"] or _now()
     _start_watchdog(incoming)
     _persist(system)
 
-    # Watchdog provides immediate wakeups. Reconciliation remains periodic so a
-    # dropped filesystem event, stale lease, or process restart is self-healing.
-    while not _STOP.is_set():
-        try:
-            _scan_once(system)
-        except Exception as exc:
-            with _LOCK:
-                _STATE["last_error"] = str(exc)
-                _STATE["last_action"] = "supervisor cycle failed"
-                _STATE["last_action_at"] = _now()
-            _persist(system)
-        _WAKE.wait(max(1.0, float(interval_seconds)))
-        _WAKE.clear()
-
-    _stop_watchdog()
+    try:
+        while not _STOP.is_set():
+            try:
+                _scan_once(system)
+            except Exception as exc:
+                with _LOCK:
+                    _STATE["last_error"] = str(exc)
+                    _STATE["last_action"] = "supervisor cycle failed"
+                    _STATE["last_action_at"] = _now()
+                _persist(system)
+            _WAKE.wait(max(1.0, float(interval_seconds)))
+            _WAKE.clear()
+    finally:
+        _stop_watchdog()
+        _release_process_lock(system)
+        with _LOCK:
+            _STATE["enabled"] = False
+            _STATE["watchdog"] = False
+        _persist(system)
 
 
 def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
     """Start one autonomous PDF supervisor with watchdog + reconciliation.
 
-    New or modified PDFs wake ingestion quickly, while stable-write detection
-    prevents partial-copy races. Durable SQLite state is authoritative and
-    content hashes prevent duplicate terminal ingestion.
+    New or modified PDFs wake ingestion quickly, stable-write detection prevents
+    partial-copy races, and an OS process lock prevents duplicate supervisors when
+    the Streamlit server uses more than one process. Durable SQLite state remains
+    authoritative and content hashes prevent duplicate terminal ingestion.
     """
     global _THREAD
     with _LOCK:
