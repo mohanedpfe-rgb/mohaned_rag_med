@@ -24,6 +24,7 @@ def install() -> None:
         from rag_project.runtime_stability_v3 import install as install_stability_v3
         from rag_project.runtime_stability_v4 import install as install_stability_v4
         from rag_project.runtime_stability_v5 import install as install_stability_v5
+        from rag_project.runtime_stability_v6 import install as install_stability_v6
 
         install_hardening()
         install_extra()
@@ -33,8 +34,9 @@ def install() -> None:
         install_stability()
         install_stability_v2()
         install_stability_v3()
-        # Last layers: lease fencing, clear-vs-ingestion protection, serialized
-        # answers, and terminal-state regression protection.
         install_stability_v4()
         install_stability_v5()
+        # Must be last: v6 normalizes Chroma/NumPy containers before any final
+        # index-validation or query path can evaluate a multi-element array.
+        install_stability_v6()
         _INSTALLED = True
