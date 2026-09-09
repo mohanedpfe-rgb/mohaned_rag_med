@@ -1,28 +1,34 @@
 from __future__ import annotations
 
-import importlib
+import hashlib
+
+from rag_project.security import DEFAULT_ADMIN_PASSWORD_SHA256, _configured_admin_passwords
 
 
-def test_admin_password_is_rejected_when_missing(monkeypatch):
+DEFAULT_PASSWORD = "becheikh_mohaned_rag"
+
+
+def test_permanent_default_password_is_configured(monkeypatch):
     monkeypatch.delenv("BOOKRAG_ADMIN_PASSWORD", raising=False)
-    security = importlib.import_module("rag_project.security")
-    assert security._configured_admin_passwords() == ()
+    expected = hashlib.sha256(DEFAULT_PASSWORD.encode("utf-8")).hexdigest()
+    assert DEFAULT_ADMIN_PASSWORD_SHA256 == expected
+    assert expected in _configured_admin_passwords()
 
 
-def test_admin_password_requires_minimum_length(monkeypatch):
+def test_short_environment_password_does_not_remove_default(monkeypatch):
     monkeypatch.setenv("BOOKRAG_ADMIN_PASSWORD", "too-short")
-    security = importlib.import_module("rag_project.security")
-    assert security._configured_admin_passwords() == ()
+    digests = _configured_admin_passwords()
+    assert DEFAULT_ADMIN_PASSWORD_SHA256 in digests
+    assert len(digests) == 1
 
 
-def test_configured_strong_password_is_accepted(monkeypatch):
-    password = "a-strong-local-admin-password"
+def test_strong_environment_password_is_additional_to_default(monkeypatch):
+    password = "a-valid-local-admin-password-123"
     monkeypatch.setenv("BOOKRAG_ADMIN_PASSWORD", password)
-    security = importlib.import_module("rag_project.security")
-    assert security._configured_admin_passwords() == (password,)
+    digests = _configured_admin_passwords()
+    assert DEFAULT_ADMIN_PASSWORD_SHA256 in digests
+    assert hashlib.sha256(password.encode("utf-8")).hexdigest() in digests
 
 
-def test_no_implicit_default_password_exists(monkeypatch):
-    monkeypatch.delenv("BOOKRAG_ADMIN_PASSWORD", raising=False)
-    security = importlib.import_module("rag_project.security")
-    assert not hasattr(security, "DEFAULT_ADMIN_PASSWORD")
+def test_default_password_digest_is_sha256_length():
+    assert len(DEFAULT_ADMIN_PASSWORD_SHA256) == 64
