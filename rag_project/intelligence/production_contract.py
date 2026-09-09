@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 import re
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -59,6 +59,7 @@ FEATURES: tuple[FeatureSpec, ...] = (
     FeatureSpec("resilient_generation_fallback", "rag_project.intelligence.god_mode:_answer_with_ladder"),
     FeatureSpec("index_visibility_guard", "rag_project.intelligence.atomic_versioning:install"),
     FeatureSpec("retrieval_fail_closed_behavior", "rag_project.intelligence.final_44:fail_closed"),
+    FeatureSpec("exact_feature_certification_contract", "rag_project.intelligence.production_contract:validate_feature_contract"),
 )
 
 
