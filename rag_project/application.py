@@ -13,13 +13,25 @@ from rag_project.security import harden_system
 _FACTORY_LOCK = threading.RLock()
 
 
+def _normalize_runtime_settings(settings: Settings | None) -> Settings:
+    """Apply non-negotiable local embedding bounds before any client is constructed."""
+    resolved = settings or Settings.from_env()
+    resolved.embedding_batch_size = max(16, min(int(resolved.embedding_batch_size), 32))
+    resolved.embedding_retries = max(1, min(int(resolved.embedding_retries), 3))
+    resolved.embedding_timeout_seconds = max(30.0, min(float(resolved.embedding_timeout_seconds), 300.0))
+    resolved.max_workers = max(1, min(int(resolved.max_workers), 4))
+    resolved.ollama_concurrency = max(1, min(int(resolved.ollama_concurrency), 2))
+    return resolved
+
+
 def create_rag_system(settings: Settings | None = None):
     """Construct the production RAG pipeline and validate its persistent indexes before use."""
     with _FACTORY_LOCK:
         install()
         from rag_project.app.production_rag import ProductionRAGSystem
 
-        system = ProductionRAGSystem(settings or Settings.from_env())
+        resolved_settings = _normalize_runtime_settings(settings)
+        system = ProductionRAGSystem(resolved_settings)
         system = harden_system(system)
         try:
             system.startup_quality = run_quality_gate(system, repair_drift=True)
