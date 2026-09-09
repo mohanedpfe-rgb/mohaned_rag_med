@@ -22,6 +22,8 @@ _WAKE = threading.Event()
 _WORKING: set[str] = set()
 _CONTENT_CACHE: dict[str, tuple[str, str | None]] = {}
 _STABILITY: dict[str, tuple[str, float]] = {}
+_RETRY_NOT_BEFORE: dict[str, float] = {}
+_RETRY_ATTEMPTS: dict[str, int] = {}
 _LOCK_HANDLE: int | None = None
 _STATE: dict[str, Any] = {
     "enabled": False,
@@ -48,6 +50,9 @@ _ACTIVE = {
 _TERMINAL_NO_RETRY = {"READY", "COMPLETED", "DEGRADED_LEXICAL", "QUARANTINED"}
 _STABLE_SECONDS = 0.75
 _CACHE_MAX = 1024
+_MAX_AUTO_RETRIES = 5
+_RETRY_BASE_SECONDS = 2.0
+_RETRY_MAX_SECONDS = 60.0
 
 
 def _now() -> str:
@@ -201,6 +206,12 @@ def _trim_caches(existing_paths: set[str]) -> None:
                     cache.pop(key, None)
             while len(cache) > _CACHE_MAX:
                 cache.pop(next(iter(cache)))
+        for cache in (_RETRY_NOT_BEFORE, _RETRY_ATTEMPTS):
+            for key in list(cache):
+                if key not in existing_paths:
+                    cache.pop(key, None)
+            while len(cache) > _CACHE_MAX:
+                cache.pop(next(iter(cache)))
 
 
 def _candidate(system: Any, path: Path) -> bool:
@@ -219,13 +230,39 @@ def _candidate(system: Any, path: Path) -> bool:
         if status in _ACTIVE:
             return False
         same_content = _same_content(system, path, document, signature)
-        if status in _TERMINAL_NO_RETRY or status.startswith("FAILED"):
-            return not same_content
+        if not same_content:
+            with _LOCK:
+                _RETRY_ATTEMPTS.pop(key, None)
+                _RETRY_NOT_BEFORE.pop(key, None)
+            return True
+        if status in _TERMINAL_NO_RETRY:
+            return False
+        if status.startswith("FAILED"):
+            with _LOCK:
+                attempts = int(_RETRY_ATTEMPTS.get(key, 0))
+                retry_at = float(_RETRY_NOT_BEFORE.get(key, 0.0))
+            if attempts >= _MAX_AUTO_RETRIES:
+                return False
+            return time.monotonic() >= retry_at
         if status in {"", "INTERRUPTED", "RECOVERING"}:
             return True
-        return not same_content
+        return False
     except (OSError, ValueError):
         return False
+
+
+def _schedule_retry(key: str) -> None:
+    with _LOCK:
+        attempt = int(_RETRY_ATTEMPTS.get(key, 0)) + 1
+        _RETRY_ATTEMPTS[key] = attempt
+        delay = min(_RETRY_MAX_SECONDS, _RETRY_BASE_SECONDS * (2 ** max(0, attempt - 1)))
+        _RETRY_NOT_BEFORE[key] = time.monotonic() + delay
+
+
+def _clear_retry(key: str) -> None:
+    with _LOCK:
+        _RETRY_ATTEMPTS.pop(key, None)
+        _RETRY_NOT_BEFORE.pop(key, None)
 
 
 def _finish_job(system: Any, path: Path, result: dict[str, Any] | None = None, error: Exception | None = None) -> None:
@@ -237,14 +274,17 @@ def _finish_job(system: Any, path: Path, result: dict[str, Any] | None = None, e
             result_status = str(result.get("status") or "unknown").lower()
             if result_status in {"success", "skipped"}:
                 _STATE["completed"] += 1
+                _clear_retry(key)
             elif result_status in {"failed", "error"}:
                 _STATE["failed"] += 1
+                _schedule_retry(key)
             _STATE["last_action"] = f"completed {path.name} · {result_status}"
             _STATE["last_error"] = None
         if error is not None:
             _STATE["failed"] += 1
             _STATE["last_error"] = f"{type(error).__name__}: {error}"
             _STATE["last_action"] = f"error on {path.name}"
+            _schedule_retry(key)
         _STATE["last_action_at"] = _now()
     _persist(system)
 
