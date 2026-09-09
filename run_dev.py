@@ -1,4 +1,4 @@
-from rag_project.app.studio_ui import main
+from app import main
 
 
 if __name__ == "__main__":
