@@ -57,6 +57,8 @@ def _boot_start() -> None:
 
     def worker() -> None:
         try:
+            from datetime import datetime, timezone
+
             from rag_project.app import bookrag_ui
             from rag_project.app import rag_system as rag_system_module
             from rag_project.app.bookrag_ui import main as ui_main
@@ -75,22 +77,14 @@ def _boot_start() -> None:
 
             bookrag_ui.st.set_page_config = lambda *args, **kwargs: None
             if not callable(getattr(rag_system_module, "utc_now", None)):
-                from datetime import datetime, timezone
                 rag_system_module.utc_now = lambda: datetime.now(timezone.utc).isoformat()
 
-            original_get_system = bookrag_ui.get_system
             original_save_pdf = bookrag_ui.save_pdf
             original_start_ingestion = bookrag_ui.start_ingestion
             original_ollama_health = bookrag_ui.ollama_health
 
-            @st.cache_resource(show_spinner=False)
-            def cached_system():
-                return create_rag_system(Settings.from_env())
-
-            def secure_system():
-                system = cached_system()
-                if getattr(system, "_bookrag_security_wrapped", False):
-                    return system
+            system = create_rag_system(Settings.from_env())
+            if not getattr(system, "_bookrag_security_wrapped", False):
                 original_clear = system.clear_pdf_data
                 original_apply = system.apply_settings_in_place
                 original_answer = system.answer
@@ -118,32 +112,34 @@ def _boot_start() -> None:
                 system.apply_settings_in_place = guarded_apply
                 system.answer = guarded_answer
                 system._bookrag_security_wrapped = True
+
+            def secure_system():
                 return system
 
-            secure_system.clear = getattr(original_get_system, "clear", lambda: None)
-            bookrag_ui.get_system = secure_system
-
             def secure_save_pdf(incoming, name, content):
-                system = secure_system()
                 safe_incoming = validate_storage_path(system.settings.project_root, incoming, "incoming folder")
                 validate_pdf_payload(name, content)
                 register_session_upload(len(content))
                 return original_save_pdf(safe_incoming, name, content)
 
-            def secure_start_ingestion(system, source_dir, *, trigger="manual"):
+            def secure_start_ingestion(ignored_system, source_dir, *, trigger="manual"):
                 safe_source = validate_storage_path(system.settings.project_root, source_dir, "incoming folder")
                 return original_start_ingestion(system, str(safe_source), trigger=trigger)
 
             def secure_ollama_health(base_url):
                 return original_ollama_health(validate_ollama_url(base_url))
 
+            bookrag_ui.get_system = secure_system
             bookrag_ui.save_pdf = secure_save_pdf
             bookrag_ui.start_ingestion = secure_start_ingestion
             bookrag_ui.ollama_health = secure_ollama_health
 
-            system = secure_system()
             with _BOOT_LOCK:
-                _BOOT.update(status="ready", system=(system, render_live_runtime, ui_main, start_auto_supervisor), error=None)
+                _BOOT.update(
+                    status="ready",
+                    system=(system, render_live_runtime, ui_main, start_auto_supervisor),
+                    error=None,
+                )
         except Exception as exc:
             with _BOOT_LOCK:
                 _BOOT.update(status="error", error=f"{type(exc).__name__}: {exc}")
@@ -178,7 +174,7 @@ def _render_boot_state() -> None:
         started = float(_BOOT["started_at"] or 0.0)
     if status == "starting":
         elapsed = max(0.0, time.monotonic() - started)
-        st.info("Opening your workspace… RAG services are warming in the background.")
+        st.info("Opening your workspace… services are warming in the background.")
         st.progress(min(elapsed / 8.0, 0.92), text=f"Preparing BookRAG · {elapsed:.1f}s")
     elif status == "error":
         st.error(f"BookRAG could not start: {error}")
@@ -202,7 +198,7 @@ def main() -> None:
         return
 
     with _BOOT_LOCK:
-        status = _BOOT["status"]
+        status = str(_BOOT["status"])
         runtime = _BOOT["system"]
 
     if status != "ready":
