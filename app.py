@@ -9,15 +9,12 @@ from typing import Any
 
 import streamlit as st
 
-from rag_project.auth import require_auth
-
 st.set_page_config(
     page_title="BookRAG Medical",
     page_icon="BR",
     layout="wide",
     initial_sidebar_state="expanded",
 )
-require_auth()
 
 
 def _load_local_env() -> None:
