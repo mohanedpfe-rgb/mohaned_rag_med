@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -118,6 +120,86 @@ def _enriched_document(self: Any, document_id: str) -> dict[str, Any] | None:
     return _merge_metrics(dict(row)) if row else None
 
 
+def _table_worker(pdf_path: str, page_index: int, queue: Any) -> None:
+    """Extract one page's tables in a killable process."""
+    try:
+        import fitz
+        from rag_project.utils.text_utils import clean_text
+
+        pdf = fitz.open(pdf_path)
+        try:
+            page = pdf[page_index]
+            finder = getattr(page, "find_tables", None)
+            if finder is None:
+                queue.put("")
+                return
+            rendered: list[str] = []
+            tables = finder()
+            for table in getattr(tables, "tables", []) or []:
+                for row in table.extract() or []:
+                    line = " | ".join(clean_text(str(cell) if cell is not None else "") for cell in row)
+                    if line.strip():
+                        rendered.append(line)
+                if rendered:
+                    rendered.append("")
+            queue.put("\n\n".join(rendered).strip())
+        finally:
+            pdf.close()
+    except BaseException as exc:
+        try:
+            queue.put(f"__BOOKRAG_TABLE_ERROR__:{type(exc).__name__}:{exc}")
+        except Exception:
+            pass
+
+
+def _timed_table_extract(page: Any) -> str:
+    """Hard-timeout table extraction after v2's heuristic routing."""
+    try:
+        text = str(page.get_text("text") or "")
+        image_count = len(page.get_images(full=True))
+    except Exception:
+        return ""
+    lowered = text.casefold()
+    signal = any(marker in lowered for marker in (
+        "table", "tableau", "tabla", "tab. ", "|", "treatment", "dose", "dosage",
+        "laboratory", "laboratoire", "reference range", "result",
+    )) or image_count >= 2
+    if not signal:
+        return ""
+    parent = getattr(page, "parent", None)
+    pdf_path = getattr(parent, "name", None)
+    page_index = int(getattr(page, "number", -1))
+    if not pdf_path or page_index < 0 or not Path(str(pdf_path)).is_file():
+        return ""
+    timeout = max(3.0, float(os.getenv("RAG_TABLE_TIMEOUT", "20")))
+    ctx = mp.get_context("spawn") if os.name == "nt" else mp.get_context("fork")
+    queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_table_worker, args=(str(pdf_path), page_index, queue), daemon=True)
+    try:
+        process.start()
+        process.join(timeout)
+        if process.is_alive():
+            process.terminate()
+            process.join(1.0)
+            if process.is_alive() and hasattr(process, "kill"):
+                process.kill()
+                process.join(1.0)
+            return ""
+        try:
+            result = queue.get(timeout=0.5)
+        except Exception:
+            return ""
+        if isinstance(result, str) and result.startswith("__BOOKRAG_TABLE_ERROR__:"):
+            return ""
+        return str(result or "")
+    finally:
+        try:
+            queue.close()
+            queue.join_thread()
+        except Exception:
+            pass
+
+
 def install() -> None:
     global _INSTALLED
     with _LOCK:
@@ -126,6 +208,7 @@ def install() -> None:
 
         from rag_project.app.production_rag import ProductionRAGSystem
         from rag_project.ingestion.state_store import IngestionStateStore
+        from rag_project.parsing.pdf_extractor import PDFExtractor
 
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_ingest_file"):
             ProductionRAGSystem._runtime_v3_original_ingest_file = ProductionRAGSystem.ingest_file
@@ -152,4 +235,6 @@ def install() -> None:
             IngestionStateStore._runtime_v3_original_get_document = IngestionStateStore.get_document
             IngestionStateStore.get_document = _enriched_document
 
+        PDFExtractor._runtime_v3_original_extract_tables = getattr(PDFExtractor, "_extract_tables", None)
+        PDFExtractor._extract_tables = staticmethod(_timed_table_extract)
         _INSTALLED = True
