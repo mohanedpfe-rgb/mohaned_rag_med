@@ -62,7 +62,6 @@ def runtime_contract() -> dict[str, Any]:
         "runtime_policy": "rag_project.runtime.install",
         "storage_policy": "rag_project.storage.vector_store_runtime.install",
         "security_policy": "rag_project.security.harden_system",
-        "authentication_policy": "rag_project.auth.require_auth",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
         "answer_pipeline": "explicit_delegation",
