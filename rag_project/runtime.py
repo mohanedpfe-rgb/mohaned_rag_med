@@ -26,6 +26,7 @@ def install() -> None:
         from rag_project.runtime_stability_v5 import install as install_stability_v5
         from rag_project.runtime_stability_v6 import install as install_stability_v6
         from rag_project.runtime_stability_v7 import install as install_stability_v7
+        from rag_project.runtime_stability_v8 import install as install_stability_v8
 
         install_hardening()
         install_extra()
@@ -37,8 +38,8 @@ def install() -> None:
         install_stability_v3()
         install_stability_v4()
         install_stability_v5()
-        # v6 is the final vector/container normalization layer for Chroma + NumPy.
         install_stability_v6()
-        # v7 closes the same class of bug one layer earlier at EmbeddingService.
         install_stability_v7()
+        # v8 closes UI-level array truth, Ollama health, job retention, and upload-arrival races.
+        install_stability_v8()
         _INSTALLED = True
