@@ -45,29 +45,49 @@ def test_shared_runtime_and_worker_state_are_explicit():
     assert "system.answer" in UI
 
 
-def test_upload_is_the_primary_ingestion_trigger():
+def test_upload_is_the_primary_automatic_ingestion_trigger():
     assert "accept_multiple_files=True" in UI
     assert "save_pdf(incoming, upload.name, payload)" in UI
-    assert 'st.session_state["studio_auto_ingest"] = True' in UI
-    assert 'start_ingestion(system, str(incoming))' in UI
+    assert "def auto_start_after_upload" in UI
+    assert 'trigger="upload"' in UI
     assert 'st.session_state["studio_last_job"] = job_id' in UI
     assert 'st.session_state["studio_nav"] = "Ingestion"' in UI
-    assert "Retry pending / failed files" in UI
+    assert "Retry waiting PDFs" in UI
+    assert "Indexing starts automatically" in UI
 
 
 def test_ingestion_worker_has_shared_lifecycle_and_results():
     assert "trigger" in UI
     assert "_set_job_state(job" in UI
-    assert 'job["status"]' not in UI or "status=state" in UI
+    assert "status=state" in UI
     assert "completed" in UI and "failed" in UI
     assert "finished=time.time()" in UI
 
 
-def test_workflow_is_connected_documents_chat():
+def test_live_monitoring_is_real_and_not_a_fake_fixed_progress_bar():
+    assert "@st.fragment(run_every=\"2s\")" in UI
+    assert "@st.fragment(run_every=\"3s\")" in UI
+    assert "_document_progress" in UI
+    assert "_latest_events_by_document" in UI
+    assert "state_store.get_events" in UI
+    assert "Estimated pipeline progress" in UI
+
+
+def test_beginner_friendly_tooling_is_explained():
+    assert "How to use BookRAG in 3 steps" in UI
+    assert "help=" in UI
+    assert "What does each stage mean?" in UI
+    assert "Overall readiness" in UI
+    assert "Manual recovery" in UI
+
+
+def test_workflow_is_connected_documents_chat_inspector_health():
     assert "ready_docs(system)" in UI
     assert "metadata_filter" in UI
     assert "system.answer" in UI
     assert "system.verify_index" in UI
+    assert "system.health_report" in UI
+    assert "ollama_health(system.settings.ollama_base_url)" in UI
 
 
 def test_security_facade_still_guards_core_operations():
