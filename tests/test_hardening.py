@@ -181,8 +181,8 @@ def test_embedding_failures_are_not_silently_replaced(monkeypatch):
         raise ConnectionError("offline")
 
     monkeypatch.setattr("rag_project.embeddings.embedding_service.requests.post", fail)
-    service = EmbeddingService("http://offline", "model", retries=1)
-    with pytest.raises(RuntimeError, match="Embedding service failed"):
+    service = EmbeddingService("http://127.0.0.1:11434", "model", retries=1)
+    with pytest.raises(RuntimeError, match="embedding service failed"):
         service.embed_texts(["text"])
 
 
@@ -203,7 +203,7 @@ def test_ollama_tagged_embedding_models_use_ollama_api(monkeypatch):
         "rag_project.embeddings.embedding_service.requests.post",
         lambda *args, **kwargs: Response(),
     )
-    service = EmbeddingService("http://ollama", "qwen3-embedding:latest", retries=1)
+    service = EmbeddingService("http://127.0.0.1:11434", "qwen3-embedding:latest", retries=1)
 
     vectors = service.embed_texts(["text"])
 
