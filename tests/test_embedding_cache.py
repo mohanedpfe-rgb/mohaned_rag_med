@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 
 from rag_project.embeddings.embedding_service import EmbeddingService
 
