@@ -111,17 +111,24 @@ class ProductionRAGSystem(ResilientRAGSystem):
         checks: dict[str, Any] = {}
         try:
             self._ensure_embedding_dimension()
-            checks["embedding"] = {"ok": True, "identity": self.embedding_service.identity}
+            identity = self.embedding_service.identity
+            startup_error = getattr(self, "embedding_startup_error", None)
+            embedding_ok = startup_error is None and identity is not None
+            checks["embedding"] = {
+                "ok": embedding_ok,
+                "identity": identity,
+                "error": startup_error if not embedding_ok else None,
+            }
         except Exception as exc:
-            checks["embedding"] = {"ok": False, "error": str(exc)}
+            checks["embedding"] = {"ok": False, "error": type(exc).__name__}
         try:
             checks["index"] = self.vector_store.compatibility_report(self.embedding_service.identity)
         except Exception as exc:
-            checks["index"] = {"status": "UNAVAILABLE", "error": str(exc)}
+            checks["index"] = {"status": "UNAVAILABLE", "error": type(exc).__name__}
         try:
             checks["audit"] = self.audit_god_mode_index()
         except Exception as exc:
-            checks["audit"] = {"ok": False, "error": str(exc)}
+            checks["audit"] = {"ok": False, "error": type(exc).__name__}
         checks["feature_contract"] = self._production_feature_contract
         checks["models"] = {"embedding_model": self.settings.embedding_model, "generation_model": self.settings.generation_model}
         checks["pipeline"] = {
