@@ -4,13 +4,15 @@ from pathlib import Path
 
 import fitz
 
+from rag_project.security import validate_pdf_page_count
+
 
 class DocumentClassifier:
     @staticmethod
     def classify(pdf_path: str | Path) -> dict:
         pdf = fitz.open(str(pdf_path))
         try:
-            page_count = pdf.page_count
+            page_count = validate_pdf_page_count(pdf.page_count)
             text_pages = 0
             image_heavy_pages = 0
             table_heavy_pages = 0
