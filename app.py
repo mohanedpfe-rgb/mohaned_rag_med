@@ -4,6 +4,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 
 def _load_local_env() -> None:
@@ -47,18 +48,20 @@ _BOOT: dict[str, object] = {
     "error": None,
     "started_at": 0.0,
 }
+_LAZY_SETTINGS: Any | None = None
+_LAZY_STATE_STORE: Any | None = None
 
 
 def _clamp_local_embedding_profile() -> None:
-    """Prevent an unavailable/slow local Ollama from blocking the ingestion supervisor for minutes."""
+    """Bound local embedding waits so one Ollama stall cannot become a UI freeze."""
     try:
         retries = max(0, min(int(os.getenv("EMBEDDING_RETRIES", "1")), 1))
     except ValueError:
         retries = 1
     try:
-        timeout = max(5.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30")), 30.0))
+        timeout = max(5.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "20")), 20.0))
     except ValueError:
-        timeout = 30.0
+        timeout = 20.0
     try:
         batch_size = max(1, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "4")), 4))
     except ValueError:
@@ -66,6 +69,71 @@ def _clamp_local_embedding_profile() -> None:
     os.environ["EMBEDDING_RETRIES"] = str(retries)
     os.environ["EMBEDDING_TIMEOUT_SECONDS"] = str(timeout)
     os.environ["EMBEDDING_BATCH_SIZE"] = str(batch_size)
+
+
+def _get_lazy_resources() -> tuple[Any, Any]:
+    global _LAZY_SETTINGS, _LAZY_STATE_STORE
+    with _BOOT_LOCK:
+        if _LAZY_SETTINGS is None:
+            from rag_project.configuration.settings import Settings
+            _LAZY_SETTINGS = Settings.from_env()
+        if _LAZY_STATE_STORE is None:
+            from rag_project.ingestion.state_store import IngestionStateStore
+            _LAZY_STATE_STORE = IngestionStateStore(_LAZY_SETTINGS.ingestion_db_path)
+        return _LAZY_SETTINGS, _LAZY_STATE_STORE
+
+
+class _LazySystem:
+    """Lightweight UI facade used while the heavy RAG runtime initializes."""
+
+    def __init__(self) -> None:
+        self.settings, self.state_store = _get_lazy_resources()
+
+    def _real(self) -> Any | None:
+        with _BOOT_LOCK:
+            runtime = _BOOT.get("system")
+        if isinstance(runtime, tuple) and runtime:
+            return runtime[0]
+        return None
+
+    @property
+    def ready(self) -> bool:
+        return self._real() is not None
+
+    def health_report(self) -> dict[str, Any]:
+        real = self._real()
+        if real is not None:
+            return real.health_report()
+        with _BOOT_LOCK:
+            status = str(_BOOT.get("status") or "starting")
+            error = _BOOT.get("error")
+        if status == "error":
+            return {"ready": False, "error": error or "Runtime bootstrap failed."}
+        return {
+            "ready": False,
+            "status": "BOOTSTRAPPING",
+            "message": "BookRAG services are initializing in the background.",
+            "embedding": {"ok": False, "error": "Runtime initializing"},
+            "index": {"status": "STARTING"},
+            "feature_contract": {"all_resolved": False},
+        }
+
+    def __getattr__(self, name: str) -> Any:
+        real = self._real()
+        if real is not None:
+            return getattr(real, name)
+        if name == "settings":
+            return self.settings
+        if name == "state_store":
+            return self.state_store
+
+        def not_ready(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("BookRAG services are still initializing. Please try that action again in a moment.")
+
+        return not_ready
+
+
+_LAZY_SYSTEM = _LazySystem()
 
 
 def _boot_start() -> None:
@@ -135,7 +203,7 @@ def _boot_start() -> None:
                 system._bookrag_security_wrapped = True
 
             def secure_system():
-                return system
+                return _LAZY_SYSTEM
 
             def secure_save_pdf(incoming, name, content):
                 safe_incoming = validate_storage_path(system.settings.project_root, incoming, "incoming folder")
@@ -168,69 +236,42 @@ def _boot_start() -> None:
     threading.Thread(target=worker, name="bookrag-runtime-bootstrap", daemon=True).start()
 
 
-def _render_boot_screen() -> None:
-    st.markdown(
-        """<style>
-        :root{--bg:#080d16;--panel:#0e1623;--line:#243246;--text:#edf3fa;--muted:#8493a7;--accent:#63d9d1;--blue:#7e9cff;}
-        html,body,[class*='css']{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
-        .stApp{background:radial-gradient(900px 500px at 80% -10%,rgba(126,156,255,.12),transparent 60%),radial-gradient(700px 450px at 10% 0,rgba(99,217,209,.07),transparent 62%),var(--bg);color:var(--text)}
-        [data-testid='stHeader']{height:0;background:transparent}
-        .block-container{max-width:1180px;padding:58px 28px 40px}
-        .br-shell{max-width:760px;margin:8vh auto 0;padding:42px;border:1px solid var(--line);border-radius:28px;background:linear-gradient(145deg,rgba(17,28,43,.96),rgba(9,16,26,.96));box-shadow:0 28px 90px rgba(0,0,0,.38)}
-        .br-mark{display:flex;gap:14px;align-items:center;margin-bottom:26px}.br-icon{width:52px;height:52px;border-radius:16px;display:grid;place-items:center;background:linear-gradient(145deg,#63d9d1,#7e9cff);color:#071018;font-weight:900;letter-spacing:.04em}.br-title{font-size:30px;font-weight:800;letter-spacing:-.03em}.br-sub{color:var(--muted);font-size:14px;margin-top:2px}.br-badge{display:inline-flex;padding:6px 10px;border:1px solid rgba(99,217,209,.25);border-radius:999px;color:var(--accent);font-size:12px;font-weight:700;margin-bottom:20px}
-        </style>""",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        """<div class='br-shell'><div class='br-mark'><div class='br-icon'>BR</div><div><div class='br-title'>BookRAG Medical</div><div class='br-sub'>Local evidence-first research workspace</div></div></div><div class='br-badge'>SECURE LOCAL WORKSPACE</div></div>""",
-        unsafe_allow_html=True,
-    )
-
-
-def _render_boot_state() -> None:
-    _render_boot_screen()
+def _render_boot_banner() -> None:
     with _BOOT_LOCK:
-        status = str(_BOOT["status"])
-        error = _BOOT["error"]
-        started = float(_BOOT["started_at"] or 0.0)
+        status = str(_BOOT.get("status") or "idle")
+        error = _BOOT.get("error")
     if status == "starting":
-        elapsed = max(0.0, time.monotonic() - started)
-        st.info("Opening your workspace… services are warming in the background.")
-        st.progress(min(elapsed / 8.0, 0.92), text=f"Preparing BookRAG · {elapsed:.1f}s")
+        st.info("BookRAG services are loading in the background. The workspace is already available.")
     elif status == "error":
-        st.error(f"BookRAG could not start: {error}")
-        if st.button("Retry startup", type="primary", use_container_width=True):
-            with _BOOT_LOCK:
-                _BOOT["status"] = "idle"
-            st.rerun()
-
-
-@st.fragment(run_every="0.25s")
-def _bootstrap_fragment() -> None:
-    _render_boot_state()
-    with _BOOT_LOCK:
-        status = _BOOT["status"]
-    if status == "ready":
-        st.rerun()
+        st.error(f"BookRAG runtime is unavailable: {error}")
 
 
 def main() -> None:
     if not require_auth():
         return
 
-    with _BOOT_LOCK:
-        status = str(_BOOT["status"])
-        runtime = _BOOT["system"]
+    # Never gate the main UI on heavy runtime initialization. The workspace opens
+    # immediately after authentication and the runtime becomes progressively live.
+    _boot_start()
 
-    if status != "ready":
-        _boot_start()
-        _bootstrap_fragment()
-        return
+    from rag_project.app import bookrag_ui
+    from rag_project.app.bookrag_ui import main as ui_main
+    from rag_project.app.live_runtime import render_live_runtime
 
-    system, render_live_runtime, ui_main, start_auto_supervisor = runtime  # type: ignore[misc]
-    start_auto_supervisor(system, interval_seconds=1.0)
-    render_live_runtime(system)
+    # The module-level get_system() is intentionally replaced with the lazy facade
+    # before the UI renders, preventing a cache miss from constructing the RAG stack
+    # on the Streamlit script thread.
+    bookrag_ui.get_system = lambda: _LAZY_SYSTEM
+
+    _render_boot_banner()
+    render_live_runtime(_LAZY_SYSTEM)
     ui_main()
+
+    with _BOOT_LOCK:
+        runtime = _BOOT.get("system")
+    if isinstance(runtime, tuple) and len(runtime) == 4:
+        system, _, _, start_auto_supervisor = runtime
+        start_auto_supervisor(system, interval_seconds=1.0)
 
 
 if __name__ == "__main__":
