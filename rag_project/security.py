@@ -14,8 +14,6 @@ from urllib.parse import urlparse
 import streamlit as st
 
 OLLAMA_ALLOWLIST_ENV = "BOOKRAG_OLLAMA_ALLOWLIST"
-BOOKRAG_ADMIN_PASSWORD_ENV = "BOOKRAG_ADMIN_PASSWORD"
-DEFAULT_ADMIN_PASSWORD = None
 MAX_PDF_PAGES_ENV = "BOOKRAG_MAX_PDF_PAGES"
 CLEAR_PHRASE = "CLEAR ALL PDF DATA"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
@@ -31,10 +29,6 @@ _INGEST_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_INGESTS)
 _ANSWER_LIMITER = threading.BoundedSemaphore(GLOBAL_CONCURRENT_ANSWERS)
 _RATE_LOCK = threading.Lock()
 _RATE_STATE: dict[str, tuple[float, int]] = {}
-
-
-def require_auth() -> bool:
-    return True
 
 
 def _truthy(value: str | None) -> bool:
