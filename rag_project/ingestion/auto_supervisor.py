@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -18,6 +17,7 @@ _OBSERVER: Observer | None = None
 _STOP = threading.Event()
 _WAKE = threading.Event()
 _CONTENT_CACHE: dict[str, tuple[str, str | None]] = {}
+_STABILITY: dict[str, tuple[str, float]] = {}
 _STATE: dict[str, Any] = {
     "enabled": False,
     "watchdog": False,
@@ -40,6 +40,7 @@ _ACTIVE = {
     "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING",
 }
 _TERMINAL_NO_RETRY = {"READY", "COMPLETED", "DEGRADED_LEXICAL", "QUARANTINED"}
+_STABLE_SECONDS = 0.75
 
 
 def _now() -> str:
@@ -60,29 +61,46 @@ def _persist(system: Any) -> None:
         temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
         temp.replace(target)
     except Exception:
+        # Diagnostics must never stop ingestion.
+        pass
+
+
+def _load_persisted_state(system: Any) -> None:
+    try:
+        path = _state_path(system)
+        if not path.is_file():
+            return
+        disk = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(disk, dict):
+            return
+        with _LOCK:
+            for key in _STATE:
+                if key in disk and disk[key] is not None:
+                    _STATE[key] = disk[key]
+    except Exception:
         pass
 
 
 def snapshot(system: Any | None = None) -> dict[str, Any]:
     with _LOCK:
         result = dict(_STATE)
-    if system is not None:
-        try:
-            path = _state_path(system)
-            if path.is_file():
-                disk = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(disk, dict):
-                    for key, value in disk.items():
-                        if result.get(key) is None:
-                            result[key] = value
-        except Exception:
-            pass
     return result
 
 
 def _file_signature(path: Path) -> str:
     stat = path.stat()
     return f"{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _stable_enough(path: Path, signature: str) -> bool:
+    now = time.monotonic()
+    key = str(path.resolve())
+    with _LOCK:
+        previous = _STABILITY.get(key)
+        if previous is None or previous[0] != signature:
+            _STABILITY[key] = (signature, now)
+            return False
+        return (now - previous[1]) >= _STABLE_SECONDS
 
 
 def _same_content(system: Any, path: Path, document: dict[str, Any], signature: str) -> bool:
@@ -100,13 +118,16 @@ def _same_content(system: Any, path: Path, document: dict[str, Any], signature: 
 
 def _candidate(system: Any, path: Path) -> bool:
     try:
+        signature = _file_signature(path)
+        # Avoid ingesting a PDF while an external copier/editor is still writing it.
+        if not _stable_enough(path, signature):
+            return False
         document = system.state_store.get_by_path(str(path.resolve()))
         if document is None:
             return True
         status = str(document.get("status") or "").upper()
         if status in _ACTIVE:
             return False
-        signature = _file_signature(path)
         same_content = _same_content(system, path, document, signature)
         if status in _TERMINAL_NO_RETRY or status.startswith("FAILED"):
             return not same_content
@@ -232,15 +253,15 @@ def _stop_watchdog() -> None:
 def _loop(system: Any, interval_seconds: float) -> None:
     incoming = Path(system.settings.incoming_dir).resolve()
     incoming.mkdir(parents=True, exist_ok=True)
+    _load_persisted_state(system)
     with _LOCK:
         _STATE["enabled"] = True
         _STATE["started_at"] = _STATE["started_at"] or _now()
     _start_watchdog(incoming)
     _persist(system)
 
-    # Immediate reconciliation catches files present before startup. Watchdog
-    # wakes the worker immediately for new/changed PDFs; a periodic reconcile
-    # still protects against dropped filesystem notifications.
+    # Watchdog provides immediate wakeups. Reconciliation remains periodic so a
+    # dropped filesystem event, stale lease, or process restart is self-healing.
     while not _STOP.is_set():
         try:
             _scan_once(system)
@@ -259,10 +280,9 @@ def _loop(system: Any, interval_seconds: float) -> None:
 def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
     """Start one autonomous PDF supervisor with watchdog + reconciliation.
 
-    New or modified PDFs wake ingestion immediately. The periodic reconcile is a
-    safety net for missed filesystem events and lease recovery. Durable SQLite
-    state remains the source of truth, and content hashes prevent duplicate
-    terminal ingestion while still allowing changed files to become new work.
+    New or modified PDFs wake ingestion quickly, while stable-write detection
+    prevents partial-copy races. Durable SQLite state is authoritative and
+    content hashes prevent duplicate terminal ingestion.
     """
     global _THREAD
     with _LOCK:
