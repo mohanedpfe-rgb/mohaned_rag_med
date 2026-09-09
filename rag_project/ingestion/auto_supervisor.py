@@ -9,12 +9,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
 _LOCK = threading.RLock()
 _THREAD: threading.Thread | None = None
+_OBSERVER: Observer | None = None
 _STOP = threading.Event()
+_WAKE = threading.Event()
 _CONTENT_CACHE: dict[str, tuple[str, str | None]] = {}
 _STATE: dict[str, Any] = {
     "enabled": False,
+    "watchdog": False,
     "started_at": None,
     "last_scan_at": None,
     "last_action_at": None,
@@ -28,7 +34,6 @@ _STATE: dict[str, Any] = {
     "failed": 0,
     "recovered": 0,
 }
-
 
 _ACTIVE = {
     "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR",
@@ -55,7 +60,6 @@ def _persist(system: Any) -> None:
         temp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str), encoding="utf-8")
         temp.replace(target)
     except Exception:
-        # Diagnostics must never stop ingestion.
         pass
 
 
@@ -68,7 +72,9 @@ def snapshot(system: Any | None = None) -> dict[str, Any]:
             if path.is_file():
                 disk = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(disk, dict):
-                    result.update({k: v for k, v in disk.items() if k not in result or result[k] is None})
+                    for key, value in disk.items():
+                        if result.get(key) is None:
+                            result[key] = value
         except Exception:
             pass
     return result
@@ -102,8 +108,6 @@ def _candidate(system: Any, path: Path) -> bool:
             return False
         signature = _file_signature(path)
         same_content = _same_content(system, path, document, signature)
-        # A terminal document with the same content is intentionally left alone.
-        # A changed file is a new revision and is automatically re-indexed.
         if status in _TERMINAL_NO_RETRY or status.startswith("FAILED"):
             return not same_content
         if status in {"", "INTERRUPTED", "RECOVERING"}:
@@ -119,6 +123,7 @@ def _scan_once(system: Any) -> None:
     with _LOCK:
         _STATE["last_scan_at"] = _now()
         _STATE["scans"] += 1
+
     try:
         recovered = int(system.state_store.recover_stale_documents() or 0)
     except Exception:
@@ -167,18 +172,75 @@ def _scan_once(system: Any) -> None:
                 _STATE["last_action"] = f"error on {path.name}"
                 _STATE["last_action_at"] = _now()
             _persist(system)
-        # The canonical production pipeline is intentionally serialized. The
-        # next polling cycle advances to the next pending file.
         break
     _persist(system)
 
 
+class _PDFEventHandler(FileSystemEventHandler):
+    def _wake_for(self, path: str) -> None:
+        try:
+            if Path(path).suffix.lower() == ".pdf":
+                _WAKE.set()
+        except (OSError, ValueError):
+            pass
+
+    def on_created(self, event) -> None:
+        if not event.is_directory:
+            self._wake_for(event.src_path)
+
+    def on_modified(self, event) -> None:
+        if not event.is_directory:
+            self._wake_for(event.src_path)
+
+    def on_moved(self, event) -> None:
+        if not event.is_directory:
+            self._wake_for(event.dest_path)
+
+
+
+def _start_watchdog(incoming: Path) -> bool:
+    global _OBSERVER
+    try:
+        observer = Observer()
+        observer.daemon = True
+        observer.schedule(_PDFEventHandler(), str(incoming), recursive=False)
+        observer.start()
+        _OBSERVER = observer
+        with _LOCK:
+            _STATE["watchdog"] = True
+        return True
+    except Exception:
+        with _LOCK:
+            _STATE["watchdog"] = False
+        _OBSERVER = None
+        return False
+
+
+def _stop_watchdog() -> None:
+    global _OBSERVER
+    observer = _OBSERVER
+    _OBSERVER = None
+    if observer is None:
+        return
+    try:
+        observer.stop()
+        observer.join(timeout=2.0)
+    except Exception:
+        pass
+
+
 def _loop(system: Any, interval_seconds: float) -> None:
+    incoming = Path(system.settings.incoming_dir).resolve()
+    incoming.mkdir(parents=True, exist_ok=True)
     with _LOCK:
         _STATE["enabled"] = True
         _STATE["started_at"] = _STATE["started_at"] or _now()
+    _start_watchdog(incoming)
     _persist(system)
-    # Immediate first scan means PDFs already present are discovered at startup.
+
+    # Immediate reconciliation catches files present before startup. Watchdog
+    # wakes the worker immediately for new/changed PDFs; a periodic reconcile
+    # still protects against dropped filesystem notifications.
     while not _STOP.is_set():
         try:
             _scan_once(system)
@@ -188,24 +250,26 @@ def _loop(system: Any, interval_seconds: float) -> None:
                 _STATE["last_action"] = "supervisor cycle failed"
                 _STATE["last_action_at"] = _now()
             _persist(system)
-        if _STOP.wait(max(1.0, float(interval_seconds))):
-            break
+        _WAKE.wait(max(1.0, float(interval_seconds)))
+        _WAKE.clear()
+
+    _stop_watchdog()
 
 
 def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
-    """Start one process-level autonomous PDF supervisor.
+    """Start one autonomous PDF supervisor with watchdog + reconciliation.
 
-    The supervisor is independent from the Streamlit rerun loop: once started,
-    it continuously watches the configured incoming directory, recovers expired
-    leases, and invokes the canonical production ingestion path without another
-    UI click. Terminal failures are not retried unless the actual file content
-    changes; active work is left to the current lease owner.
+    New or modified PDFs wake ingestion immediately. The periodic reconcile is a
+    safety net for missed filesystem events and lease recovery. Durable SQLite
+    state remains the source of truth, and content hashes prevent duplicate
+    terminal ingestion while still allowing changed files to become new work.
     """
     global _THREAD
     with _LOCK:
         if _THREAD and _THREAD.is_alive():
             return dict(_STATE)
         _STOP.clear()
+        _WAKE.clear()
         _THREAD = threading.Thread(
             target=_loop,
             args=(system, float(interval_seconds)),
@@ -218,8 +282,11 @@ def start(system: Any, interval_seconds: float = 3.0) -> dict[str, Any]:
 
 def stop() -> None:
     _STOP.set()
+    _WAKE.set()
+    _stop_watchdog()
     with _LOCK:
         _STATE["enabled"] = False
+        _STATE["watchdog"] = False
 
 
 __all__ = ["start", "stop", "snapshot"]
