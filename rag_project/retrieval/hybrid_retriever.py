@@ -13,6 +13,20 @@ from rag_project.utils.text_utils import keyword_overlap_score, meaningful_token
 _VALID_MODES = {"hybrid", "lexical", "vector"}
 
 
+def _as_sequence(value: Any) -> list[Any]:
+    """Normalize Python/NumPy/Chroma result containers without truth-value coercion."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 @dataclass
 class RetrievalHit:
     doc_id: str
@@ -63,10 +77,10 @@ class HybridRetriever:
             return [], [], [], []
 
         def first_list(key: str) -> list[Any]:
-            value = result.get(key, [])
-            if isinstance(value, list) and value and isinstance(value[0], list):
-                value = value[0]
-            return list(value) if isinstance(value, list) else []
+            value = _as_sequence(result.get(key))
+            if value and isinstance(value[0], (list, tuple)):
+                value = _as_sequence(value[0])
+            return _as_sequence(value)
 
         ids = [str(value) for value in first_list("ids")]
         documents = [str(value) for value in first_list("documents")]
@@ -112,10 +126,6 @@ class HybridRetriever:
         with ThreadPoolExecutor(max_workers=2) as executor:
             vector_future = None
             lexical_future = None
-
-            # Always prepare both branches for hybrid mode. In single-mode operation,
-            # the other branch remains available as a real fallback instead of a dead
-            # mode switch after the primary branch fails.
             if configured_mode in {"hybrid", "lexical"}:
                 lexical_future = executor.submit(self._lexical, lexical_query, candidate_count, where)
 
@@ -138,9 +148,6 @@ class HybridRetriever:
                 except (RuntimeError, ValueError, TypeError) as exc:
                     lexical_error = exc
 
-            # Missing primary branch: execute the missing fallback while we still
-            # own the retrieval operation. This fixes the old vector-only and
-            # lexical-only fallback paths that could silently return zero hits.
             if configured_mode == "vector" and (vector_error is not None or not self._unpack_results(vector_results)[0]):
                 try:
                     lexical_results = self._lexical(lexical_query, candidate_count, where)
@@ -162,9 +169,6 @@ class HybridRetriever:
 
         vector_ids, vector_documents, vector_metadatas, vector_distances = self._unpack_results(vector_results)
         lexical_ids, lexical_documents, lexical_metadatas, lexical_distances = self._unpack_results(lexical_results)
-
-        # If hybrid lost one branch, keep the surviving branch. There is no valid
-        # reason to discard useful evidence merely because the other backend failed.
         if not vector_ids and not lexical_ids:
             return []
 
