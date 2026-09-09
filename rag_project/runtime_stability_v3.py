@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -12,11 +13,7 @@ _ANSWER_LOCK = threading.RLock()
 
 
 def _stable_production_ingest(self: Any, pdf_path: str | Path) -> dict[str, Any]:
-    """Route the production subclass through the final ingestion guard.
-
-    ProductionRAGSystem overrides RAGSystem.ingest_file, so a base-class monkey patch
-    alone never reaches the real production path.
-    """
+    """Route the production subclass through the final ingestion guard."""
     from rag_project.runtime_stability_v2 import _safe_ingest_file
 
     with _PROCESS_INGEST_LOCK:
@@ -32,7 +29,6 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
         identity = embedding_service.identity
     except Exception:
         identity = None
-
     try:
         index = self.vector_store.compatibility_report(identity) if identity is not None else {
             "status": "UNKNOWN",
@@ -40,7 +36,6 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
         }
     except Exception as exc:
         index = {"status": "UNAVAILABLE", "error": str(exc)}
-
     try:
         vector_count = int(self.vector_store.count())
     except Exception as exc:
@@ -48,7 +43,6 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
         audit = {"ok": False, "error": str(exc), "mode": "lightweight"}
     else:
         audit = {"ok": True, "mode": "lightweight", "vector_count": vector_count}
-
     return {
         "ready": bool(available is True and index.get("status") in {"READY", "OK"}),
         "embedding": {
@@ -60,10 +54,7 @@ def _health_report_fast(self: Any) -> dict[str, Any]:
         "index": index,
         "audit": audit,
         "feature_contract": getattr(self, "_production_feature_contract", {"all_resolved": True}),
-        "models": {
-            "embedding_model": self.settings.embedding_model,
-            "generation_model": self.settings.generation_model,
-        },
+        "models": {"embedding_model": self.settings.embedding_model, "generation_model": self.settings.generation_model},
         "pipeline": {"explicit_composition": True, "non_blocking_health": True},
     }
 
@@ -89,21 +80,42 @@ def _guard_transition(self: Any, document_id: str, new_stage: str, **values: Any
         raise RuntimeError(f"Invalid state regression: {current} -> {target}")
     if current.startswith("FAILED") and target not in terminal:
         raise RuntimeError(f"Invalid state regression: {current} -> {target}")
-
     current_page = int(record.get("current_page") or 0)
     if "current_page" in values:
         requested = int(values["current_page"] or 0)
         if requested < current_page and target not in terminal | {"INTERRUPTED", "RECOVERING"}:
             values["current_page"] = current_page
-
     return self._runtime_v3_original_transition(document_id, target, **values)
 
 
-def _install_health(self_cls: Any) -> None:
-    if not hasattr(self_cls, "_runtime_v3_detailed_health_report"):
-        self_cls._runtime_v3_detailed_health_report = self_cls.health_report
-    self_cls.health_report_fast = _health_report_fast
-    self_cls.health_report = _health_report_fast
+def _merge_metrics(document: dict[str, Any]) -> dict[str, Any]:
+    """Promote durable metrics into document fields expected by the UI."""
+    raw = document.get("ingestion_metrics")
+    metrics: dict[str, Any] = {}
+    if raw:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+            if isinstance(parsed, dict):
+                metrics = parsed
+        except (TypeError, ValueError):
+            metrics = {}
+    for field in ("chunk_count", "embedding_count", "page_count", "total", "elapsed_ms", "total_ms"):
+        if document.get(field) in (None, "") and field in metrics:
+            document[field] = metrics[field]
+    if "chunk_count" not in document and "chunks" in metrics:
+        document["chunk_count"] = metrics["chunks"]
+    if "embedding_count" not in document and "embeddings" in metrics:
+        document["embedding_count"] = metrics["embeddings"]
+    return document
+
+
+def _enriched_documents(self: Any) -> list[dict[str, Any]]:
+    return [_merge_metrics(dict(row)) for row in self._runtime_v3_original_get_all_documents()]
+
+
+def _enriched_document(self: Any, document_id: str) -> dict[str, Any] | None:
+    row = self._runtime_v3_original_get_document(document_id)
+    return _merge_metrics(dict(row)) if row else None
 
 
 def install() -> None:
@@ -124,10 +136,20 @@ def install() -> None:
             ProductionRAGSystem.answer = _locked_answer
 
         if not hasattr(ProductionRAGSystem, "_runtime_v3_detailed_health_report"):
-            _install_health(ProductionRAGSystem)
+            ProductionRAGSystem._runtime_v3_detailed_health_report = ProductionRAGSystem.health_report
+            ProductionRAGSystem.health_report_fast = _health_report_fast
+            ProductionRAGSystem.health_report = _health_report_fast
 
         if not hasattr(IngestionStateStore, "_runtime_v3_original_transition"):
             IngestionStateStore._runtime_v3_original_transition = IngestionStateStore.transition_document_state
             IngestionStateStore.transition_document_state = _guard_transition
+
+        if not hasattr(IngestionStateStore, "_runtime_v3_original_get_all_documents"):
+            IngestionStateStore._runtime_v3_original_get_all_documents = IngestionStateStore.get_all_documents
+            IngestionStateStore.get_all_documents = _enriched_documents
+
+        if not hasattr(IngestionStateStore, "_runtime_v3_original_get_document"):
+            IngestionStateStore._runtime_v3_original_get_document = IngestionStateStore.get_document
+            IngestionStateStore.get_document = _enriched_document
 
         _INSTALLED = True
