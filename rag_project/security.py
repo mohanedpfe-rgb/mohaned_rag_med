@@ -72,30 +72,41 @@ def sanitize_log_text(value: object) -> str:
     return text.replace("\r", "\\r").replace("\n", "\\n")
 
 
+def _configured_admin_passwords() -> tuple[str, ...]:
+    """Return the documented default and an optional local override."""
+    override = os.getenv(AUTH_ENV, "").strip()
+    passwords = [DEFAULT_ADMIN_PASSWORD]
+    if override and override not in passwords:
+        passwords.append(override)
+    return tuple(passwords)
+
+
 def require_auth() -> bool:
-    """Authenticate with .env override support and the documented default password."""
-    configured = os.getenv(AUTH_ENV, "").strip() or DEFAULT_ADMIN_PASSWORD
+    """Authenticate with the documented default and an optional .env override."""
+    passwords = _configured_admin_passwords()
     now = time.time()
     if st.session_state.get("bookrag_authenticated"):
         if now - float(st.session_state.get("bookrag_auth_at", 0)) <= AUTH_SESSION_SECONDS:
             return True
         st.session_state.pop("bookrag_authenticated", None)
+        st.session_state.pop("bookrag_auth_at", None)
         audit_event("session_expired")
+
     st.markdown("## Unlock BookRAG")
     st.caption("Enter your local BookRAG administrator password to open the workspace.")
     attempt = st.text_input("Admin password", type="password", key="bookrag_login_password", autocomplete="current-password")
     if st.button("Unlock BookRAG", type="primary", key="bookrag_unlock"):
-        unlocked = secrets.compare_digest(attempt, configured)
+        unlocked = any(secrets.compare_digest(attempt, expected) for expected in passwords)
         if unlocked:
             st.session_state["bookrag_authenticated"] = True
             st.session_state["bookrag_auth_at"] = now
             st.session_state["bookrag_failed_attempts"] = 0
+            st.session_state.pop("bookrag_login_password", None)
             audit_event("login_success")
-            st.success("Unlocked. Opening BookRAG Studio…")
-            return True
+            st.rerun()
         st.session_state["bookrag_failed_attempts"] = int(st.session_state.get("bookrag_failed_attempts", 0)) + 1
         audit_event("login_failure")
-        st.error("Invalid password.")
+        st.error("Invalid password. Use the documented BookRAG password or the local BOOKRAG_ADMIN_PASSWORD override.")
         if st.session_state["bookrag_failed_attempts"] >= MAX_FAILED_AUTH:
             audit_event("login_lockout")
             st.warning("Too many failed attempts in this session. Restart Streamlit to reset the lock.")
@@ -358,24 +369,21 @@ def harden_system(system):
             raise RuntimeError("Global ingestion concurrency limit reached; try again shortly.")
         try:
             audit_event("ingest_file_start", detail=str(candidate))
-            return original_ingest_file(candidate)
+            return original_ingest_file(str(candidate))
         finally:
             release_ingest_slot()
             audit_event("ingest_file_finish", detail=str(candidate))
 
     def guarded_answer(question, metadata_filter=None):
-        clean_question = validate_query(question)
+        question = validate_query(question)
         if not consume_rate_limit("answer", limit=30, window_seconds=60):
-            raise RuntimeError("Query rate limit reached; please wait a moment before asking again.")
+            raise RuntimeError("Query rate limit reached; try again shortly.")
         if not acquire_answer_slot(0.1):
-            raise RuntimeError("Global answer concurrency limit reached; try again shortly.")
+            raise RuntimeError("Concurrent answer limit reached; try again shortly.")
         try:
-            audit_event("answer_start")
-            result = original_answer(clean_question, metadata_filter)
-            return postprocess_medical_output(result)
+            return postprocess_medical_output(original_answer(question, metadata_filter))
         finally:
             release_answer_slot()
-            audit_event("answer_finish")
 
     system.clear_pdf_data = guarded_clear
     system.apply_settings_in_place = guarded_apply
