@@ -18,6 +18,21 @@ from rag_project.retrieval.context_builder import ContextBuilder
 from rag_project.retrieval.metadata_filter import MetadataFilter
 from rag_project.retrieval.query_rewriter import QueryRewriter
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
+from rag_project.security import validate_ollama_url
+
+
+def _as_list(value: Any) -> list[Any]:
+    """Normalize connector/NumPy values without implicit array truth evaluation."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
 
 
 class ResilientRAGSystem(RAGSystem):
@@ -41,26 +56,28 @@ class ResilientRAGSystem(RAGSystem):
             where={"document_id": document_id},
             include=["documents", "metadatas"],
         )
-        ids = records.get("ids", [])
-        documents = records.get("documents", [])
-        metadatas = records.get("metadatas", [])
+        ids = _as_list(records.get("ids"))
+        documents = _as_list(records.get("documents"))
+        metadatas = _as_list(records.get("metadatas"))
         result: list[RetrievalHit] = []
         wanted = set(range(max(0, int(chunk_index) - radius), int(chunk_index) + radius + 1))
         for index, metadata in enumerate(metadatas):
+            if not isinstance(metadata, dict):
+                continue
             try:
-                current_index = int((metadata or {}).get("chunk_index"))
+                current_index = int(metadata.get("chunk_index"))
             except (TypeError, ValueError):
                 continue
             if current_index not in wanted or current_index == int(chunk_index):
                 continue
-            state = str((metadata or {}).get("index_state", "READY")).upper()
+            state = str(metadata.get("index_state", "READY")).upper()
             if state != "READY":
                 continue
             result.append(
                 RetrievalHit(
-                    doc_id=str((metadata or {}).get("document_id", document_id)),
+                    doc_id=str(metadata.get("document_id", document_id)),
                     text=str(documents[index] if index < len(documents) else ""),
-                    metadata=dict(metadata or {}),
+                    metadata=dict(metadata),
                     score=0.0,
                     vector_score=0.0,
                     lexical_score=0.0,
@@ -106,31 +123,19 @@ class ResilientRAGSystem(RAGSystem):
         rebuild_needed = any(
             field in updates
             for field in {
-                "ollama_base_url",
-                "embedding_model",
-                "generation_model",
-                "embedding_batch_size",
-                "embedding_retries",
-                "embedding_timeout_seconds",
-                "embedding_test_mode",
-                "embedding_cache_size",
-                "embedding_cache_ttl_seconds",
-                "generation_timeout_seconds",
-                "generation_max_output_tokens",
+                "ollama_base_url", "embedding_model", "generation_model", "embedding_batch_size",
+                "embedding_retries", "embedding_timeout_seconds", "embedding_test_mode", "embedding_cache_size",
+                "embedding_cache_ttl_seconds", "generation_timeout_seconds", "generation_max_output_tokens",
             }
         )
         success, warnings = super().apply_settings_in_place(updates)
         if rebuild_needed:
             try:
                 self._rebuild_runtime_clients()
-                warnings = [
-                    warning
-                    for warning in warnings
-                    if "requires a full RAGSystem restart" not in warning
-                ]
+                warnings = [warning for warning in warnings if "requires a full RAGSystem restart" not in warning]
             except Exception as exc:
-                warnings.append(f"Runtime client rebuild failed: {exc}")
-                self._last_component_error = str(exc)
+                warnings.append(f"Runtime client rebuild failed: {type(exc).__name__}")
+                self._last_component_error = type(exc).__name__
                 success = False
         if "neighbor_expansion" in updates or "context_token_budget" in updates:
             self._rebuild_context_builder()
@@ -155,7 +160,7 @@ class ResilientRAGSystem(RAGSystem):
                 try:
                     self.vector_store.delete_version(existing["document_id"], content_hash)
                 except Exception as exc:
-                    self._last_component_error = f"Failed to clean retryable index: {exc}"
+                    self._last_component_error = f"Failed to clean retryable index: {type(exc).__name__}"
         return super().ingest_file(file_path)
 
     def _safe_rewrite(self, question: str) -> str:
@@ -163,10 +168,14 @@ class ResilientRAGSystem(RAGSystem):
         try:
             import requests
 
+            base_url = validate_ollama_url(self.settings.ollama_base_url).rstrip("/")
             response = requests.get(
-                f"{self.settings.ollama_base_url.rstrip('/')}/api/tags",
+                f"{base_url}/api/tags",
                 timeout=(1.5, 2.0),
+                allow_redirects=False,
             )
+            if 300 <= getattr(response, "status_code", 200) < 400:
+                raise RuntimeError("Ollama redirect rejected")
             response.raise_for_status()
             return QueryRewriter.rewrite(question, self.conversation_memory.history, llm=self.llm)
         except Exception:
@@ -186,13 +195,10 @@ class ResilientRAGSystem(RAGSystem):
 
     def answer(self, question: str, metadata_filter: Dict[str, Any] | None = None) -> Dict[str, Any]:
         answer_started = time.perf_counter()
-        original_question = (question or "").strip()
+        original_question = str(question or "").strip()
         if not original_question:
             return {
-                "status": "invalid_query",
-                "answer": "Please enter a question.",
-                "citations": [],
-                "hits": [],
+                "status": "invalid_query", "answer": "Please enter a question.", "citations": [], "hits": [],
                 "confidence": {"level": "none", "top_score": 0.0, "margin": 0.0},
             }
 
@@ -200,10 +206,8 @@ class ResilientRAGSystem(RAGSystem):
         if query_analysis["should_abstain"]:
             return {
                 "status": query_analysis["query_quality"],
-                "answer": query_analysis.get("clarification")
-                or "The question appears ambiguous or malformed. Please rephrase it.",
-                "citations": [],
-                "hits": [],
+                "answer": query_analysis.get("clarification") or "The question appears ambiguous or malformed. Please rephrase it.",
+                "citations": [], "hits": [],
                 "confidence": {"level": "none", "top_score": 0.0, "margin": 0.0},
                 "query_analysis": query_analysis,
             }
@@ -218,31 +222,33 @@ class ResilientRAGSystem(RAGSystem):
         try:
             hits = self.retriever.retrieve(rewritten_question, top_k=self.settings.top_k, where=filter_query)
         except Exception as exc:
-            retrieval_error = str(exc)
+            retrieval_error = type(exc).__name__
             hits = []
             try:
                 lexical = self.vector_store.search_lexical(
-                    rewritten_question,
-                    n_results=max(self.settings.top_k, 5),
-                    where=filter_query,
+                    rewritten_question, n_results=max(self.settings.top_k, 5), where=filter_query
                 )
-                ids = lexical.get("ids", [[]])[0]
-                docs = lexical.get("documents", [[]])[0]
-                metas = lexical.get("metadatas", [[]])[0]
-                distances = lexical.get("distances", [[]])[0]
+                ids = _as_list(lexical.get("ids"))
+                docs = _as_list(lexical.get("documents"))
+                metas = _as_list(lexical.get("metadatas"))
+                distances = _as_list(lexical.get("distances"))
+                ids = _as_list(ids[0] if ids and isinstance(ids[0], (list, tuple)) else ids)
+                docs = _as_list(docs[0] if docs and isinstance(docs[0], (list, tuple)) else docs)
+                metas = _as_list(metas[0] if metas and isinstance(metas[0], (list, tuple)) else metas)
+                distances = _as_list(distances[0] if distances and isinstance(distances[0], (list, tuple)) else distances)
                 hits = [
                     RetrievalHit(
-                        doc_id=str(meta.get("document_id", item_id)),
+                        doc_id=str(meta.get("document_id", item_id)) if isinstance(meta, dict) else str(item_id),
                         text=str(doc),
-                        metadata=dict(meta),
+                        metadata=dict(meta) if isinstance(meta, dict) else {},
                         score=1.0 - float(distances[index] if index < len(distances) else 1.0),
                         vector_score=0.0,
                         lexical_score=1.0 - float(distances[index] if index < len(distances) else 1.0),
                     )
-                    for index, (item_id, doc, meta) in enumerate(zip(ids, docs, metas, strict=True))
+                    for index, (item_id, doc, meta) in enumerate(zip(ids, docs, metas, strict=False))
                 ]
             except Exception as lexical_exc:
-                retrieval_error = f"{retrieval_error}; lexical fallback failed: {lexical_exc}"
+                retrieval_error = f"{retrieval_error};{type(lexical_exc).__name__}"
         retrieval_ms = (time.perf_counter() - retrieval_started) * 1000
 
         rerank_started = time.perf_counter()
@@ -256,14 +262,7 @@ class ResilientRAGSystem(RAGSystem):
             if sanitized != hit.text:
                 metadata = dict(hit.metadata or {})
                 metadata["evidence_sanitized"] = True
-                hit = RetrievalHit(
-                    doc_id=hit.doc_id,
-                    text=sanitized,
-                    metadata=metadata,
-                    score=hit.score,
-                    vector_score=hit.vector_score,
-                    lexical_score=hit.lexical_score,
-                )
+                hit = RetrievalHit(hit.doc_id, sanitized, metadata, hit.score, hit.vector_score, hit.lexical_score)
             sanitized_hits.append(hit)
 
         context, selected_hits = self.context_builder.build(sanitized_hits)
@@ -272,11 +271,8 @@ class ResilientRAGSystem(RAGSystem):
             result = {
                 "query_id": str(uuid.uuid4()),
                 "answer": "I could not find sufficient evidence in the indexed documents.",
-                "citations": [],
-                "hits": [],
-                "confidence": confidence,
-                "query_analysis": query_analysis,
-                "evidence_alignment": evidence_alignment,
+                "citations": [], "hits": [], "confidence": confidence,
+                "query_analysis": query_analysis, "evidence_alignment": evidence_alignment,
                 "retrieval_mode": self._retrieval_mode(hits),
             }
             if retrieval_error:
@@ -286,69 +282,20 @@ class ResilientRAGSystem(RAGSystem):
         generation_started = time.perf_counter()
         try:
             answer, _ = _generate_with_citations(
-                self.llm,
-                question=original_question,
-                context=context,
-                selected_hits=selected_hits,
-                conversation_context=self.conversation_memory.prompt_context(),
-                temperature=self.settings.temperature,
+                self.llm, question=original_question, context=context, selected_hits=selected_hits,
+                conversation_context=self.conversation_memory.prompt_context(), temperature=self.settings.temperature,
             )
         except Exception as exc:
-            self._last_component_error = str(exc)
-            answer = (
-                "The language model is unavailable right now. Here is the grounded evidence "
-                "that matched your question:\n\n"
-                + "\n\n".join(
-                    f"[S{index + 1}] {hit.text}" for index, hit in enumerate(selected_hits)
-                )
-            )
+            self._last_component_error = type(exc).__name__
+            answer = "The language model is unavailable right now. Here is the grounded evidence that matched your question:\n\n" + "\n\n".join(f"[S{index + 1}] {hit.text}" for index, hit in enumerate(selected_hits))
         generation_ms = (time.perf_counter() - generation_started) * 1000
-        answer, answer_grounding, query_coverage, grounding_fallback = self.apply_grounding_guard(
-            answer, rewritten_question, selected_hits
-        )
+        answer, answer_grounding, query_coverage, grounding_fallback = self.apply_grounding_guard(answer, rewritten_question, selected_hits)
         self.conversation_memory.add(original_question, answer)
-        citations = self.citation_manager.validate(
-            self.citation_manager.build(selected_hits), selected_hits
-        )
+        citations = self.citation_manager.validate(self.citation_manager.build(selected_hits), selected_hits)
         query_id = str(uuid.uuid4())
         total_ms = (time.perf_counter() - answer_started) * 1000
-        self.state_store.record_query_trace(
-            query_id,
-            {
-                "original_query": original_question,
-                "rewritten_query": rewritten_question,
-                "retrieval_method": self._retrieval_mode(hits),
-                "candidate_count": len(hits),
-                "timings_ms": {
-                    "retrieval": round(retrieval_ms, 3),
-                    "rerank": round(rerank_ms, 3),
-                    "generation": round(generation_ms, 3),
-                    "total": round(total_ms, 3),
-                },
-                "confidence": confidence,
-                "query_analysis": query_analysis,
-                "evidence_alignment": evidence_alignment,
-                "grounding": {
-                    "answer_evidence_overlap": round(answer_grounding, 3),
-                    "query_answer_coverage": round(query_coverage, 3),
-                    "fallback_used": grounding_fallback,
-                },
-                "selected_chunk_ids": [hit.metadata.get("chunk_id", hit.doc_id) for hit in selected_hits],
-                "citations": citations,
-                "degraded_mode": bool(retrieval_error or self.embedding_startup_error),
-            },
-        )
-        result = {
-            "query_id": query_id,
-            "answer": answer,
-            "citations": citations,
-            "hits": selected_hits,
-            "confidence": confidence,
-            "query_analysis": query_analysis,
-            "evidence_alignment": evidence_alignment,
-            "retrieval_mode": self._retrieval_mode(hits),
-            "degraded_mode": bool(retrieval_error or self.embedding_startup_error),
-        }
+        self.state_store.record_query_trace(query_id, {"original_query": original_question, "rewritten_query": rewritten_question, "retrieval_method": self._retrieval_mode(hits), "candidate_count": len(hits), "timings_ms": {"retrieval": round(retrieval_ms, 3), "rerank": round(rerank_ms, 3), "generation": round(generation_ms, 3), "total": round(total_ms, 3)}, "confidence": confidence, "query_analysis": query_analysis, "evidence_alignment": evidence_alignment, "grounding": {"answer_evidence_overlap": round(answer_grounding, 3), "query_answer_coverage": round(query_coverage, 3), "fallback_used": grounding_fallback}, "selected_chunk_ids": [hit.metadata.get("chunk_id", hit.doc_id) for hit in selected_hits], "citations": citations, "degraded_mode": bool(retrieval_error or self.embedding_startup_error)})
+        result = {"query_id": query_id, "answer": answer, "citations": citations, "hits": selected_hits, "confidence": confidence, "query_analysis": query_analysis, "evidence_alignment": evidence_alignment, "retrieval_mode": self._retrieval_mode(hits), "degraded_mode": bool(retrieval_error or self.embedding_startup_error)}
         if retrieval_error:
             result["retrieval_error"] = retrieval_error
         return result
