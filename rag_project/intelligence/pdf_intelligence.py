@@ -44,7 +44,7 @@ _NUMBER_RE = re.compile(
 _ENTITY_PATTERNS = {
     "drug": re.compile(r"\b(?:acetaminophen|paracetamol|ibuprofen|metformin|aspirin|amoxicillin|warfarin)\b", re.I),
     "dose": re.compile(r"\b\d+(?:[\.,]\d+)?\s*(?:mg|g|mcg|µg|ml|mL)\b", re.I),
-    "percent": re.compile(r"\b\d+(?:[\.,]\d+)?\s*%\b"),
+    "percent": re.compile(r"(?<!\w)\d+(?:[\.,]\d+)?\s*%"),
     "date": re.compile(r"\b(?:19|20)\d{2}(?:[-/]\d{1,2}(?:[-/]\d{1,2})?)?\b"),
     "section": re.compile(r"^(?:\d+(?:\.\d+)*|[IVXLC]+)[.)]?\s+\S.+$", re.M),
 }
@@ -159,7 +159,7 @@ def classify_document_pages(pages: Iterable[dict[str, Any]]) -> DocumentProfile:
     risk = "low" if scan_ratio < 0.15 else "medium" if scan_ratio < 0.50 else "high"
     language = "unknown"
     joined = " ".join(str(x.get("text") or "") for x in records[:8]).lower()
-    if any(ch in joined for ch in "ةيىؤإأ" ):
+    if any(ch in joined for ch in "ةيىؤإأ"):
         language = "ar"
     elif any(word in joined for word in ("bonjour", "avec", "dans", "patient")):
         language = "fr"
