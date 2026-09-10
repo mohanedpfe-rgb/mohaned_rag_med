@@ -56,24 +56,18 @@ def normalize_query(query: str) -> str:
 
 
 def extract_query_entities(query: str) -> tuple[str, ...]:
+    """Return clinical entities only; ordinary question words are not evidence requirements."""
     understanding = understand_query(normalize_query(query))
-    structured = [entity.normalized for entity in understanding.entities]
-    tokens = re.findall(r"[\wÀ-ÿ'/-]{3,}", normalize_query(query).casefold())
     out: list[str] = []
-    for term in structured:
+    for entity in understanding.entities:
+        term = str(entity.normalized or entity.text or "").strip().casefold()
         if term and term not in out:
             out.append(term)
+    # Quoted phrases are explicit user concepts and are safe to retain as retrieval anchors.
     for quoted in re.findall(r"[\"“]([^\"”]+)[\"”]", query or ""):
         q = re.sub(r"\s+", " ", quoted.strip()).casefold()
         if q and q not in out:
             out.append(q)
-    for token in tokens:
-        if token in _STOP or token in out or re.fullmatch(r"\d+", token):
-            continue
-        if len(token) >= 4 or any(ch.isdigit() for ch in token) or "/" in token:
-            out.append(token)
-        if len(out) >= 20:
-            break
     return tuple(out[:16])
 
 
