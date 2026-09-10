@@ -97,11 +97,64 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
         "DEBUG TEST COLLECTION OBJECT ID:",
         id(getattr(system.vector_store, "collection", None)),
     )
+
+    raw_records = system.vector_store.collection.get(
+        where={"document_id": result["document_id"]},
+        include=["metadatas", "documents", "embeddings"],
+    )
+    raw_ids = list(raw_records.get("ids") or [])
+    raw_metadatas = list(raw_records.get("metadatas") or [])
+    raw_documents = list(raw_records.get("documents") or [])
+    raw_embeddings = list(raw_records.get("embeddings") or [])
+    print("DEBUG RAW RECORD COUNT:", len(raw_ids))
+    print("DEBUG RAW IDS:", raw_ids)
+    print("DEBUG RAW METADATA COUNT:", len(raw_metadatas))
+    for index, metadata in enumerate(raw_metadatas):
+        print(
+            f"DEBUG RAW METADATA[{index}]:",
+            metadata,
+        )
+        print(
+            f"DEBUG RAW DOCUMENT_ID[{index}]:",
+            metadata.get("document_id") if isinstance(metadata, dict) else None,
+        )
+        print(
+            f"DEBUG RAW VERSION_ID[{index}]:",
+            metadata.get("version_id") if isinstance(metadata, dict) else None,
+        )
+        print(
+            f"DEBUG RAW INDEX_STATE[{index}]:",
+            metadata.get("index_state") if isinstance(metadata, dict) else None,
+        )
+        print(
+            f"DEBUG RAW CHUNK_ID[{index}]:",
+            metadata.get("chunk_id") if isinstance(metadata, dict) else None,
+        )
+        print(
+            f"DEBUG RAW EMBEDDING_DIM[{index}]:",
+            len(raw_embeddings[index]) if index < len(raw_embeddings) and raw_embeddings[index] is not None else None,
+        )
+        print(
+            f"DEBUG RAW DOCUMENT_TEXT_LENGTH[{index}]:",
+            len(str(raw_documents[index])) if index < len(raw_documents) else None,
+        )
+
+    matching_version_indexes = [
+        index
+        for index, metadata in enumerate(raw_metadatas)
+        if isinstance(metadata, dict)
+        and str(metadata.get("version_id")) == version_id
+    ]
+    print("DEBUG EXPECTED VERSION MATCHING INDEXES:", matching_version_indexes)
+    print("DEBUG EXPECTED VERSION MATCH COUNT:", len(matching_version_indexes))
+    print("DEBUG RESULT EMBEDDING COUNT:", result["embedding_count"])
+    print("DEBUG STATE DOCUMENT VERSION_ID:", document.get("version_id"))
     print("========== DEBUG VALIDATION END ==========")
 
     validation = system.vector_store.validate_document_index(
         result["document_id"], version_id
     )
+    print("DEBUG VALIDATION RESULT:", validation)
     assert validation["valid"] is True, validation
     assert validation["count"] == result["embedding_count"]
 
