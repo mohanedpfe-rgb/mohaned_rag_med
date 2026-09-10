@@ -7,11 +7,13 @@ from typing import Any, Sequence
 
 from rag_project.intelligence.atomic_versioning import install as install_atomic_versioning
 from rag_project.intelligence.advanced_clinical_reasoner import assess_clinical_reasoning, build_reasoning_instruction
+from rag_project.intelligence.answer_repair import repair_and_verify
 from rag_project.intelligence.evidence_guard import citation_firewall, contradiction_report, evidence_confidence, grounding_decision, verify_claims
 from rag_project.intelligence.index_auditor import audit_index
 from rag_project.intelligence.pdf_intelligence import enrich_text
 from rag_project.intelligence.production_contract import sanitize_trace
 from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
+from rag_project.retrieval.metadata_filter import MetadataFilter
 from rag_project.intelligence.semantic_reasoning import build_evidence_graph, clinical_reasoning_ready, semantic_evidence_alignment, understand_query
 from rag_project.intelligence.small_model_reasoner import analyze_with_small_model, augment_query_plan, merge_understanding
 
@@ -33,6 +35,7 @@ EXTENDED_GOD_MODE_CAPABILITIES = (
     "typed_clinical_fact_extraction", "evidence_graph_reasoning", "explicit_path_search", "three_hop_reasoning",
     "conflict_aware_reasoning", "safety_aware_reasoning_gate", "calibrated_reasoning_confidence", "reasoning_contract",
     "small_model_semantic_copilot", "hard_query_escalation", "structured_query_hypothesis", "retrieval_expansion_without_authority",
+    "evidence_claim_matrix", "critic_repair_loop", "post_repair_reverification", "adaptive_query_budgeting", "benchmark_harness", "confidence_calibration_contract",
 )
 
 
@@ -211,7 +214,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     if str(compatibility.get("status", "")).upper() != "READY":
         return {"status": compatibility.get("status", "NOT_READY"), "answer": compatibility.get("message", "The index is not ready."), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
-        where = MetadataFilter.build(metadata_filter) if False else __import__("rag_project.retrieval.metadata_filter", fromlist=["MetadataFilter"]).MetadataFilter.build(metadata_filter)
+        where = MetadataFilter.build(metadata_filter)
     except Exception:
         return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
@@ -240,24 +243,35 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         reasoning_instruction += " Retrieval strategy hypothesis from the small model (never evidence): " + small_model_assist["answer_strategy"]
     answer, generation_path = _answer_with_ladder(self, question, context, selected, conversation_context, reasoning_instruction)
     blocks = [str(h.text or "") for h in selected]; source_ids = [f"S{i + 1}" for i in range(len(selected))]
-    claims = verify_claims(answer, blocks, source_ids); ground = grounding_decision(claims, min_supported_ratio=0.60)
+    claims = verify_claims(answer, blocks, source_ids); pre_repair_claims = list(claims)
+    ground = grounding_decision(claims, min_supported_ratio=0.60)
     safe_answer, firewall_used = citation_firewall(answer, claims); contradiction = contradiction_report(claims)
+    repair_used = False
+    if not ground.get("allow") or contradiction.get("has_contradiction"):
+        repaired_answer, repaired_claims, attempted = repair_and_verify(self.llm, question, answer, blocks, source_ids, claims)
+        if attempted:
+            repair_used = True
+            answer = repaired_answer
+            claims = repaired_claims
+            ground = grounding_decision(claims, min_supported_ratio=0.60)
+            safe_answer, firewall_used = citation_firewall(answer, claims)
+            contradiction = contradiction_report(claims)
     evidence_conf = evidence_confidence(retrieval=min(1.0, max((float(h.score) for h in selected), default=0.0)), rerank=min(1.0, max((float(h.score) for h in selected), default=0.0)), entailment=sum(c.support for c in claims) / max(len(claims), 1) if claims else 0.0, quality=sum(min(1.0, len(_as_list(enrich_text(h.text).get("keywords"))) / 12.0) for h in selected) / max(len(selected), 1), contradiction=1.0 if contradiction.get("has_contradiction") else 0.0)
     if not ground.get("allow") or contradiction.get("has_contradiction"):
         safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
     citations = self.citation_manager.validate(self.citation_manager.build(selected), selected)
     query_id = str(uuid.uuid4())
-    trace = {"query_id": query_id, "original_query": question, "rewritten_query": plan.normalized, "retrieval_method": "multi_query_hybrid_plus_bridge_plus_small_model", "candidate_count": len(hits), "selected_count": len(selected), "generation_path": generation_path, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}, "claims": [c.to_dict() for c in claims], "grounding": ground, "contradiction_report": contradiction, "firewall_used": firewall_used, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}, "evidence_graph": {"nodes": len(nodes), "edges": len(edges)}}
+    trace = {"query_id": query_id, "original_query": question, "rewritten_query": plan.normalized, "retrieval_method": "multi_query_hybrid_plus_bridge_plus_small_model", "candidate_count": len(hits), "selected_count": len(selected), "generation_path": generation_path, "repair_used": repair_used, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}, "pre_repair_claims": [c.to_dict() for c in pre_repair_claims], "claims": [c.to_dict() for c in claims], "grounding": ground, "contradiction_report": contradiction, "firewall_used": firewall_used, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}, "evidence_graph": {"nodes": len(nodes), "edges": len(edges)}}
     try:
         self.state_store.record_query_trace(query_id, sanitize_trace(trace))
     except Exception:
         self.logger.exception("Failed to record query trace")
     self.conversation_memory.add(question, safe_answer)
-    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}, "god_mode": True}
+    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}, "repair_used": repair_used, "god_mode": True}
 
 
 def report() -> dict[str, object]:
-    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "extended_capability_count": len(EXTENDED_GOD_MODE_CAPABILITIES), "extended_capabilities": list(EXTENDED_GOD_MODE_CAPABILITIES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "small_model_copilot": True}
+    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "extended_capability_count": len(EXTENDED_GOD_MODE_CAPABILITIES), "extended_capabilities": list(EXTENDED_GOD_MODE_CAPABILITIES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "small_model_copilot": True, "critic_repair_loop": True, "post_repair_reverification": True}
 
 
 def audit_god_mode_index(system: Any) -> dict[str, Any]:
