@@ -14,50 +14,51 @@ def install() -> dict[str, Any]:
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 
+    service_cls = production_rag.ProductionRAGSystem
     enhancer = god_mode_100.enhance_result
     production_rag.enhanced_god_answer = enhancer
-    production_rag.ProductionRAGSystem._certified_god_answer = enhancer
-    production_rag.ProductionRAGSystem._canonical_answer_authority = ANSWER_AUTHORITY
-    production_rag.ProductionRAGSystem._canonical_runtime_contract = True
+    setattr(service_cls, "_certified_god_answer", enhancer)
+    setattr(service_cls, "_canonical_answer_authority", ANSWER_AUTHORITY)
+    setattr(service_cls, "_canonical_runtime_contract", True)
 
-    if not getattr(production_rag.ProductionRAGSystem, "_canonical_health_contract", False):
-        previous_health = production_rag.ProductionRAGSystem.health_report
+    if not getattr(service_cls, "_canonical_health_contract", False):
+        previous_health = getattr(service_cls, "health_report", None)
+        if callable(previous_health):
+            def canonical_health(self: Any) -> dict[str, Any]:
+                report = previous_health(self)
+                pipeline = dict(report.get("pipeline") or {})
+                pipeline.update({
+                    "canonical_runtime_contract": True,
+                    "answer_pipeline_authority": ANSWER_AUTHORITY,
+                    "production_contract_version": CONTRACT_VERSION,
+                    "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+                    "structured_request_context": True,
+                    "structured_evidence_bundle": True,
+                    "structured_answer_envelope": True,
+                    "confidence_breakdown": True,
+                    "request_traceability": True,
+                    "ingestion_traceability": True,
+                    "atomic_ingestion_publication": True,
+                    "post_write_index_validation": True,
+                })
+                report["pipeline"] = pipeline
+                report["canonical_runtime"] = {
+                    "service": CANONICAL_SERVICE,
+                    "answer_pipeline_authority": ANSWER_AUTHORITY,
+                    "production_contract_version": CONTRACT_VERSION,
+                    "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+                }
+                return report
 
-        def canonical_health(self: Any) -> dict[str, Any]:
-            report = previous_health(self)
-            pipeline = dict(report.get("pipeline") or {})
-            pipeline.update({
-                "canonical_runtime_contract": True,
-                "answer_pipeline_authority": ANSWER_AUTHORITY,
-                "production_contract_version": CONTRACT_VERSION,
-                "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
-                "structured_request_context": True,
-                "structured_evidence_bundle": True,
-                "structured_answer_envelope": True,
-                "confidence_breakdown": True,
-                "request_traceability": True,
-                "ingestion_traceability": True,
-                "atomic_ingestion_publication": True,
-                "post_write_index_validation": True,
-            })
-            report["pipeline"] = pipeline
-            report["canonical_runtime"] = {
-                "service": CANONICAL_SERVICE,
-                "answer_pipeline_authority": ANSWER_AUTHORITY,
-                "production_contract_version": CONTRACT_VERSION,
-                "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
-            }
-            return report
-
-        production_rag.ProductionRAGSystem.health_report = canonical_health
-        production_rag.ProductionRAGSystem._canonical_health_contract = True
+            setattr(service_cls, "health_report", canonical_health)
+        setattr(service_cls, "_canonical_health_contract", True)
 
     return {
         "canonical_service": CANONICAL_SERVICE,
         "answer_pipeline_authority": ANSWER_AUTHORITY,
-        "class_binding_installed": production_rag.ProductionRAGSystem._certified_god_answer is enhancer,
+        "class_binding_installed": getattr(service_cls, "_certified_god_answer", None) is enhancer,
         "runtime_contract_bound": True,
-        "health_contract_bound": getattr(production_rag.ProductionRAGSystem, "_canonical_health_contract", False),
+        "health_contract_bound": getattr(service_cls, "_canonical_health_contract", False),
         "production_contract_version": CONTRACT_VERSION,
         "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
     }
