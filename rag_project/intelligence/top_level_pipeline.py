@@ -162,6 +162,23 @@ def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_f
         enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":True,"reason":"no_extractable_evidence"};enhanced["generation_path"]="required_two_stage_abstention" if hard_query else "certified_primary_fallback"
         if hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
         return enhanced
+
+    # A real production system always has the configured LLM.  This branch exists
+    # for deterministic contract tests and degraded/read-only tooling: when no
+    # runtime LLM exists, preserve an already verified base answer instead of
+    # replacing it with a synthetic abstention. The answer still must pass the
+    # same evidence verifier before it is preserved.
+    if system is None and str(base_result.get("answer","")).strip():
+        base_answer=str(base_result.get("answer","")).strip()
+        evidence_texts=[str(getattr(h,"text","") or "") for h in selected]
+        base_checks=verify_claims(base_answer,evidence_texts,[f"S{i+1}" for i in range(len(selected))]) if evidence_texts else []
+        base_blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in base_checks)
+        if base_checks and not base_blocked:
+            enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":False,"reason":"no_runtime_llm_preserved_verified_base"}
+            enhanced["generation_path"]="verified_base_preserved_no_runtime_llm"
+            enhanced["verification"]={"checked":True,"blocked":False,"claim_count":len(base_checks)}
+            return enhanced
+
     synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature)
     verified_synthesis=[]
     if synthesized:
