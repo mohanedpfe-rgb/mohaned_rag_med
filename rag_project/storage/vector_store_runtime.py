@@ -44,6 +44,16 @@ def _validate_document_index(
     document_id: str,
     version_id: str | None = None,
 ) -> dict[str, Any]:
+    print(
+        "DEBUG RUNTIME VALIDATE: "
+        f"persist_directory={self.persist_directory}, "
+        f"collection_name={self.collection_name}"
+    )
+    print(
+        "DEBUG RUNTIME VALIDATE INPUT: "
+        f"document_id={document_id}, version_id={version_id!r}"
+    )
+
     records = self.collection.get(
         where={"document_id": document_id},
         include=["metadatas", "documents", "embeddings"],
@@ -53,6 +63,26 @@ def _validate_document_index(
     documents = _normalize_sequence(records.get("documents"))
     embeddings = _normalize_sequence(records.get("embeddings"))
 
+    print(
+        "DEBUG RUNTIME RAW COUNTS: "
+        f"ids={len(ids)}, metadatas={len(metadatas)}, "
+        f"documents={len(documents)}, embeddings={len(embeddings)}"
+    )
+
+    for index, metadata in enumerate(metadatas):
+        normalized = self._coerce_metadata(metadata)
+        print(
+            "DEBUG RUNTIME RECORD: "
+            f"index={index}, "
+            f"id={ids[index] if index < len(ids) else '<missing>'!r}, "
+            f"document_id={normalized.get('document_id')!r}, "
+            f"version_id={normalized.get('version_id')!r}, "
+            f"chunk_id={normalized.get('chunk_id')!r}, "
+            f"index_state={normalized.get('index_state')!r}, "
+            f"embedding_len={len(_normalize_sequence(embeddings[index])) if index < len(embeddings) else 0}, "
+            f"text_len={len(str(documents[index])) if index < len(documents) else 0}"
+        )
+
     if version_id is None:
         selected = list(range(len(ids)))
     else:
@@ -61,6 +91,11 @@ def _validate_document_index(
             for index, metadata in enumerate(metadatas)
             if isinstance(metadata, dict) and metadata.get("version_id") == version_id
         ]
+
+    print(
+        "DEBUG RUNTIME VERSION MATCH: "
+        f"requested={version_id!r}, selected_indices={selected}"
+    )
 
     issues: list[str] = []
     if not selected:
@@ -96,6 +131,10 @@ def _validate_document_index(
             issues.append(f"missing document text for record index {index}")
 
     valid = bool(selected_ids) and not issues
+    print(
+        "DEBUG RUNTIME VALIDATE RESULT: "
+        f"count={len(selected_ids)}, valid={valid}, issues={issues}"
+    )
     return {
         "document_id": document_id,
         "count": len(selected_ids),
