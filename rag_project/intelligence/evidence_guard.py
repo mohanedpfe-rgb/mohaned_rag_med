@@ -25,11 +25,8 @@ OPPOSITES = (
 SCALE = {'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':('time',2592000),'year':('time',31536000),'years':('time',31536000)}
 _TINY = {'yes','no','ok','okay','thanks','thank','maybe','sure'}
 
-# Small bilingual normalization layer for common medical paraphrases. It changes
-# matching behavior only; it does not add facts to an answer.
 _CONCEPT_SYNONYMS = (
-    (r'\bhyperglyc(?:emia|émie|émie)\b', 'hyperglycemia'),
-    (r'\bhyperglycemia\b', 'hyperglycemia'),
+    (r'\bhyperglyc(?:emia|émie)\b|\bhyperglycemia\b', 'hyperglycemia'),
     (r'\bcétose\b|\bketosis\b', 'ketosis'),
     (r'\bacidose métabolique\b|\bmetabolic acidosis\b', 'metabolic acidosis'),
     (r'\bhypoglyc(?:emia|émie)\b|\bhypoglycemia\b', 'hypoglycemia'),
@@ -99,7 +96,7 @@ def semantic_support(claim, evidence):
     if nclaim == nevidence: return 1.0
     ct = set(meaningful_tokens(nclaim)); et = set(meaningful_tokens(nevidence))
     if not ct or not et: return 0.
-    framing = {'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','sont','les','des'}
+    framing = {'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct = {t for t in ct if t not in framing} or ct
     overlap = len(ct & et) / len(ct); jac = len(ct & et) / max(1,len(ct | et)); char = keyword_overlap_score(nclaim,nevidence); polarity_penalty = .35 if _polarity(nclaim) != _polarity(nevidence) else 0
     return max(0., min(1., .50*overlap + .25*jac + .25*char - polarity_penalty))
@@ -107,10 +104,13 @@ def semantic_support(claim, evidence):
 def detect_contradiction(claim, evidence_blocks: Sequence[str]) -> bool:
     cl = _score_text(claim).casefold(); cl_tokens = set(meaningful_tokens(cl))
     for ev in evidence_blocks:
-        el = ev.casefold(); ev_tokens = set(meaningful_tokens(el)); shared = cl_tokens & ev_tokens
+        el = str(ev or '').casefold(); ev_tokens = set(meaningful_tokens(el)); shared = cl_tokens & ev_tokens
         explicit = any(re.search(a, cl, re.I) and re.search(b, el, re.I) for a,b in OPPOSITES)
+        # Presence/absence is a distinct semantic axis from generic negation. Check it
+        # explicitly so "Diabetes is absent" conflicts with "Diabetes is present".
+        absence_presence = bool((re.search(r'\b(absent|absence|not present|missing|no)\b|\b(غير موجود|لا يوجد|غائب|غياب)\b', cl, re.I | re.UNICODE) and re.search(r'\b(present|presence|detected|positive|has|with)\b|\b(موجود|وجود|يحتوي|إيجابي)\b', el, re.I | re.UNICODE)) or (re.search(r'\b(present|presence|detected|positive|has|with)\b|\b(موجود|وجود|يحتوي|إيجابي)\b', cl, re.I | re.UNICODE) and re.search(r'\b(absent|absence|not present|missing|no)\b|\b(غير موجود|لا يوجد|غائب|غياب)\b', el, re.I | re.UNICODE)))
         polarity = _polarity(cl) != _polarity(el) and bool(shared)
-        if (explicit or polarity) and (semantic_support(cl,el) >= .10 or len(shared) >= 1): return True
+        if (explicit or absence_presence or polarity) and (semantic_support(cl,el) >= .08 or len(shared) >= 1): return True
     return False
 
 def _best_support(claim, blocks, ids):
