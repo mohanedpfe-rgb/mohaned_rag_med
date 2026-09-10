@@ -98,10 +98,12 @@ def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
     primary = semantic.primary_intent
     if primary == "association":
         return "relationship"
+    if primary == "comparison" or _contains_any(normalized, _COMPARISON):
+        return "comparison"
+    if primary in {"diagnosis", "management", "etiology", "mechanism", "prognosis"}:
+        return primary
     if _contains_any(normalized, _NUMERIC) or "numeric" in semantic.intents:
         return "numeric"
-    if primary in {"diagnosis", "management", "etiology", "mechanism", "prognosis", "comparison"}:
-        return primary
     if primary == "factual":
         if _contains_any(normalized, _TABLE):
             return "table_lookup"
