@@ -8,7 +8,7 @@ from rag_project.intelligence.semantic_reasoning import extract_clinical_entitie
 from rag_project.utils.text_utils import meaningful_tokens
 
 _MEASUREMENT = re.compile(
-    r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)\b",
+    r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)(?=\s|$|[^\w])",
     re.I,
 )
 _ABBREVIATION = re.compile(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,8})?\b")
@@ -73,9 +73,6 @@ def extract_query_entities(question: str, planned_entities: Iterable[str] = ()) 
         if token.upper() not in _STOP:
             found.append(_canonical(token))
 
-    # Preserve meaningful capitalized / multiword biomedical phrases even when they
-    # are absent from the closed alias dictionary. This is intentionally lexical:
-    # it never invents a medical concept.
     for match in re.finditer(r"\b(?:[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\s+){1,3}[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\b", question or ""):
         phrase = match.group(0).strip(" ,.;:!?()[]{}")
         if len(meaningful_tokens(phrase)) >= 2:
