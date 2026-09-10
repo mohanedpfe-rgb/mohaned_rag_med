@@ -176,3 +176,6 @@ def render_intelligence_panel(result: dict[str, Any]) -> None:
         if result.get("abstained") or status in {"NOT_SUPPORTED", "REASONING_ABSTAIN", "GENERATION_ABSTAIN", "MEDICAL_SAFETY_ABSTAIN"}:
             reason_text = f" Reasons: {', '.join(map(str, reasons))}" if reasons else ""
             st.warning("The system withheld unsupported content." + reason_text)
+
+
+__all__ = ["render_intelligence_panel"]
