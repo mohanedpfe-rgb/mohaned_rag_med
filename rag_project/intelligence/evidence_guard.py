@@ -13,19 +13,32 @@ class ClaimCheck:
 
 SENT=re.compile(r'(?<=[.!?。！？])\s+|\n+')
 MEASURE=re.compile(r'(?P<value>[-+]?\d+(?:[.,]\d+)?(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?)\s*(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)\b',re.I)
-NEG=re.compile(r'\b(no|not|without|never|none|contraindicated|avoid|cannot|does not|doesn\'t|non|aucun|sans|jamais|ne\s+pas|ممنوع|منع|لا|ليس|دون)\b',re.I|re.UNICODE)
+NEG=re.compile(r'\b(no|not|without|never|none|cannot|does not|doesn\'t|non|aucun|sans|jamais|ne\s+pas|ممنوع|منع|لا|ليس|دون)\b',re.I|re.UNICODE)
 OPPOSITES=((r'\bcontraindicated\b',r'\bindicated\b'),(r'\bshould not\b',r'\bshould\b'),(r'\bavoid\b',r'\brecommended\b'),(r'\bno\b',r'\bhas\b|\bwith\b'),(r'\bwithout\b',r'\bwith\b'))
 SCALE={'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':('time',2592000),'year':('time',31536000),'years':('time',31536000)}
+_TINY={'yes','no','ok','okay','thanks','thank','maybe','sure'}
 
 def split_claims(answer:str)->list[str]:
     raw=str(answer or '').strip()
     if not raw:return []
     lines=[]
+    bullet_mode=False
     for line in raw.splitlines():
+        if not line.strip():continue
+        bullet_mode = bullet_mode or bool(re.match(r'^\s*(?:[-*•]|\d+[.)])\s+', line))
         value=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',line).strip()
         if value:lines.append(value)
-    if len(lines)>1 and any(re.match(r'^[-*•]|^\d+[.)]',x) for x in raw.splitlines() if x.strip()): return lines[:40]
-    return [re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',s.strip()) for s in SENT.split(raw) if len(meaningful_tokens(s))>=1][:40]
+    if bullet_mode:
+        return lines[:40]
+    out=[]
+    for sentence in SENT.split(raw):
+        sentence=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',sentence.strip())
+        toks=[t.casefold() for t in meaningful_tokens(sentence)]
+        if not toks:continue
+        if len(toks)<=2 and set(toks).issubset(_TINY):continue
+        out.append(sentence)
+        if len(out)>=40:break
+    return out
 
 def _norm_unit(u:str)->str:return {'µg':'ug','mcg':'ug','°c':'c'}.get(u.casefold(),u.casefold())
 def _num(v:str)->float|None:
@@ -55,14 +68,19 @@ def numeric_consistency(claim,evidence):
 
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 
+def _score_text(claim:str)->str:
+    return re.sub(r'\[S\d+\]','',claim or '').strip()
+
 def semantic_support(claim,evidence):
+    claim=_score_text(claim); evidence=str(evidence or '')
     ct=set(meaningful_tokens(claim)); et=set(meaningful_tokens(evidence))
     if not ct or not et:return 0.
-    overlap=len(ct&et)/len(ct); jac=len(ct&et)/max(1,len(ct|et)); char=keyword_overlap_score(claim,evidence); penalty=.35 if _polarity(claim)!=_polarity(evidence) else 0
-    return max(0.,min(1.,.48*overlap+.22*jac+.25*char-.0*penalty))
+    overlap=len(ct&et)/len(ct); jac=len(ct&et)/max(1,len(ct|et)); char=keyword_overlap_score(claim,evidence)
+    polarity_penalty=.35 if _polarity(claim)!=_polarity(evidence) else 0
+    return max(0.,min(1.,.50*overlap+.25*jac+.25*char-polarity_penalty))
 
 def detect_contradiction(claim,evidence_blocks:Sequence[str])->bool:
-    cl=claim.casefold()
+    cl=_score_text(claim).casefold()
     for ev in evidence_blocks:
         el=ev.casefold()
         opposite=any(re.search(a,cl,re.I) and re.search(b,el,re.I) for a,b in OPPOSITES) or (_polarity(cl)!=_polarity(el) and set(meaningful_tokens(cl))&set(meaningful_tokens(el)))
