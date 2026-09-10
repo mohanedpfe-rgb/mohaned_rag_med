@@ -2,6 +2,9 @@ from rag_project.application import runtime_contract
 from rag_project.intelligence.production_contract import validate_feature_contract
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+from rag_project.canonical_runtime import ANSWER_AUTHORITY, install as install_canonical_runtime
+from rag_project.intelligence import god_mode_100, top_level_pipeline
+from rag_project.app.production_rag import ProductionRAGSystem
 
 
 def test_feature_contract_resolves_all_advertised_capabilities():
@@ -13,7 +16,7 @@ def test_feature_contract_resolves_all_advertised_capabilities():
 
 def test_runtime_contract_declares_single_canonical_authority():
     contract = runtime_contract()
-    assert contract["answer_pipeline_authority"] == "rag_project.intelligence.top_level_pipeline.complete_phases"
+    assert contract["answer_pipeline_authority"] == ANSWER_AUTHORITY
     assert contract["answer_pipeline_execution"] == contract["answer_pipeline_authority"]
     assert contract["answer_monkey_patch"] is False
     assert contract["structured_request_context"] is True
@@ -21,5 +24,29 @@ def test_runtime_contract_declares_single_canonical_authority():
     assert contract["structured_answer_envelope"] is True
     assert contract["confidence_breakdown"] is True
     assert contract["ingestion_traceability"] is True
-    assert contract["production_contract_version"] == CONTRACT_VERSION.removesuffix("-v2") + "-v2"
+    assert contract["production_contract_version"] == CONTRACT_VERSION
     assert contract["ingestion_contract_version"] == INGESTION_CONTRACT_VERSION
+
+
+def test_live_production_service_is_bound_to_installed_canonical_enhancer():
+    install_canonical_runtime()
+    assert ProductionRAGSystem._certified_god_answer is god_mode_100.enhance_result
+    assert ProductionRAGSystem._canonical_answer_authority == ANSWER_AUTHORITY
+    assert ProductionRAGSystem._canonical_runtime_contract is True
+    assert ProductionRAGSystem._canonical_health_contract is True
+
+
+def test_live_rewrite_does_not_pollute_standalone_question():
+    install_canonical_runtime()
+    rewritten = top_level_pipeline.rewrite_follow_up(
+        "What are the main findings?",
+        (("What are the complications of diabetes?", "The answer discussed diabetic nephropathy."),),
+    )
+    assert rewritten == "What are the main findings?"
+    assert "relevant entities:" not in rewritten.casefold()
+    assert "follow-up:" not in rewritten.casefold()
+
+
+def test_health_report_class_binding_is_observable():
+    install_canonical_runtime()
+    assert getattr(ProductionRAGSystem, "_canonical_health_contract", False) is True
