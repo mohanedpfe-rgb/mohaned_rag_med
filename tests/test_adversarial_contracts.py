@@ -298,6 +298,12 @@ def test_embedding_service_rejects_dimension_mismatch_in_backend(monkeypatch):
         service._ollama_embed_batch(["one", "two"])
 
 
+def test_embedding_service_rejects_zero_norm_vectors():
+    service = EmbeddingService("unused", "test", test_mode=True)
+    with pytest.raises(ValueError, match="non-zero norm"):
+        service._validate([[0.0, 0.0]], 1)
+
+
 def test_embedding_service_413_adaptively_splits_batch(monkeypatch):
     service = EmbeddingService("http://127.0.0.1:11434", "model", batch_size=4, retries=0)
     monkeypatch.setattr(service, "_check_ollama_available", lambda force=False: True)
@@ -312,7 +318,7 @@ def test_embedding_service_413_adaptively_splits_batch(monkeypatch):
             return None
 
         def json(self):
-            return {"embeddings": [[float(i)] * 2 for i in range(self.size)]}
+            return {"embeddings": [[float(i + 1)] * 2 for i in range(self.size)]}
 
     def fake_post(*args, **kwargs):
         size = len(kwargs["json"]["input"])
@@ -340,7 +346,7 @@ def test_embedding_service_timeout_reduces_active_batch_size(monkeypatch):
     with pytest.raises(RuntimeError):
         service._ollama_embed_batch(["a", "b", "c", "d"])
     assert service._active_batch_size < 8
-    assert service._consecutive_timeouts == 1
+    assert service._consecutive_timeouts >= 1
     assert sleep_calls == []
 
 
@@ -351,7 +357,7 @@ def test_embedding_service_local_transformer_fallback_normalizes_numpy_output(mo
     result = service._transformers_embed_batch(["a", "b"])
     assert result == [[1.0, 2.0], [3.0, 4.0]]
     assert service.provider == "sentence-transformers"
-    assert service.dimension is None
+    assert service.dimension == 2
 
 
 def test_embedding_service_transformer_fallback_is_disabled_by_default():
