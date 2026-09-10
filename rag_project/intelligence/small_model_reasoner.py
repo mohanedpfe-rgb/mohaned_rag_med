@@ -28,7 +28,9 @@ _SAFETY_CUES = ("contraindication", "contraindicated", "avoid", "not recommended
 _EXACTNESS_CUES = ("exact", "exactly", "precise", "strictly", "exacte", "précis")
 _POPULATION_CUES = ("adult", "child", "children", "pediatric", "pregnan", "grossesse", "enfant", "adulte", "neonate", "newborn")
 _PHASE_CUES = ("first-line", "second-line", "initial", "maintenance", "acute", "chronic", "aigu", "chronique", "initiale", "entretien")
-_FOLLOWUP_CUES = re.compile(r"\b(this|that|it|they|them|the latter|the former|what about|how about)\b|^(and|also|then|et|puis)\b|^(و|ثم)(?=\S)", re.I | re.UNICODE)
+# Bare "this/that" in a standalone question is not enough to justify an LLM call;
+# actual conversational rewrite is handled by the production follow-up layer.
+_FOLLOWUP_CUES = re.compile(r"\b(it|they|them|the latter|the former|what about|how about)\b|^(and|also|then|et|puis)\b|^(و|ثم)(?=\S)", re.I | re.UNICODE)
 
 
 def _contains_any(text: str, cues: tuple[str, ...]) -> bool:
@@ -103,9 +105,6 @@ def _sanitize_assist(question: str, understanding: QueryUnderstanding, parsed: d
         if not hard_cue:
             intent = "factual"
     relation_items = [item for item in _clean_list(parsed.get("relations")) if item in _ALLOWED_RELATIONS]
-    # An association relation returned by the copilot is useful retrieval structure when
-    # the query already contains deterministic medical entities, even if the user did not
-    # use the literal word "associated". Causal/sequence relations remain cue-gated.
     if "association" in relation_items and deterministic_entities:
         relations = ["association"]
     else:
