@@ -14,6 +14,7 @@ from rag_project.security import register_session_upload,validate_ollama_url,val
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
+from rag_project.canonical_runtime import install as install_canonical_runtime
 
 _PIPELINE_RUNTIME_VERSION = "2026-09-11-contract-v2"
 
@@ -84,7 +85,7 @@ def _invalidate_stale_runtime_cache() -> None:
 
 
 def main():
-    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();install_canonical_runtime();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
 
 
 if __name__=='__main__':main()
