@@ -122,15 +122,18 @@ def test_ui_visibility_contract_exports_single_normalizer():
     assert callable(build_visibility_contract)
 
 
-def test_project_does_not_contain_duplicate_canonical_authority_constants():
-    for path in (
-        ROOT / 'rag_project' / 'application.py',
-        ROOT / 'rag_project' / 'app' / 'production_rag.py',
-        ROOT / 'rag_project' / 'intelligence' / 'god_mode_100.py',
-    ):
-        source = path.read_text(encoding='utf-8')
-        assert 'ANSWER_PIPELINE_AUTHORITY' in source or 'PIPELINE_AUTHORITY' in source
-        assert 'top_level_pipeline.complete_phases' in source
+def test_canonical_authority_is_single_source_and_consumers_reference_it():
+    from rag_project.application import ANSWER_PIPELINE_AUTHORITY, runtime_contract
+
+    expected = 'rag_project.intelligence.top_level_pipeline.complete_phases'
+    assert ANSWER_PIPELINE_AUTHORITY == expected
+    assert runtime_contract()['answer_pipeline_authority'] == expected
+
+    production = (ROOT / 'rag_project' / 'app' / 'production_rag.py').read_text(encoding='utf-8')
+    god_mode = (ROOT / 'rag_project' / 'intelligence' / 'god_mode_100.py').read_text(encoding='utf-8')
+    assert 'from rag_project.application import ANSWER_PIPELINE_AUTHORITY' in production
+    assert 'PIPELINE_AUTHORITY = ' in god_mode
+    assert 'complete_phases' in god_mode
 
 
 def test_no_test_fixture_depends_on_real_pdf_data_for_core_unit_tests():
