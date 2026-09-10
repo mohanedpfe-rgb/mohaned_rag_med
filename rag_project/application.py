@@ -9,11 +9,11 @@ from rag_project.security import harden_system
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
+from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
+from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 
 _FACTORY_LOCK=threading.RLock()
 ANSWER_PIPELINE_AUTHORITY="rag_project.intelligence.top_level_pipeline.complete_phases"
-PRODUCTION_CONTRACT_VERSION="2026-09-11-contract-v2"
-INGESTION_CONTRACT_VERSION="2026-09-11-ingestion-contract-v1"
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
