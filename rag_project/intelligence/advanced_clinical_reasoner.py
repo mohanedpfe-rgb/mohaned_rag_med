@@ -18,7 +18,7 @@ _RELATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("follows", ("after", "subsequently", "then", "followed by", "après", "ensuite", "puis", "بعد", "ثم")),
 )
 
-_NEGATION = re.compile(r"\b(no|not|never|without|cannot|does not|doesn't|non|ne pas|sans|aucun|ممنوع|ليس|لا|دون)\b", re.I | re.UNICODE)
+_NEGATION = re.compile(r"\b(no|not|never|without|cannot|does not|doesn't|non|ne pas|sans|aucun|ليس|لا|دون)\b", re.I | re.UNICODE)
 
 
 @dataclass(frozen=True)
@@ -66,8 +66,10 @@ def _normal(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
 
 
-def _is_negated(sentence: str, start: int) -> bool:
+def _is_negated(sentence: str, start: int, relation: str = "") -> bool:
     prefix = sentence[max(0, start - 90): start]
+    if relation == "contraindicated":
+        prefix = re.sub(r"\b(contraindicated|avoid|not recommended|contre[- ]indiqué|éviter|ممنوع|تجنب)\b", " ", prefix, flags=re.I | re.UNICODE)
     return bool(_NEGATION.search(prefix))
 
 
@@ -100,12 +102,13 @@ def extract_clinical_facts(text: str, *, node_id: str = "", document_id: str = "
         if len(entities) < 2 or not relation_hits:
             continue
         ordered = sorted(entities, key=lambda entity: sentence.casefold().find(entity.text.casefold()))
-        for rel_index, (relation, position) in enumerate(relation_hits[:3]):
+        for relation, position in relation_hits[:3]:
             for pair_index, (left, right) in enumerate(combinations(ordered, 2)):
                 left_pos = sentence.casefold().find(left.text.casefold())
                 right_pos = sentence.casefold().find(right.text.casefold())
                 subject, obj = (left, right) if left_pos <= right_pos else (right, left)
-                polarity = -1 if _is_negated(sentence, position) or subject.negated or obj.negated else 1
+                negated = _is_negated(sentence, position, relation) or subject.negated or obj.negated
+                polarity = -1 if negated else 1
                 confidence = min(0.97, 0.56 + 0.08 * min(len(entities), 3) + 0.05 * min(pair_index, 2))
                 facts.append(ClinicalFact(
                     subject=subject.normalized,
