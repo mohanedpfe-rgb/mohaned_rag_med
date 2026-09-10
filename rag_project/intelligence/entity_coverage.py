@@ -10,7 +10,7 @@ from rag_project.utils.text_utils import meaningful_tokens
 _MEASUREMENT = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)(?=\s|$|[^\w])", re.I)
 _ABBREVIATION = re.compile(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,8})?\b")
 _WORD = re.compile(r"\b[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9'/-]*\b", re.UNICODE)
-_STOP = {"WHAT","THIS","THAT","WHICH","WHERE","WHEN","WITH","FROM","AND","THE","FOR","DOES","HOW","WHY","BETWEEN","IS","ARE","WAS","WERE","CAN","COULD","WOULD","SHOULD","RELATIONSHIP","RELATION","TREATMENT","ABOUT","PLEASE","MAIN","FINDINGS","RELEVANT","ENTITIES"}
+_STOP = {"WHAT","THIS","THAT","WHICH","WHERE","WHEN","WITH","FROM","AND","THE","FOR","DOES","HOW","WHY","BETWEEN","IS","ARE","WAS","WERE","CAN","COULD","WOULD","SHOULD","RELATIONSHIP","RELATION","TREATMENT","ABOUT","MAIN","FINDINGS","RELEVANT","ENTITIES"}
 _OPEN_SET_MEDICAL_SUFFIXES = ("gliflozin","gliptin","glutide","parin","pril","sartan","olol","azole","cillin","mycin","cycline","vir","mab","nib","tinib","caine","statin","oxetine","pramine","pam","lam","zepam","barb","bital","phylline","terol","lukast","setron")
 _OPEN_SET_MEDICAL_TERMS = {"dapagliflozin", "metformin"}
 
@@ -20,8 +20,10 @@ def _norm(value: str) -> str:
 
 
 def _canonical(value: str) -> str:
-    try: return _norm(normalize_medical_term(value))
-    except Exception: return _norm(value)
+    try:
+        return _norm(normalize_medical_term(value))
+    except Exception:
+        return _norm(value)
 
 
 def _lexical_open_set_terms(text: str) -> list[str]:
@@ -65,9 +67,6 @@ def extract_query_entities(question: str, planned_entities: Iterable[str] = ()) 
         if canonical in deterministic or len(token)>=3:
             for value in (canonical,normalized):
                 if value and value not in found:found.append(value)
-    # Explicit planner entities are admitted only when they are atomic, non-protocol,
-    # and either deterministic or strongly medical-looking. Arbitrary planner prose
-    # must never become an evidence requirement.
     for item in planned_entities:
         raw=_norm(item)
         if not raw or len(raw)>64 or " " in raw or ":" in raw:continue
@@ -93,7 +92,8 @@ def _entity_overlap(query_entity: str, evidence_entity: str) -> float:
 
 
 def score_entity_coverage(question: str, evidence: Sequence[Any], planned_entities: Iterable[str] = ()) -> dict[str,Any]:
-    query_entities=extract_query_entities(question,planned_entities);evidence_entities=[];planned_norms={_norm(x) for x in planned_entities if _norm(x)}
+    planned_items=tuple(str(item or "") for item in planned_entities)
+    query_entities=extract_query_entities(question,planned_items);evidence_entities=[];planned_norms={_norm(x) for x in planned_items if _norm(x)}
     for index,hit in enumerate(evidence):
         text=str(getattr(hit,"text","") or "");source_id=f"S{index+1}"
         try:extracted=extract_clinical_entities(text)
@@ -102,8 +102,15 @@ def score_entity_coverage(question: str, evidence: Sequence[Any], planned_entiti
             normalized=_canonical(entity.normalized or entity.text)
             if normalized:evidence_entities.append((normalized,source_id))
         for lexical in _lexical_open_set_terms(text):evidence_entities.append((lexical,source_id))
+        # Explicit planned entities are contracts supplied by the planner, so an
+        # exact bounded token match in evidence must be visible to the scorer even
+        # when the open-set clinical extractor has never seen the term before.
         for planned in planned_norms:
-            if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])",text,re.I):evidence_entities.append((planned,source_id))
+            if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])",text,re.I):
+                evidence_entities.append((planned,source_id))
+        for query_entity in query_entities:
+            if query_entity in planned_norms and re.search(rf"(?<![\w-]){re.escape(query_entity)}(?![\w-])",text,re.I):
+                evidence_entities.append((query_entity,source_id))
         for match in _MEASUREMENT.finditer(text):evidence_entities.append((_norm(match.group(0)),source_id))
         for match in _ABBREVIATION.finditer(text):
             token=match.group(0)
