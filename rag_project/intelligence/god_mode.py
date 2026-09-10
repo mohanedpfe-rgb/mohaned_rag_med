@@ -76,35 +76,59 @@ def _diversify(hits: Sequence[Any], limit: int) -> list[Any]:
         chosen.append(hit)
         if len(chosen) >= limit:
             break
-    if len(chosen) < limit:
-        for hit in sorted(hits, key=lambda h: float(getattr(h, "score", 0.0)), reverse=True):
-            if hit not in chosen:
-                chosen.append(hit)
-            if len(chosen) >= limit:
-                break
     return chosen
 
 
 def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> list[Any]:
     all_hits: dict[str, Any] = {}
     variants = list(dict.fromkeys([plan.normalized, *plan.variants, *plan.subqueries]))
-    for variant in variants[: max(2, int(getattr(system.settings, "max_query_variants", 8)))]:
+    max_variants = max(2, int(getattr(system.settings, "max_query_variants", 8)))
+    variants = variants[:max_variants]
+    if not variants:
+        return []
+
+    candidate_count = max(8, int(system.settings.top_k) * int(getattr(system.settings, "retrieval_candidate_multiplier", 5)))
+    # Bound total reranking work across all query variants. Every distinct variant
+    # receives a fair share of the budget instead of allowing the fan-out to grow
+    # linearly with the number of rewrites/subqueries.
+    rerank_budget = 48
+    per_variant_budget = max(1, min(candidate_count, (rerank_budget + len(variants) - 1) // len(variants)))
+    for variant in variants:
         try:
-            hits = system.retriever.retrieve(_clean(variant), top_k=max(8, int(system.settings.top_k) * int(getattr(system.settings, "retrieval_candidate_multiplier", 5))), where=where)
+            hits = system.retriever.retrieve(_clean(variant), top_k=per_variant_budget, where=where)
         except Exception as exc:
             system.logger.warning("Retrieval branch failed: %s", exc)
             continue
         for hit in hits:
-            key = str(hit.metadata.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
+            meta = hit.metadata or {}
+            key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
             if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                 all_hits[key] = hit
+
     candidates = list(all_hits.values())
     if not candidates:
         return []
+    base_scores = {
+        str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80]): float(getattr(hit, "score", 0.0))
+        for hit in candidates
+    }
     try:
-        candidates = system.reranker.rerank(plan.normalized, candidates)
+        reranked = system.reranker.rerank(plan.normalized, candidates)
+        for hit in reranked:
+            key = str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80])
+            rerank_score = float(getattr(hit, "score", 0.0))
+            retrieval_score = base_scores.get(key, rerank_score)
+            # Reranking should refine retrieval, not erase a strong initial signal.
+            # Keep both signals finite and in a common 0..1 range.
+            retrieval_score = max(0.0, min(1.0, retrieval_score))
+            rerank_score = max(0.0, min(1.0, rerank_score))
+            hit.score = 0.60 * retrieval_score + 0.40 * rerank_score
+        candidates = reranked
     except Exception as exc:
         system.logger.warning("Reranking failed; retaining fused candidates: %s", exc)
+        for hit in candidates:
+            hit.score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
+
     for hit in candidates:
         hit.score = float(hit.score) * _metadata_boost(hit, plan)
     return _diversify(candidates, max(int(system.settings.top_k) * 3, 12))
