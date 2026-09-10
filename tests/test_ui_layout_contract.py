@@ -18,8 +18,12 @@ def test_live_processing_is_backed_by_persistent_state():
 
 
 def test_security_facade_guards_core_operations():
-    for marker in ("require_auth()", "validate_pdf_payload", "validate_ollama_url", "validate_storage_path", "require_clear_confirmation", "DEFAULT_ADMIN_PASSWORD"):
+    for marker in ("validate_pdf_payload", "validate_ollama_url", "validate_storage_path", "require_clear_confirmation"):
         assert marker in APP or marker in SECURITY
+    assert "require_auth" not in APP
+    assert "require_auth" not in SECURITY
+    assert "DEFAULT_ADMIN_PASSWORD" not in APP
+    assert "DEFAULT_ADMIN_PASSWORD" not in SECURITY
 
 
 def test_layout_is_responsive_or_uses_streamlit_native_layout():
