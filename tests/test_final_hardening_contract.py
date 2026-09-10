@@ -6,18 +6,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_streamlit_bootstrap_configures_page_before_auth():
+def test_streamlit_bootstrap_is_single_threaded_and_deterministic():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
-    config_pos = source.index("st.set_page_config(")
-    auth_pos = source.index("require_auth()")
-    assert config_pos < auth_pos
-    assert "bookrag_ui.st.set_page_config = lambda" in source
+    assert "bookrag_ui.main()" in source
+    assert "threading.Thread" not in source
+    assert "bookrag-runtime-bootstrap" not in source
+    assert "bookrag_ui.st.set_page_config = lambda" not in source
 
 
-def test_no_public_default_admin_password():
-    source = (ROOT / "rag_project" / "security.py").read_text(encoding="utf-8")
-    assert "DEFAULT_LOCAL_PASSWORD" not in source
-    assert "BOOKRAG_ADMIN_PASSWORD" in source
+def test_authentication_system_is_removed_from_runtime():
+    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
+    security_source = (ROOT / "rag_project" / "security.py").read_text(encoding="utf-8")
+    assert "require_auth" not in app_source
+    assert "require_auth" not in security_source
+    assert "BOOKRAG_ADMIN_PASSWORD" not in app_source
+    assert "BOOKRAG_ADMIN_PASSWORD" not in security_source
+    assert not (ROOT / "rag_project" / "auth.py").exists()
 
 
 def test_supervisor_has_event_driven_and_reconciliation_guards():
