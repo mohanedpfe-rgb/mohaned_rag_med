@@ -34,11 +34,7 @@ def _canonical(value: str) -> str:
 
 
 def _lexical_open_set_terms(text: str) -> list[str]:
-    """Find plausible biomedical tokens absent from the closed alias dictionary.
-
-    This is deliberately conservative: drug-name morphology and a tiny explicit
-    vocabulary are used instead of treating every ordinary English word as an entity.
-    """
+    """Find plausible biomedical tokens absent from the closed alias dictionary."""
     found: list[str] = []
     for match in _WORD.finditer(text or ""):
         token = match.group(0)
@@ -51,27 +47,41 @@ def _lexical_open_set_terms(text: str) -> list[str]:
     return found
 
 
+def _append_entity(found: list[str], raw: str, *, preserve_alias: bool = False) -> None:
+    """Store canonical identity and, for explicit aliases, the user-facing form."""
+    normalized = _norm(raw)
+    if not normalized:
+        return
+    canonical = _canonical(normalized)
+    if canonical:
+        found.append(canonical)
+    if preserve_alias and normalized != canonical:
+        found.append(normalized)
+
+
 def extract_query_entities(question: str, planned_entities: Iterable[str] = ()) -> tuple[str, ...]:
-    """Build an open-set query entity inventory from the project's existing entity extractor."""
+    """Build an open-set query entity inventory while retaining explicit medical aliases."""
     found: list[str] = []
     try:
-        found.extend(_canonical(entity.normalized or entity.text) for entity in extract_clinical_entities(question))
+        for entity in extract_clinical_entities(question):
+            _append_entity(found, entity.normalized or entity.text)
     except Exception:
         pass
 
     found.extend(_lexical_open_set_terms(question or ""))
 
     for entity in planned_entities:
-        text = _norm(entity)
-        if text:
-            found.append(_canonical(text))
+        _append_entity(found, entity)
 
     for match in _MEASUREMENT.finditer(question or ""):
         found.append(_norm(match.group(0)))
     for match in _ABBREVIATION.finditer(question or ""):
         token = match.group(0)
         if token.upper() not in _STOP:
-            found.append(_canonical(token))
+            # Keep both the canonical expansion (when known) and the exact
+            # abbreviation supplied by the user. This preserves query observability
+            # without sacrificing synonym matching during evidence scoring.
+            _append_entity(found, token, preserve_alias=True)
 
     for match in re.finditer(r"\b(?:[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\s+){1,3}[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\b", question or ""):
         phrase = match.group(0).strip(" ,.;:!?()[]{}")
@@ -127,7 +137,13 @@ def score_entity_coverage(question: str, evidence: Sequence[Any], planned_entiti
         for match in _ABBREVIATION.finditer(text):
             token = match.group(0)
             if token.upper() not in _STOP:
-                evidence_entities.append((_canonical(token), source_id))
+                normalized = _canonical(token)
+                evidence_entities.append((normalized, source_id))
+                # Preserve the source abbreviation too so coverage/debugging can
+                # explain an exact alias hit independently of its expansion.
+                alias = _norm(token)
+                if alias != normalized:
+                    evidence_entities.append((alias, source_id))
 
     evidence_norms = [name for name, _ in evidence_entities]
     source_counts = Counter(source for _, source in evidence_entities)
