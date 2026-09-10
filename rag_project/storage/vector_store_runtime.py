@@ -45,8 +45,8 @@ def _validate_document_index(
     version_id: str | None = None,
 ) -> dict[str, Any]:
     print(
-        f"DEBUG RUNTIME VALIDATE: persist_directory={self.persist_directory}, "
-        f"collection_name={self.collection_name}"
+        f"DEBUG RUNTIME VALIDATE: persist_directory={getattr(self, 'persist_directory', None)}, "
+        f"collection_name={getattr(self, 'collection_name', None)}"
     )
     print(
         f"DEBUG RUNTIME VALIDATE INPUT: document_id={document_id}, "
@@ -90,8 +90,9 @@ def _validate_document_index(
     # The application historically stored content_hash in vector metadata while
     # the state store may expose a profile-aware version_id. Resolve that alias
     # only when the state record proves the relationship for this exact document.
-    if not selected and version_id is not None:
-        state_database = self.persist_directory.parent / "ingestion.sqlite3"
+    persist_directory = getattr(self, "persist_directory", None)
+    if not selected and version_id is not None and persist_directory is not None:
+        state_database = Path(persist_directory).parent / "ingestion.sqlite3"
         if state_database.exists():
             try:
                 with _connect(state_database) as connection:
