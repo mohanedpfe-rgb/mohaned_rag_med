@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 from rag_project.intelligence.query_intelligence import QueryPlan
-from rag_project.intelligence.semantic_reasoning import QueryUnderstanding
+from rag_project.intelligence.semantic_reasoning import QueryUnderstanding, extract_clinical_entities
 
 _ALLOWED_INTENTS = {
     "definition", "comparison", "diagnosis", "management", "etiology", "mechanism",
@@ -22,19 +22,29 @@ _SYSTEM = (
     "Do not invent facts. Preserve uncertainty. Keep every array <= 6 items."
 )
 
+_HARD_INTENTS = {"comparison", "diagnosis", "management", "etiology", "mechanism", "prognosis", "relationship", "numeric", "table_lookup", "figure_lookup"}
+_RELATION_CUES = ("cause", "caused by", "due to", "leads to", "results in", "related", "relationship", "associated", "linked", "association", "why", "because", "pourquoi", "caus", "lié", "associé", "سبب", "علاقة", "مرتبط")
+_SAFETY_CUES = ("contraindication", "contraindicated", "avoid", "not recommended", "contre-indication", "contre-indiqué", "ممنوع", "تجنب")
+_EXACTNESS_CUES = ("exact", "exactly", "precise", "strictly", "exacte", "précis")
+_POPULATION_CUES = ("adult", "child", "children", "pediatric", "pregnan", "grossesse", "enfant", "adulte", "neonate", "newborn")
+_PHASE_CUES = ("first-line", "second-line", "initial", "maintenance", "acute", "chronic", "aigu", "chronique", "initiale", "entretien")
+
+
+def _contains_any(text: str, cues: tuple[str, ...]) -> bool:
+    low = str(text or "").casefold()
+    return any(cue.casefold() in low for cue in cues)
+
 
 def should_use_small_model(question: str, understanding: QueryUnderstanding) -> bool:
-    """Escalate only hard cases so normal questions stay fast and deterministic."""
+    """Escalate only queries whose structure genuinely benefits from model analysis."""
     text = str(question or "").strip()
-    tokens = text.split()
+    tokens = re.findall(r"\S+", text)
     lowered = text.casefold()
-    ambiguity = bool(re.search(r"\b(this|that|it|they|them|the latter|the former|and the treatment|what about|how about)\b", lowered))
-    multi_intent = len(understanding.intents) >= 2
-    hard_reasoning = bool(understanding.relations) or understanding.primary_intent in {
-        "comparison", "diagnosis", "management", "etiology", "mechanism", "prognosis", "relationship"
-    }
-    low_entity_signal = len(understanding.entities) == 0
-    return ambiguity or multi_intent or (hard_reasoning and understanding.confidence < 0.90) or low_entity_signal or len(tokens) >= 28
+    ambiguity = bool(re.search(r"\b(this|that|it|they|them|the latter|the former|what about|how about)\b", lowered))
+    hard_reasoning = bool(understanding.relations) or understanding.primary_intent in _HARD_INTENTS
+    # Zero entities is normal for generic requests such as "What are the main findings?".
+    # It must not, by itself, promote every simple factual question to an LLM path.
+    return ambiguity or hard_reasoning or len(understanding.intents) >= 2 or len(tokens) >= 28
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -66,6 +76,58 @@ def _clean_list(value: Any, *, limit: int = 6, max_chars: int = 180) -> list[str
     return out
 
 
+def _question_entities(question: str) -> set[str]:
+    allowed: set[str] = set()
+    try:
+        allowed.update(str(entity.normalized).casefold() for entity in extract_clinical_entities(question) if entity.normalized)
+    except Exception:
+        pass
+    return allowed
+
+
+def _sanitize_assist(question: str, understanding: QueryUnderstanding, parsed: dict[str, Any]) -> dict[str, Any]:
+    deterministic_entities = _question_entities(question)
+    entities: list[str] = []
+    for item in _clean_list(parsed.get("entities"), limit=8):
+        norm = item.casefold().strip()
+        if norm in deterministic_entities or norm in {str(e.normalized).casefold() for e in understanding.entities}:
+            entities.append(item)
+    intent = str(parsed.get("intent") or "").strip().casefold()
+    if intent not in _ALLOWED_INTENTS:
+        intent = understanding.primary_intent
+    # A model may refine a deterministic factual query, but it must not invent a hard
+    # clinical intent that is absent from the user's wording.
+    if understanding.primary_intent == "factual" and intent in _HARD_INTENTS:
+        hard_cue = _contains_any(question, (
+            "compare", "difference", "versus", "between", "diagnos", "criteri", "treatment", "therapy",
+            "cause", "why", "mechanism", "prognosis", "survival", "dose", "dosage", "mg", "ml",
+            "table", "figure", "relationship", "related", "associated", "link", "علاج", "تشخيص", "سبب", "جرعة", "مقارنة", "علاقة",
+        ))
+        if not hard_cue:
+            intent = "factual"
+    relation_items = [item for item in _clean_list(parsed.get("relations")) if item in _ALLOWED_RELATIONS]
+    relations = relation_items if _contains_any(question, _RELATION_CUES) else []
+    constraint_items = [item for item in _clean_list(parsed.get("constraints")) if item in _ALLOWED_CONSTRAINTS]
+    constraints: list[str] = []
+    if "safety" in constraint_items and _contains_any(question, _SAFETY_CUES):
+        constraints.append("safety")
+    if "exactness" in constraint_items and _contains_any(question, _EXACTNESS_CUES):
+        constraints.append("exactness")
+    if "population" in constraint_items and _contains_any(question, _POPULATION_CUES):
+        constraints.append("population")
+    if "clinical_phase" in constraint_items and _contains_any(question, _PHASE_CUES):
+        constraints.append("clinical_phase")
+    return {
+        "intent": intent,
+        "entities": entities,
+        "relations": relations,
+        "constraints": constraints,
+        "subquestions": _clean_list(parsed.get("subquestions")),
+        "retrieval_terms": _clean_list(parsed.get("retrieval_terms")),
+        "answer_strategy": re.sub(r"\s+", " ", str(parsed.get("answer_strategy") or "")).strip()[:400],
+    }
+
+
 def analyze_with_small_model(llm: Any, question: str, understanding: QueryUnderstanding, conversation_context: str = "") -> dict[str, Any] | None:
     if llm is None or not should_use_small_model(question, understanding):
         return None
@@ -83,20 +145,7 @@ def analyze_with_small_model(llm: Any, question: str, understanding: QueryUnders
     parsed = _extract_json(raw)
     if not parsed:
         return None
-    intent = str(parsed.get("intent") or "").strip().casefold()
-    if intent not in _ALLOWED_INTENTS:
-        intent = understanding.primary_intent
-    relations = [item for item in _clean_list(parsed.get("relations")) if item in _ALLOWED_RELATIONS]
-    constraints = [item for item in _clean_list(parsed.get("constraints")) if item in _ALLOWED_CONSTRAINTS]
-    return {
-        "intent": intent,
-        "entities": _clean_list(parsed.get("entities")),
-        "relations": relations,
-        "constraints": constraints,
-        "subquestions": _clean_list(parsed.get("subquestions")),
-        "retrieval_terms": _clean_list(parsed.get("retrieval_terms")),
-        "answer_strategy": re.sub(r"\s+", " ", str(parsed.get("answer_strategy") or "")).strip()[:400],
-    }
+    return _sanitize_assist(question, understanding, parsed)
 
 
 def augment_query_plan(plan: QueryPlan, assist: dict[str, Any] | None) -> QueryPlan:
@@ -121,9 +170,12 @@ def augment_query_plan(plan: QueryPlan, assist: dict[str, Any] | None) -> QueryP
                 variants.append(candidate)
         if len(variants) >= 10:
             break
+    intent = str(assist.get("intent") or plan.intent)
+    if intent not in _ALLOWED_INTENTS:
+        intent = plan.intent
     return replace(
         plan,
-        intent=str(assist.get("intent") or plan.intent),
+        intent=intent,
         entities=tuple(entities[:16]),
         variants=tuple(variants[:10]),
         needs_multi_hop=plan.needs_multi_hop or bool(assist.get("relations")) or len(assist.get("subquestions", [])) > 1,
@@ -145,6 +197,14 @@ def merge_understanding(understanding: QueryUnderstanding, assist: dict[str, Any
     for constraint in assist.get("constraints", []):
         if constraint not in constraints:
             constraints.append(constraint)
+    hard_intent_conflict = understanding.primary_intent == "factual" and intent in _HARD_INTENTS and not _contains_any(understanding.normalized, (
+        "compare", "difference", "versus", "between", "diagnos", "criteri", "treatment", "therapy", "cause", "why",
+        "mechanism", "prognosis", "dose", "dosage", "mg", "ml", "table", "figure", "relationship", "related", "associated",
+        "علاج", "تشخيص", "سبب", "جرعة", "مقارنة", "علاقة",
+    ))
+    if hard_intent_conflict:
+        intent = understanding.primary_intent
+        intents = [x for x in intents if x != str(assist.get("intent") or "")]
     return replace(
         understanding,
         intents=tuple(intents[:8]),
