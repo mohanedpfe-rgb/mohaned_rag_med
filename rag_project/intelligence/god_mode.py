@@ -13,6 +13,7 @@ from rag_project.intelligence.pdf_intelligence import enrich_text
 from rag_project.intelligence.production_contract import sanitize_trace
 from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
 from rag_project.intelligence.semantic_reasoning import build_evidence_graph, clinical_reasoning_ready, semantic_evidence_alignment, understand_query
+from rag_project.intelligence.small_model_reasoner import analyze_with_small_model, augment_query_plan, merge_understanding
 
 GOD_MODE_FEATURES = (
     "universal_pdf_routing", "page_quality_scoring", "adaptive_ocr_routing", "alternate_extractor_trigger",
@@ -28,6 +29,7 @@ GOD_MODE_FEATURES = (
     "structured_semantic_understanding", "multilingual_entity_normalization", "contextual_follow_up_understanding",
     "typed_clinical_fact_extraction", "evidence_graph_reasoning", "explicit_path_search", "three_hop_reasoning",
     "conflict_aware_reasoning", "safety_aware_reasoning_gate", "calibrated_reasoning_confidence", "reasoning_contract",
+    "small_model_semantic_copilot", "hard_query_escalation", "structured_query_hypothesis", "retrieval_expansion_without_authority",
 )
 
 
@@ -96,6 +98,7 @@ def _bridge_variants(plan: QueryPlan) -> tuple[str, ...]:
         "etiology": ("cause", "risk factor", "etiology"),
         "mechanism": ("mechanism", "pathway", "physiopathology"),
         "association": ("association", "relationship", "linked"),
+        "relationship": ("association", "relationship", "linked"),
     }
     relation_terms = relations.get(plan.intent, ("association", "mechanism"))
     variants: list[str] = []
@@ -144,7 +147,6 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
                 key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
                 if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                     all_hits[key] = hit
-
     candidates = list(all_hits.values())[:rerank_budget]
     if not candidates:
         return []
@@ -206,6 +208,9 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     conversation_context = self.conversation_memory.prompt_context()
     plan = plan_query(question, conversation_context=conversation_context)
     understanding = understand_query(question, conversation_context=conversation_context)
+    small_model_assist = analyze_with_small_model(self.llm, question, understanding, conversation_context)
+    plan = augment_query_plan(plan, small_model_assist)
+    understanding = merge_understanding(understanding, small_model_assist)
     if not plan.normalized:
         return {"status": "LOW_QUALITY_QUERY", "answer": "Please provide a precise question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
@@ -222,7 +227,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
     if not hits:
-        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
+        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}}
     semantic_alignment = semantic_evidence_alignment(plan.normalized, hits, conversation_context=conversation_context)
     try:
         alignment = self.evaluate_evidence_alignment(plan.normalized, hits[: max(int(self.settings.top_k) * 3, 12)])
@@ -231,7 +236,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
     combined_score = max(float(alignment.get("answerability", 0.0) or 0.0), float(semantic_alignment.get("score", 0.0) or 0.0))
     if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"} and combined_score < 0.25:
-        return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "semantic_understanding": understanding.to_dict()}
+        return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}}
     selected = hits[: max(int(self.settings.top_k) * 3, 12)]
     try:
         context, selected = self.context_builder.build(selected)
@@ -241,20 +246,10 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     reasoning_state = clinical_reasoning_ready(understanding, nodes, edges)
     advanced_reasoning = assess_clinical_reasoning(understanding, selected, max_depth=3)
     if not advanced_reasoning.allow_generation:
-        return {
-            "status": "REASONING_ABSTAIN",
-            "answer": "The retrieved evidence is insufficient or conflicting for a safe clinical reasoning answer.",
-            "citations": [],
-            "hits": list(selected),
-            "confidence": {"level": "low", "evidence_confidence": advanced_reasoning.confidence},
-            "query_analysis": plan.to_dict(),
-            "semantic_understanding": understanding.to_dict(),
-            "evidence_alignment": alignment,
-            "semantic_alignment": semantic_alignment,
-            "clinical_reasoning": reasoning_state,
-            "advanced_reasoning": advanced_reasoning.to_dict(),
-        }
+        return {"status": "REASONING_ABSTAIN", "answer": "The retrieved evidence is insufficient or conflicting for a safe clinical reasoning answer.", "citations": [], "hits": list(selected), "confidence": {"level": "low", "evidence_confidence": advanced_reasoning.confidence}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}}
     reasoning_instruction = build_reasoning_instruction(understanding, advanced_reasoning)
+    if small_model_assist and small_model_assist.get("answer_strategy"):
+        reasoning_instruction += " Additional retrieval strategy from the small model may be used only as a hypothesis; never treat it as evidence: " + small_model_assist["answer_strategy"]
     answer, generation_path = _answer_with_ladder(self, question, context, selected, conversation_context, reasoning_instruction)
     blocks = [str(h.text or "") for h in selected]
     source_ids = [f"S{i + 1}" for i in range(len(selected))]
@@ -267,35 +262,17 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
     citations = self.citation_manager.validate(self.citation_manager.build(selected), selected)
     query_id = str(uuid.uuid4())
-    trace = {
-        "query_id": query_id,
-        "original_query": question,
-        "rewritten_query": plan.normalized,
-        "retrieval_method": "multi_query_hybrid_plus_bridge",
-        "candidate_count": len(hits),
-        "selected_count": len(selected),
-        "generation_path": generation_path,
-        "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)},
-        "claims": [c.to_dict() for c in claims],
-        "grounding": ground,
-        "contradiction_report": contradiction,
-        "firewall_used": firewall_used,
-        "semantic_alignment": semantic_alignment,
-        "clinical_reasoning": reasoning_state,
-        "advanced_reasoning": advanced_reasoning.to_dict(),
-        "semantic_understanding": understanding.to_dict(),
-        "evidence_graph": {"nodes": len(nodes), "edges": len(edges)},
-    }
+    trace = {"query_id": query_id, "original_query": question, "rewritten_query": plan.normalized, "retrieval_method": "multi_query_hybrid_plus_bridge_plus_small_model", "candidate_count": len(hits), "selected_count": len(selected), "generation_path": generation_path, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}, "claims": [c.to_dict() for c in claims], "grounding": ground, "contradiction_report": contradiction, "firewall_used": firewall_used, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}, "evidence_graph": {"nodes": len(nodes), "edges": len(edges)}}
     try:
         self.state_store.record_query_trace(query_id, sanitize_trace(trace))
     except Exception:
         self.logger.exception("Failed to record query trace")
     self.conversation_memory.add(question, safe_answer)
-    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "god_mode": True}
+    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}, "god_mode": True}
 
 
 def report() -> dict[str, object]:
-    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem"}
+    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "small_model_copilot": True}
 
 
 def audit_god_mode_index(system: Any) -> dict[str, Any]:
