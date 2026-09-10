@@ -92,6 +92,8 @@ def medical_term_layer(question:str,evidence:Sequence[Any]=())->dict[str,Any]:
     text=" ".join([str(question or "")]+[str(getattr(hit,"text","") or "") for hit in evidence[:16]])
     units=re.findall(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|mL|ml|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)(?=\s|$|[^\w])",text,re.I)
     abbreviations=re.findall(r"\b[A-Z](?:[A-Z0-9]){1,7}(?:[-/][A-Z0-9]{1,6})?\b",question or "")
+    mixed_case_measurement_abbreviations=re.findall(r"\b(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Z])[A-Za-z][A-Za-z0-9]{1,7}\b",question or "")
+    abbreviations.extend(mixed_case_measurement_abbreviations)
     abbreviations=[x for x in abbreviations if x.casefold() not in {"what","this","that","which","where","when","with","from","and","the"}]
     drug_names={"metformin","dapagliflozin","lisinopril","enalapril"}
     suffixes=("pril","olol","sartan","statin","azole","cillin","mycin","vir","mab","nib","prazole","tidine","caine","cycline","floxacin","lukast","setron","gliptin","gliflozin","tide","parin","dipine","xaban","oxetine","triptan","cept","formin")
