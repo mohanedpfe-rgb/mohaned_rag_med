@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from rag_project.app.production_rag import _is_explicit_followup
 from rag_project.intelligence.advanced_clinical_reasoner import assess_clinical_reasoning
 from rag_project.intelligence.evidence_guard import grounding_decision, split_claims, verify_claims
 from rag_project.intelligence.small_model_reasoner import should_use_small_model
@@ -107,3 +108,13 @@ def test_advanced_reasoner_still_blocks_missing_entity_for_relationship_query():
     result = assess_clinical_reasoning(u, [_hit("Unrelated endocrine facts.")])
     assert result.allow_generation is False
     assert "insufficient_entity_coverage" in result.blocked_reasons or "no_explicit_reasoning_path" in result.blocked_reasons
+
+
+def test_independent_question_does_not_get_classified_as_followup():
+    assert _is_explicit_followup("What are the main findings?") is False
+    assert _is_explicit_followup("What is diabetes?") is False
+
+
+def test_pronoun_question_is_classified_as_followup():
+    assert _is_explicit_followup("What about this?") is True
+    assert _is_explicit_followup("And the complications?") is True
