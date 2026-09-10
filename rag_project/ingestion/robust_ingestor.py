@@ -4,6 +4,7 @@ import json
 import shutil
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +65,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     document_values = {
         "document_id": document_id, "content_hash": content_hash, "file_path": str(file_path.resolve()),
         "file_name": file_path.name, "file_size": stat.st_size, "created_at": utc_now(),
-        "modified_at": datetime_from_mtime(file_path), "ingestion_started_at": utc_now(),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "ingestion_started_at": utc_now(),
         "current_stage": "DISCOVERED", "current_page": 0, "total_pages": 0, "status": "RUNNING",
         "parser_version": "pdf-extractor-v2", "ocr_config": current_ocr_config,
         "chunking_config": current_chunking_config, "embedding_model": system.settings.embedding_model,
