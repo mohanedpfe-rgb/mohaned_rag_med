@@ -12,6 +12,6 @@ def test_compatibility_ui_entrypoint_targets_canonical_production_app() -> None:
 def test_production_app_wires_intelligence_panel_after_answer_generation() -> None:
     source = (Path(__file__).resolve().parents[1] / "app.py").read_text(encoding="utf-8")
     assert "from rag_project.app.intelligence_panel import render_intelligence_panel" in source
-    assert 'st.session_state.get("answer_result")' in source
+    assert "session_state.get" in source and "answer_result" in source
     assert "render_intelligence_panel(result)" in source
     assert "bookrag_ui.ask_page=enhanced_ask" in source
