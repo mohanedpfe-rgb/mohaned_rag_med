@@ -144,7 +144,7 @@ def _primary_intent(current_hits: list[tuple[str, int]], context_hits: list[tupl
     if not current_hits:
         return context_hits[0][0] if context_hits else "factual"
     current = {name: score for name, score in current_hits}
-    specialized = ["management", "diagnosis", "numeric", "mechanism", "etiology", "prognosis", "comparison", "association", "navigation", "table_lookup", "figure_lookup"]
+    specialized = ["comparison", "management", "diagnosis", "numeric", "mechanism", "etiology", "prognosis", "association", "navigation", "table_lookup", "figure_lookup"]
     for intent in specialized:
         if intent in current:
             return intent
@@ -185,29 +185,25 @@ def understand_query(query: str, *, conversation_context: str = "") -> QueryUnde
 def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding) -> tuple[tuple[EvidenceNode, ...], tuple[ReasoningEdge, ...]]:
     nodes: list[EvidenceNode] = []
     edges: list[ReasoningEdge] = []
-    entity_to_nodes: dict[str, list[str]] = {}
     for index, hit in enumerate(hits):
         meta = getattr(hit, "metadata", {}) or {}
         node_id = str(meta.get("chunk_id") or f"N{index + 1}")
         text = str(getattr(hit, "text", ""))
         nodes.append(EvidenceNode(node_id, text, max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))), str(meta.get("document_id") or getattr(hit, "doc_id", "")), node_id, tuple(meta.get("page_numbers") or ())))
-        for entity in extract_clinical_entities(text):
-            entity_to_nodes.setdefault(entity.normalized, []).append(node_id)
-    for relation in understanding.relations:
-        labels = list(understanding.entities)
-        for left, right in zip(labels, labels[1:]):
-            left_nodes = entity_to_nodes.get(left.normalized, [])
-            right_nodes = entity_to_nodes.get(right.normalized, [])
-            for source in left_nodes[:3]:
-                for target in right_nodes[:3]:
-                    if source != target:
-                        edges.append(ReasoningEdge(source, target, relation, 0.62, tuple(sorted(set(left_nodes + right_nodes)))[:3]))
+        entities = extract_clinical_entities(text)
+        relation_hits = [kind for kind, pattern in _RELATION_PATTERNS if re.search(pattern, text, re.I | re.UNICODE)]
+        wanted = [e.normalized for e in understanding.entities]
+        present = {e.normalized for e in entities}
+        if len(present.intersection(wanted)) >= 2 and relation_hits:
+            relation = next((r for r in relation_hits if r in understanding.relations), relation_hits[0])
+            edges.append(ReasoningEdge(node_id, node_id, relation, 0.78, (node_id,)))
     return tuple(nodes), tuple(edges)
 
 
 def clinical_reasoning_ready(understanding: QueryUnderstanding, nodes: Sequence[EvidenceNode], edges: Sequence[ReasoningEdge]) -> dict[str, Any]:
     direct = bool(nodes)
-    multi_hop = bool(edges) and (understanding.primary_intent in {"etiology", "mechanism", "association", "comparison"} or len(understanding.relations) > 0)
+    cross_node_edges = [edge for edge in edges if edge.source != edge.target]
+    multi_hop = bool(cross_node_edges) and (understanding.primary_intent in {"etiology", "mechanism", "association", "comparison"} or len(understanding.relations) > 0)
     entity_coverage = sum(1 for entity in understanding.entities if any(entity.normalized in _norm(node.text) for node in nodes)) / max(len(understanding.entities), 1)
     return {"direct_evidence": direct, "multi_hop": multi_hop, "node_count": len(nodes), "edge_count": len(edges), "entity_coverage": round(entity_coverage, 3), "reasoning_depth": 2 if multi_hop else 1}
 
