@@ -7,10 +7,9 @@ from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install
 from rag_project.security import harden_system
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
-from rag_project.intelligence.production_contract_v2 import install as install_production_contract
-from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
-from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
-from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+from rag_project.intelligence.production_contract_v2 import install as install_production_contract, CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
+from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract, INGESTION_CONTRACT_VERSION
+from rag_project.canonical_runtime import install as install_canonical_runtime
 
 _FACTORY_LOCK=threading.RLock()
 ANSWER_PIPELINE_AUTHORITY="rag_project.intelligence.top_level_pipeline.complete_phases"
@@ -33,6 +32,7 @@ def create_rag_system(settings: Settings | None = None):
         install_pipeline_integrity()
         install_production_contract()
         install_ingestion_contract()
+        install_canonical_runtime()
         from rag_project.app.production_rag import ProductionRAGSystem
         system=ProductionRAGSystem(_normalize_runtime_settings(settings))
         system=harden_system(system)
@@ -63,7 +63,7 @@ def runtime_contract()->dict[str,Any]:
         "answer_pipeline_authority":ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution":ANSWER_PIPELINE_AUTHORITY,
         "answer_monkey_patch":False,
-        "pipeline_integrity":"rag_project.intelligence.pipeline_integrity.install",
+        "canonical_runtime_binding":"rag_project.canonical_runtime.install",
         "production_contract":"rag_project.intelligence.production_contract_v2.install",
         "production_contract_version":PRODUCTION_CONTRACT_VERSION,
         "ingestion_contract":"rag_project.ingestion.ingestion_contract.install",
