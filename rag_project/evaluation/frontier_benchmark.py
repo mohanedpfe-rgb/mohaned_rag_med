@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, asdict
-from typing import Any, Callable, Iterable, Sequence
+from pathlib import Path
+from typing import Any, Callable, Iterable
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,26 @@ class BenchmarkReport:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def load_cases(path: str | Path) -> tuple[BenchmarkCase, ...]:
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise ValueError("Benchmark file must contain a JSON array.")
+    cases: list[BenchmarkCase] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        cases.append(BenchmarkCase(
+            case_id=str(item.get("case_id", "")),
+            category=str(item.get("category", "general")),
+            question=str(item.get("question", "")),
+            expected_entities=tuple(str(x) for x in item.get("expected_entities", ()) or ()),
+            expected_intent=str(item.get("expected_intent", "")),
+            gold_evidence_ids=tuple(str(x) for x in item.get("gold_evidence_ids", ()) or ()),
+            answerable=bool(item.get("answerable", True)),
+        ))
+    return tuple(cases)
 
 
 def _status_abstained(result: dict[str, Any]) -> bool:
@@ -107,7 +129,7 @@ def run_benchmark(cases: Iterable[BenchmarkCase], runner: Callable[[str], dict[s
         sum(i.intent_hit for i in results) / total,
         sum(i.evidence_hit for i in results) / total,
         sum(i.grounded for i in results) / total,
-        sum(i.abstention_correctly for i in results) / total,
+        sum(i.abstained_correctly for i in results) / total,
         sum(i.citation_precision for i in results) / total,
         sum(i.support_ratio for i in results) / total,
         by_category,
