@@ -4,7 +4,12 @@ from typing import Any
 
 
 def build_visibility_contract(result: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the mandatory Phase-5 intelligence signals for the UI."""
+    """Normalize the mandatory Phase-5 intelligence signals for the UI.
+
+    Presence is based on the effective runtime signal, including supported
+    compatibility fallbacks (for example ``confidence.evidence_confidence``),
+    rather than requiring one particular producer key.
+    """
     payload = result if isinstance(result, dict) else {}
     plan = payload.get("phase_plan") or payload.get("query_analysis") or {}
     calibration = payload.get("confidence_calibration") or {}
@@ -20,26 +25,27 @@ def build_visibility_contract(result: dict[str, Any]) -> dict[str, Any]:
     if matrix is None:
         matrix = payload.get("final_claim_checks") or []
 
-    abstention_present = any(
-        key in payload for key in ("abstention_reasons", "abstained", "status")
-    ) or "blocked_reasons" in (payload.get("advanced_reasoning") or {})
+    advanced_reasoning = payload.get("advanced_reasoning") or {}
     abstention = payload.get("abstention_reasons")
     if abstention is None:
-        abstention = (payload.get("advanced_reasoning") or {}).get("blocked_reasons") or []
-
-    required = {
-        "intent": bool(str(plan.get("intent") or "").strip()),
-        "entities": "entities" in plan,
-        "rewritten_question": "rewritten_question" in payload,
-        "claim_support_matrix": matrix_present,
-        "calibrated_confidence": "confidence_calibration" in payload,
-        "abstention_reason": abstention_present,
-    }
-    visible_count = sum(1 for present in required.values() if present)
+        abstention = advanced_reasoning.get("blocked_reasons") or []
+    abstention_present = any(
+        key in payload for key in ("abstention_reasons", "abstained", "status")
+    ) or "blocked_reasons" in advanced_reasoning
 
     calibrated = calibration.get("calibrated", confidence.get("evidence_confidence"))
     level = calibration.get("level", confidence.get("level", "none"))
     reasons = [str(item).strip() for item in (abstention or ()) if str(item).strip()]
+
+    required = {
+        "intent": bool(str(plan.get("intent") or "").strip()),
+        "entities": "entities" in plan and isinstance(plan.get("entities"), (list, tuple)),
+        "rewritten_question": bool(str(payload.get("rewritten_question") or "").strip()),
+        "claim_support_matrix": matrix_present,
+        "calibrated_confidence": calibrated is not None,
+        "abstention_reason": abstention_present,
+    }
+    visible_count = sum(1 for present in required.values() if present)
 
     return {
         "intent": str(plan.get("intent") or "—"),
