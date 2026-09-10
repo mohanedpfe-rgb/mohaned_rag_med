@@ -1,5 +1,6 @@
 from __future__ import annotations
 import re
+import time
 from pathlib import Path
 from typing import Any,Dict
 from rag_project.app import rag_system as rag_system_module
@@ -10,6 +11,7 @@ from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace,validate_feature_contract
 from rag_project.application import ANSWER_PIPELINE_AUTHORITY
+from rag_project.generation.latency_budget import request_budget, exhausted, elapsed
 
 _FOLLOWUP_PATTERN=re.compile(r"\b(it|this|that|they|them|those|these|the latter|the former|what about|how about)\b|^(and|also|then|et|puis|و|ثم)\b|^و(?=\S)|\b(ça|cela|celui|celle|et le|et la)\b",re.I|re.UNICODE)
 
@@ -51,40 +53,43 @@ class ProductionRAGSystem(ResilientRAGSystem):
                 if not flag.cancelled:flag.cancel();n+=1
             return n
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
+        request_started=time.perf_counter()
         if not self._production_feature_contract['all_resolved']:
             return {'status':'SYSTEM_NOT_READY','answer':'The production feature contract is incomplete; a grounded answer is disabled.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'production_contract':self._production_feature_contract}
         memory=getattr(self,'conversation_memory',None)
         isolated=memory is not None and not _is_explicit_followup(question)
         saved_history=list(getattr(memory,'history',[]) or []) if isolated else []
         result=None
-        if isolated:
-            memory.history=[]
-        try:
-            result=self._certified_god_answer(question,metadata_filter)
-            result=apply_medical_safety_policy(question,result,self.settings)
-            result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
-            if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
-            result['production_contract']={'feature_count':44,'all_features_resolved':True}
-            return result
-        finally:
+        with request_budget(self.settings) as budget:
             if isolated:
-                memory.history=saved_history
-                if isinstance(result,dict) and str(result.get('answer') or '').strip():
-                    add=getattr(memory,'add',None)
-                    if callable(add):
-                        add(question,str(result.get('answer') or ''))
-                    else:
-                        memory.history.append((question,str(result.get('answer') or '')))
+                memory.history=[]
+            try:
+                result=self._certified_god_answer(question,metadata_filter)
+                result=apply_medical_safety_policy(question,result,self.settings)
+                result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
+                if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
+                result['latency_budget_seconds']=budget
+                result['latency_elapsed_seconds']=round(elapsed(),3)
+                result['latency_budget_exhausted']=exhausted()
+                result['production_contract']={'feature_count':44,'all_features_resolved':True}
+                return result
+            finally:
+                if isolated:
+                    memory.history=saved_history
+                    if isinstance(result,dict) and str(result.get('answer') or '').strip():
+                        add=getattr(memory,'add',None)
+                        if callable(add):
+                            add(question,str(result.get('answer') or ''))
+                        else:
+                            memory.history.append((question,str(result.get('answer') or '')))
     def audit_god_mode_index(self):return audit_god_mode_index(self)
     def health_report(self):
         checks={}
-        try:
-            self._ensure_embedding_dimension();identity=self.embedding_service.identity;err=getattr(self,'embedding_startup_error',None);checks['embedding']={'ok':err is None and identity is not None,'identity':identity,'error':err}
+        try:self._ensure_embedding_dimension();identity=self.embedding_service.identity;err=getattr(self,'embedding_startup_error',None);checks['embedding']={'ok':err is None and identity is not None,'identity':identity,'error':err}
         except Exception as exc:checks['embedding']={'ok':False,'error':type(exc).__name__}
         try:checks['index']=self.vector_store.compatibility_report(self.embedding_service.identity)
         except Exception as exc:checks['index']={'status':'UNAVAILABLE','error':type(exc).__name__}
         try:checks['audit']=self.audit_god_mode_index()
         except Exception as exc:checks['audit']={'ok':False,'error':type(exc).__name__}
-        checks['feature_contract']=self._production_feature_contract;checks['models']={'embedding_model':self.settings.embedding_model,'generation_model':self.settings.generation_model};checks['pipeline']={'explicit_composition':True,'authority':ANSWER_PIPELINE_AUTHORITY,'medical_safety_policy':True,'privacy_safe_trace':True,'feature_count':44,'incremental_ingestion':True,'canonical_ingestion':'robust_ingestor','claim_evidence_matrix':True,'hierarchical_evidence':True,'adaptive_retrieval':True,'confidence_calibration':True,'critic_repair_reverification':True}
-        status=str(checks.get('index',{}).get('status','READY')).upper();checks['ready']=bool(checks['embedding']['ok'] and status in {'READY','OK'} and self._production_feature_contract['all_features_resolved']);return checks
+        checks['feature_contract']=self._production_feature_contract;checks['models']={'embedding_model':self.settings.embedding_model,'generation_model':self.settings.generation_model};checks['pipeline']={'explicit_composition':True,'authority':ANSWER_PIPELINE_AUTHORITY,'medical_safety_policy':True,'privacy_safe_trace':True,'feature_count':44,'incremental_ingestion':True,'canonical_ingestion':'robust_ingestor','claim_evidence_matrix':True,'hierarchical_evidence':True,'adaptive_retrieval':True,'confidence_calibration':True,'critic_repair_reverification':True,'shared_latency_budget':True,'latency_hard_cap_seconds':45.0};status=str(checks.get('index',{}).get('status','READY')).upper();checks['ready']=bool(checks['embedding']['ok'] and status in {'READY','OK'} and self._production_feature_contract['all_features_resolved']);return checks
 __all__=['ProductionRAGSystem']
