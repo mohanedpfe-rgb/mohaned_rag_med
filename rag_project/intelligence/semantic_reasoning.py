@@ -52,53 +52,44 @@ class ReasoningEdge:
 
 
 _MEDICAL_ALIASES: dict[str, tuple[str, ...]] = {
-    "diabetes mellitus": ("diabetes", "diabète", "diabete", "dm", "d2", "type 2 diabetes", "diabète de type 2", "داء السكري", "السكري"),
-    "diabetic ketoacidosis": ("dka", "acidocétose diabétique", "acidocetose diabetique", "ketoacidosis", "acidocétose", "الحماض الكيتوني السكري", "الحماض الكيتوني"),
-    "diabetic nephropathy": ("nephropathie diabetique", "néphropathie diabétique", "diabetic kidney disease", "dkd", "maladie rénale diabétique", "maladie renale diabetique", "اعتلال الكلية السكري"),
-    "albuminuria": ("albuminurie", "microalbuminuria", "microalbuminurie", "urinary albumin", "albumin in urine", "بيلة الألبومين", "زلال البول"),
-    "hypertension": ("hta", "high blood pressure", "hypertension artérielle", "hypertension arterielle", "ارتفاع ضغط الدم"),
-    "hypokalemia": ("hypokaliémie", "hypokaliemia", "low potassium", "dyskaliémie", "dyskaliemia", "نقص بوتاسيوم الدم"),
-    "hyperaldosteronism": ("hyperaldostéronisme", "hyperaldosteronisme", "primary aldosteronism", "hpa", "فرط الألدوستيرونية"),
-    "thyroid cancer": ("cancer thyroïde", "cancer de la thyroïde", "thyroid carcinoma", "thyroid neoplasm", "سرطان الغدة الدرقية"),
+    "diabetes mellitus": ("diabetes mellitus", "diabetes", "diabète", "diabete", "dm", "d2", "type 2 diabetes", "diabète de type 2", "داء السكري", "السكري"),
+    "diabetic ketoacidosis": ("diabetic ketoacidosis", "dka", "acidocétose diabétique", "acidocetose diabetique", "ketoacidosis", "acidocétose", "الحماض الكيتوني السكري", "الحماض الكيتوني"),
+    "diabetic nephropathy": ("diabetic nephropathy", "nephropathie diabetique", "néphropathie diabétique", "diabetic kidney disease", "dkd", "maladie rénale diabétique", "maladie renale diabetique", "اعتلال الكلية السكري"),
+    "albuminuria": ("albuminuria", "albuminurie", "microalbuminuria", "microalbuminurie", "urinary albumin", "albumin in urine", "بيلة الألبومين", "زلال البول"),
+    "hypertension": ("hypertension", "hta", "high blood pressure", "hypertension artérielle", "hypertension arterielle", "ارتفاع ضغط الدم"),
+    "hypokalemia": ("hypokalemia", "hypokaliémie", "hypokaliemia", "low potassium", "dyskaliémie", "dyskaliemia", "نقص بوتاسيوم الدم"),
+    "hyperaldosteronism": ("hyperaldosteronism", "hyperaldostéronisme", "hyperaldosteronisme", "primary aldosteronism", "hpa", "فرط الألدوستيرونية"),
+    "thyroid cancer": ("thyroid cancer", "cancer thyroïde", "cancer de la thyroïde", "thyroid carcinoma", "thyroid neoplasm", "سرطان الغدة الدرقية"),
     "insulin resistance": ("insulin resistance", "insulinorésistance", "insulinorésistance", "insulin resistance syndrome", "مقاومة الأنسولين"),
-    "albumin": ("albumine", "albumin", "الألبومين"),
-    "potassium": ("kaliémie", "kalemie", "k+", "potassium", "البوتاسيوم"),
-    "insulin": ("insuline", "insulin", "الأنسولين", "الإنسولين"),
+    "albumin": ("albumin", "albumine", "الألبومين"),
+    "potassium": ("potassium", "kaliémie", "kalemie", "k+", "البوتاسيوم"),
+    "insulin": ("insulin", "insuline", "الأنسولين", "الإنسولين"),
 }
 
 _ENTITY_KIND = {
-    "diabetes mellitus": "disease",
-    "diabetic ketoacidosis": "disease",
-    "diabetic nephropathy": "complication",
-    "albuminuria": "finding",
-    "hypertension": "disease",
-    "hypokalemia": "finding",
-    "hyperaldosteronism": "disease",
-    "thyroid cancer": "disease",
-    "insulin resistance": "pathophysiology",
-    "albumin": "biomarker",
-    "potassium": "analyte",
-    "insulin": "hormone",
+    "diabetes mellitus": "disease", "diabetic ketoacidosis": "disease", "diabetic nephropathy": "complication",
+    "albuminuria": "finding", "hypertension": "disease", "hypokalemia": "finding", "hyperaldosteronism": "disease",
+    "thyroid cancer": "disease", "insulin resistance": "pathophysiology", "albumin": "biomarker", "potassium": "analyte", "insulin": "hormone",
 }
 
 _INTENTS = {
     "definition": ("what is", "define", "definition", "meaning", "qu'est-ce que", "définition", "ما هو", "ما هي", "تعريف"),
     "comparison": ("compare", "comparison", "difference", "differences", "versus", "vs", "between", "différence", "comparaison", "مقارنة", "فرق", "بين"),
     "diagnosis": ("diagnosis", "diagnostic", "criteria", "diagnostic criteria", "diagnostiquer", "diagnostique", "تشخيص", "معايير التشخيص"),
-    "management": ("treatment", "management", "therapy", "treat", "prise en charge", "traitement", "prise charge", "علاج", "التدبير"),
+    "management": ("treatment", "treated", "management", "therapy", "treat", "prise en charge", "traitement", "prise charge", "علاج", "التدبير"),
     "etiology": ("cause", "causes", "etiology", "aetiology", "why", "risk factor", "facteur", "étiologie", "سبب", "أسباب"),
-    "mechanism": ("mechanism", "physiopathology", "pathophysiology", "how does", "mécanisme", "physiopathologie", "آلية", "فيزيولوجيا مرضية"),
+    "mechanism": ("mechanism", "mechanisms", "physiopathology", "pathophysiology", "how does", "mécanisme", "physiopathologie", "آلية", "فيزيولوجيا مرضية"),
     "prognosis": ("prognosis", "outcome", "survival", "prognostic", "pronostic", "مآل", "التكهن"),
     "numeric": ("dose", "dosage", "mg", "ml", "mmhg", "percentage", "how many", "how much", "range", "threshold", "قيمة", "جرعة", "نسبة"),
     "association": ("related", "relationship", "associated", "association", "linked", "lien", "relation", "علاقة", "مرتبط"),
     "navigation": ("which page", "page number", "section", "where", "source", "citation", "quelle page", "où", "أين", "أي صفحة"),
     "table_lookup": ("table", "row", "column", "tableau", "جدول", "صف", "عمود"),
-    "figure_lookup": ("figure", "diagram", "chart", "graph", "image", "figure", "schéma", "رسم", "شكل"),
+    "figure_lookup": ("figure", "diagram", "chart", "graph", "image", "schéma", "رسم", "شكل"),
 }
 
 _RELATION_PATTERNS = (
-    ("causality", r"\b(cause|causes|caused by|due to|leads to|responsible for|provoque|entra[iî]ne|سبب)\b"),
-    ("association", r"\b(associated with|associated|related to|linked to|association|lié à|associé à|مرتبط)\b"),
+    ("causality", r"\b(cause|causes|caused by|due to|leads to|responsible for|provoque|entra[iî]ne|سبب|يؤدي)\b"),
+    ("association", r"\b(associated with|associated|related to|linked to|association|lié à|associé à|مرتبط|علاقة)\b"),
     ("comparison", r"\b(compare|versus|vs|difference|différence|مقارنة|فرق)\b"),
     ("sequence", r"\b(then|after|before|subsequently|ensuite|après|avant|ثم|بعد|قبل)\b"),
 )
@@ -129,17 +120,10 @@ def extract_clinical_entities(text: str) -> tuple[ClinicalEntity, ...]:
         matched_alias = next((alias for alias in aliases if _phrase_match(value, alias)), None)
         if matched_alias:
             before = value[: value.find(matched_alias.casefold())]
-            negated = bool(_NEGATION.search(before[-80:]))
-            found[canonical] = ClinicalEntity(
-                text=matched_alias,
-                normalized=canonical,
-                kind=_ENTITY_KIND.get(canonical, "concept"),
-                confidence=0.96 if len(matched_alias.split()) > 1 else 0.88,
-                negated=negated,
-            )
-    tokens = meaningful_tokens(value)
-    normalized_found = {e.normalized for e in found.values()}
-    for token in tokens:
+            negated = bool(_NEGATION.search(before[-100:]))
+            found[canonical] = ClinicalEntity(matched_alias, canonical, _ENTITY_KIND.get(canonical, "concept"), 0.96 if len(matched_alias.split()) > 1 else 0.88, negated)
+    normalized_found = set(found)
+    for token in meaningful_tokens(value):
         if token in normalized_found:
             continue
         if token.endswith(("itis", "osis", "emia", "pathy", "carcinoma")):
@@ -156,30 +140,46 @@ def _intent_hits(text: str) -> list[tuple[str, int]]:
     return sorted(hits, key=lambda item: (-item[1], item[0]))
 
 
+def _primary_intent(current_hits: list[tuple[str, int]], context_hits: list[tuple[str, int]]) -> str:
+    if not current_hits:
+        return context_hits[0][0] if context_hits else "factual"
+    current = {name: score for name, score in current_hits}
+    specialized = ["management", "diagnosis", "numeric", "mechanism", "etiology", "prognosis", "comparison", "association", "navigation", "table_lookup", "figure_lookup"]
+    for intent in specialized:
+        if intent in current:
+            return intent
+    if "definition" in current:
+        for intent in specialized:
+            if intent in {name for name, _ in context_hits}:
+                return intent
+    return current_hits[0][0]
+
+
 def understand_query(query: str, *, conversation_context: str = "") -> QueryUnderstanding:
     normalized = _norm(query)
+    current_hits = _intent_hits(normalized)
     combined = f"{normalized} {conversation_context[-1200:]}".strip() if conversation_context else normalized
-    hits = _intent_hits(combined)
-    intents = [intent for intent, _ in hits] or ["factual"]
-    if len(intents) > 1 and "numeric" in intents and len(intents) > 2:
-        intents.remove("numeric")
-        intents.append("numeric")
-    primary = intents[0]
+    context_hits = _intent_hits(conversation_context[-1200:]) if conversation_context else []
+    all_hits = _intent_hits(combined)
+    intents = [intent for intent, _ in all_hits] or ["factual"]
+    primary = _primary_intent(current_hits, context_hits or all_hits)
+    if primary not in intents:
+        intents.insert(0, primary)
     relations = tuple(sorted({kind for kind, pattern in _RELATION_PATTERNS if re.search(pattern, combined, re.I | re.UNICODE)}))
     constraints: list[str] = []
     if re.search(r"\b(exact|precise|exactly|strictly|exacte|précis)\b", combined, re.I):
         constraints.append("exactness")
-    if re.search(r"\b(adult|child|pediatric|pregnan|grossesse|enfant|adulte)\b", combined, re.I):
+    if re.search(r"\b(adult|child|children|pediatric|pregnan|grossesse|enfant|enfants|adulte|pédiatrique)\b", combined, re.I):
         constraints.append("population")
-    if re.search(r"\b(first[- ]line|second[- ]line|initial|maintenance|acute|chronic|aigu|chronique)\b", combined, re.I):
+    if re.search(r"\b(first[- ]line|second[- ]line|initial|maintenance|acute|chronic|aigu|chronique|initiale|entretien)\b", combined, re.I):
         constraints.append("clinical_phase")
-    if re.search(r"\b(contraindication|contraindicated|avoid|contre-indication|ممنوع)\b", combined, re.I):
+    if re.search(r"\b(contraindication|contraindications|contraindicated|avoid|contre-indication|ممنوع|تجنب)\b", combined, re.I):
         constraints.append("safety")
     answer_shape = "comparison" if primary == "comparison" else "list" if primary in {"diagnosis", "management", "etiology", "prognosis", "numeric"} else "definition" if primary == "definition" else "explanation"
     entities = extract_clinical_entities(combined)
     semantic_terms = tuple(dict.fromkeys([e.normalized for e in entities] + meaningful_tokens(normalized)))[:32]
-    cue_conf = min(1.0, 0.40 + 0.12 * len(hits) + 0.04 * len(entities) + (0.10 if len(meaningful_tokens(normalized)) >= 5 else 0.0))
-    return QueryUnderstanding(normalized, tuple(intents), primary, entities, relations, tuple(constraints), answer_shape, semantic_terms, round(cue_conf, 3))
+    confidence = min(1.0, 0.40 + 0.12 * len(intents) + 0.04 * len(entities) + (0.10 if len(meaningful_tokens(normalized)) >= 5 else 0.0))
+    return QueryUnderstanding(normalized, tuple(intents), primary, entities, relations, tuple(constraints), answer_shape, tuple(semantic_terms), round(confidence, 3))
 
 
 def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding) -> tuple[tuple[EvidenceNode, ...], tuple[ReasoningEdge, ...]]:
@@ -189,9 +189,9 @@ def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding)
     for index, hit in enumerate(hits):
         meta = getattr(hit, "metadata", {}) or {}
         node_id = str(meta.get("chunk_id") or f"N{index + 1}")
-        entities = extract_clinical_entities(str(getattr(hit, "text", "")))
-        nodes.append(EvidenceNode(node_id, str(getattr(hit, "text", "")), max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))), str(meta.get("document_id") or getattr(hit, "doc_id", "")), node_id, tuple(meta.get("page_numbers") or ())))
-        for entity in entities:
+        text = str(getattr(hit, "text", ""))
+        nodes.append(EvidenceNode(node_id, text, max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))), str(meta.get("document_id") or getattr(hit, "doc_id", "")), node_id, tuple(meta.get("page_numbers") or ())))
+        for entity in extract_clinical_entities(text):
             entity_to_nodes.setdefault(entity.normalized, []).append(node_id)
     for relation in understanding.relations:
         labels = list(understanding.entities)
@@ -213,8 +213,7 @@ def clinical_reasoning_ready(understanding: QueryUnderstanding, nodes: Sequence[
 
 
 def _token_overlap(left: str, right: str) -> float:
-    a = set(meaningful_tokens(left))
-    b = set(meaningful_tokens(right))
+    a = set(meaningful_tokens(left)); b = set(meaningful_tokens(right))
     return len(a & b) / max(1, len(a))
 
 
@@ -222,8 +221,7 @@ def _entity_surface_score(query_entities: Sequence[ClinicalEntity], text: str) -
     if not query_entities:
         return 0.0
     evidence_entities = {entity.normalized for entity in extract_clinical_entities(text)}
-    matched = sum(1 for entity in query_entities if entity.normalized in evidence_entities)
-    return matched / len(query_entities)
+    return sum(1 for entity in query_entities if entity.normalized in evidence_entities) / len(query_entities)
 
 
 def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversation_context: str = "") -> dict[str, Any]:
@@ -243,14 +241,6 @@ def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversat
         per_hit.append({"score": round(score, 3), "entity_score": round(entity_score, 3), "lexical_score": round(lexical_score, 3), "relation_score": round(relation_score, 3)})
     best = max(per_hit, key=lambda item: item["score"])
     top_scores = sorted((item["score"] for item in per_hit), reverse=True)[:3]
-    mean_top = sum(top_scores) / max(1, len(top_scores))
-    score = max(best["score"], mean_top * 0.85)
-    if score >= 0.55:
-        decision = "DIRECTLY_SUPPORTED"
-    elif score >= 0.25:
-        decision = "PARTIALLY_SUPPORTED"
-    elif score > 0.05:
-        decision = "RELATED_BUT_NOT_ANSWERING"
-    else:
-        decision = "NOT_SUPPORTED"
-    return {"score": round(score, 3), "entity_coverage": round(best["entity_score"], 3), "semantic_overlap": round(best["lexical_score"], 3), "relation_coverage": round(best["relation_score"], 3), "best_hit_score": best["score"], "decision": decision, "reason": "Semantic entity and concept alignment was computed across the retrieved evidence.", "understanding": understanding.to_dict()}
+    score = max(best["score"], (sum(top_scores) / max(1, len(top_scores))) * 0.85)
+    decision = "DIRECTLY_SUPPORTED" if score >= 0.55 else "PARTIALLY_SUPPORTED" if score >= 0.25 else "RELATED_BUT_NOT_ANSWERING" if score > 0.05 else "NOT_SUPPORTED"
+    return {"score": round(score, 3), "entity_coverage": round(best["entity_score"], 3), "semantic_overlap": round(best["lexical_score"], 3), "relation_coverage": round(best["relation_score"], 3), "best_hit_score": best["score"], "decision": decision, "reason": "Semantic entity, concept, and relation alignment was computed across the retrieved evidence.", "understanding": understanding.to_dict()}
