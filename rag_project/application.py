@@ -51,8 +51,9 @@ def runtime_contract()->dict[str,Any]:
         "security_policy":"rag_project.security.harden_system",
         "quality_policy":"bounded_startup_check_with_optional_deep_audit",
         "configuration":"Settings.from_env",
-        "answer_pipeline":ANSWER_PIPELINE_AUTHORITY,
+        "answer_pipeline":"explicit_delegation",
         "answer_pipeline_authority":ANSWER_PIPELINE_AUTHORITY,
+        "answer_pipeline_execution":ANSWER_PIPELINE_AUTHORITY,
         "answer_monkey_patch":False,
         "medical_safety_gate":True,
     }
