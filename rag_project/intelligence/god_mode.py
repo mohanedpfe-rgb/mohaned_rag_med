@@ -148,7 +148,7 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
                 meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
                 if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                     all_hits[key] = hit
-    candidates = list(all_hits.values())[:rerank_budget]
+    candidates = sorted(all_hits.values(), key=lambda hit: float(getattr(hit, "score", 0.0)), reverse=True)[:rerank_budget]
     if not candidates:
         return []
     base_scores = {str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80]): max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))) for hit in candidates}
@@ -226,7 +226,8 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     except Exception as exc:
         self.logger.exception("Evidence-alignment evaluation failed"); alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
     combined_score = max(float(alignment.get("answerability", 0.0) or 0.0), float(semantic_alignment.get("score", 0.0) or 0.0))
-    if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"} and combined_score < 0.25:
+    generic_factual = plan.intent in {"factual"} and not plan.entities and not understanding.relations
+    if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"} and combined_score < 0.25 and not generic_factual:
         return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}}
     selected = hits[: max(int(self.settings.top_k) * 3, 12)]
     try:
@@ -236,7 +237,8 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     nodes, edges = build_evidence_graph(selected, understanding)
     reasoning_state = clinical_reasoning_ready(understanding, nodes, edges)
     advanced_reasoning = assess_clinical_reasoning(understanding, selected, max_depth=3)
-    if not advanced_reasoning.allow_generation:
+    reasoning_gate_required = bool(understanding.entities) or bool(understanding.relations) or understanding.primary_intent in {"comparison", "etiology", "mechanism", "diagnosis", "management", "prognosis", "relationship"}
+    if not advanced_reasoning.allow_generation and reasoning_gate_required:
         return {"status": "REASONING_ABSTAIN", "answer": "The retrieved evidence is insufficient or conflicting for a safe clinical reasoning answer.", "citations": [], "hits": list(selected), "confidence": {"level": "low", "evidence_confidence": advanced_reasoning.confidence}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}}
     reasoning_instruction = build_reasoning_instruction(understanding, advanced_reasoning)
     if small_model_assist and small_model_assist.get("answer_strategy"):
