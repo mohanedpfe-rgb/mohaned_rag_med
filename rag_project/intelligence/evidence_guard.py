@@ -35,11 +35,45 @@ _NEGATION = re.compile(
 )
 _MODAL = re.compile(r"\b(may|might|can|could|should|recommended|suggested|possibly|likely|probably|must|shall|may not|should not)\b", re.I)
 
+_UNIT_SCALE = {
+    "ug": ("mass", 1e-6),
+    "mg": ("mass", 1e-3),
+    "g": ("mass", 1.0),
+    "kg": ("mass", 1000.0),
+    "ml": ("volume", 1.0),
+    "l": ("volume", 1000.0),
+    "mmhg": ("pressure", 1.0),
+    "cmh2o": ("pressure", 0.735559),
+    "%": ("percent", 1.0),
+    "bpm": ("rate", 1.0),
+    "c": ("temperature", 1.0),
+    "mm": ("length", 1.0),
+    "cm": ("length", 10.0),
+    "m": ("length", 1000.0),
+    "hz": ("frequency", 1.0),
+    "khz": ("frequency", 1000.0),
+    "m/s": ("velocity", 1.0),
+    "s": ("time", 1.0),
+    "min": ("time", 60.0),
+    "h": ("time", 3600.0),
+    "day": ("time", 86400.0),
+    "days": ("time", 86400.0),
+    "week": ("time", 604800.0),
+    "weeks": ("time", 604800.0),
+    "month": ("time", 2592000.0),
+    "months": ("time", 2592000.0),
+    "year": ("time", 31536000.0),
+    "years": ("time", 31536000.0),
+}
+
 
 def split_claims(answer: str) -> list[str]:
     raw = (answer or "").strip()
     if not raw:
         return []
+    # Bullets are hard claim boundaries even when the bullet text does not end in
+    # punctuation or contains a short medical unit token.
+    raw = re.sub(r"\n\s*(?=[-*•]|\d+[.)]\s)", "\n", raw)
     claims: list[str] = []
     for sentence in _SENTENCE_RE.split(raw):
         sentence = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence.strip())
@@ -69,21 +103,26 @@ def extract_measurements(text: str) -> list[tuple[str, str]]:
 def _to_float(value: str) -> float | None:
     try:
         return float(value.replace(",", "."))
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
 def _measurement_compatible(claim: tuple[str, str], evidence: tuple[str, str], tolerance: float = 1e-6) -> bool:
     cv, cu = claim
     ev, eu = evidence
-    if cu != eu:
-        return False
     if "-" in cv or "-" in ev:
-        return cv == ev
+        return cv == ev and cu == eu
     c = _to_float(cv)
     e = _to_float(ev)
     if c is None or e is None:
-        return cv == ev
+        return cv == ev and cu == eu
+    source = _UNIT_SCALE.get(cu)
+    target = _UNIT_SCALE.get(eu)
+    if source and target and source[0] == target[0]:
+        converted = c * source[1] / target[1]
+        return math.isclose(converted, e, rel_tol=0.0, abs_tol=tolerance)
+    if cu != eu:
+        return False
     return math.isclose(c, e, rel_tol=0.0, abs_tol=tolerance)
 
 
@@ -93,10 +132,6 @@ def numeric_consistency(claim: str, evidence: str) -> dict[str, Any]:
     if not claim_values:
         return {"checked": False, "mismatch": False, "claim_values": [], "evidence_values": [], "unsupported_numeric": []}
     unsupported = [item for item in claim_values if not any(_measurement_compatible(item, ev) for ev in evidence_values)]
-    # Bare numbers still matter for medical/scientific answers, but do not count a mismatch unless
-    # there is at least one dimensional measurement in the claim.
-    if not claim_values:
-        unsupported = []
     return {
         "checked": True,
         "mismatch": bool(unsupported),
@@ -107,7 +142,6 @@ def numeric_consistency(claim: str, evidence: str) -> dict[str, Any]:
 
 
 def _polarity(text: str) -> int:
-    # -1 negative, +1 positive, 0 neutral/uncertain
     if not text:
         return 0
     return -1 if _NEGATION.search(text) else 1
@@ -129,11 +163,17 @@ def semantic_support(claim: str, evidence: str) -> float:
 def detect_contradiction(claim: str, evidence_blocks: Sequence[str]) -> bool:
     claim_tokens = set(meaningful_tokens(claim.casefold()))
     claim_pol = _polarity(claim)
+    if not claim_tokens or claim_pol == 0:
+        return False
     for evidence in evidence_blocks:
-        score = semantic_support(claim, evidence)
-        if score < 0.42 or len(claim_tokens & set(meaningful_tokens(evidence.casefold()))) < 2:
+        evidence_tokens = set(meaningful_tokens(evidence.casefold()))
+        overlap_tokens = claim_tokens & evidence_tokens
+        if not overlap_tokens or _polarity(evidence) in (0, claim_pol):
             continue
-        if claim_pol and _polarity(evidence) and claim_pol != _polarity(evidence):
+        score = semantic_support(claim, evidence)
+        # Keep this conservative: a polarity reversal needs at least one shared
+        # concept token and a non-trivial semantic overlap.
+        if score >= 0.35:
             return True
     return False
 
