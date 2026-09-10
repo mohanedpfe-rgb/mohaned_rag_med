@@ -66,9 +66,10 @@ def _validate_document_index(
     )
     for index, metadata in enumerate(metadatas):
         if isinstance(metadata, dict):
+            record_id = ids[index] if index < len(ids) else None
             print(
                 f"DEBUG RUNTIME RECORD: index={index}, "
-                f"id={ids[index]!r if index < len(ids) else None}, "
+                f"id={record_id!r}, "
                 f"document_id={metadata.get('document_id')!r}, "
                 f"version_id={metadata.get('version_id')!r}, "
                 f"chunk_id={metadata.get('chunk_id')!r}, "
@@ -208,7 +209,10 @@ def install() -> None:
     def synchronized_ingest_file(self: Any, pdf_path: Any) -> Any:
         result = original_ingest_file(self, pdf_path)
         if isinstance(result, dict) and result.get("status") == "success":
-            _synchronize_ingestion_version(self.vector_store, str(result.get("document_id") or ""))
+            _synchronize_ingestion_version(
+                self.vector_store,
+                str(result.get("document_id") or ""),
+            )
         return result
 
     VectorStore.__init__ = hardened_init
