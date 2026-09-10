@@ -14,7 +14,7 @@ SENT=re.compile(r'(?<=[.!?。！？])\s+|\n+')
 MEASURE=re.compile(r'(?P<value>[-+]?\d+(?:[.,]\d+)?(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?)\s*(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)\b',re.I)
 NEG=re.compile(r'\b(no|not|without|never|none|cannot|does not|doesn\'t|non|aucun|sans|jamais|ne\s+pas|ممنوع|منع|لا|ليس|دون)\b',re.I|re.UNICODE)
 OPPOSITES=((r'\bcontraindicated\b',r'\bindicated\b'),(r'\bshould not\b',r'\bshould\b'),(r'\bavoid\b',r'\brecommended\b'),(r'\bno\b',r'\bhas\b|\bwith\b'),(r'\bwithout\b',r'\bwith\b'))
-SCALE={'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':('time',2592000),'year':('time',31536000),'years':('time',31536000)}
+SCALE={'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':2592000,'year':31536000,'years':31536000}
 _TINY={'yes','no','ok','okay','thanks','thank','maybe','sure'}
 
 def split_claims(answer:str)->list[str]:
@@ -63,6 +63,7 @@ def numeric_consistency(claim,evidence):
 
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
+def _remove_measurements(text:str)->str:return MEASURE.sub(' ',text or '')
 
 def semantic_support(claim,evidence):
     claim=_score_text(claim);evidence=str(evidence or '').strip()
@@ -88,13 +89,14 @@ def verify_claims(answer,evidence_blocks:Sequence[str],source_ids:Sequence[str])
     checks=[];joined='\n'.join(evidence_blocks)
     for claim in split_claims(answer):
         best,sources=_best_support(claim,evidence_blocks,source_ids);num=numeric_consistency(claim,joined);contra=detect_contradiction(claim,evidence_blocks)
+        numeric_bridge=max((semantic_support(_remove_measurements(claim),_remove_measurements(block)) for block in evidence_blocks),default=0.0) if num['checked'] and not num['mismatch'] else 0.0
         if contra:status,reason='CONTRADICTED','A source conflicts with the claim polarity or safety meaning.'
         elif num['mismatch']:status,reason='NUMERIC_MISMATCH','The stated measurement is not supported by a compatible evidence value.'
-        elif best>=.62:status,reason='SUPPORTED','Strong evidence support.'
+        elif best>=.62 or numeric_bridge>=.35:status,reason='SUPPORTED','Strong evidence support.'
         elif best>=.38:status,reason='PARTIAL','Partial evidence support.'
         elif best>0:status,reason='WEAK','Weak evidence overlap.'
         else:status,reason='UNSUPPORTED','No meaningful evidence support.'
-        checks.append(ClaimCheck(claim,round(best,4),status,sources,bool(num['mismatch']),contra,reason))
+        checks.append(ClaimCheck(claim,round(max(best,numeric_bridge),4),status,sources,bool(num['mismatch']),contra,reason))
     return checks
 
 def evidence_confidence(*,retrieval:float,rerank:float,entailment:float,quality:float,contradiction:float=0.,ocr_penalty:float=0.)->float:return round(max(0.,min(1.,.24*retrieval+.26*rerank+.30*entailment+.20*quality-.40*contradiction-.20*ocr_penalty)),4)
