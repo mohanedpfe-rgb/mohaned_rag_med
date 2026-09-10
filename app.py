@@ -1,12 +1,18 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
 from typing import Any
+
 import streamlit as st
+
 from rag_project.app import bookrag_ui
 from rag_project.app.intelligence_panel import render_intelligence_panel
 from rag_project.ingestion.responsive_supervisor import start as start_supervisor
 from rag_project.security import register_session_upload,validate_ollama_url,validate_pdf_payload,validate_storage_path
+
+_PIPELINE_RUNTIME_VERSION = "2026-09-11-integrity-v1"
+
 
 def _load_local_env():
     f=Path(__file__).resolve().parent/'.env'
@@ -21,6 +27,7 @@ def _load_local_env():
             os.environ[k]=v
     except OSError:pass
 
+
 def _clamp_local_embedding_profile():
     try:b=int(os.getenv('EMBEDDING_BATCH_SIZE','16'))
     except (TypeError,ValueError):b=16
@@ -29,6 +36,7 @@ def _clamp_local_embedding_profile():
     try:t=float(os.getenv('EMBEDDING_TIMEOUT_SECONDS','180'))
     except (TypeError,ValueError):t=180.
     os.environ['EMBEDDING_BATCH_SIZE']=str(max(16,min(b,32)));os.environ['EMBEDDING_RETRIES']=str(max(1,min(r,3)));os.environ['EMBEDDING_TIMEOUT_SECONDS']=str(max(30.,min(t,300.)))
+
 
 def _install_ui_guards():
     if getattr(bookrag_ui,'_bookrag_ui_guards_installed',False):return
@@ -55,6 +63,22 @@ def _install_ui_guards():
     if evidence_row is not None:bookrag_ui._evidence_row=enhanced_evidence_row
     bookrag_ui._bookrag_ui_guards_installed=True
 
+
+def _invalidate_stale_runtime_cache() -> None:
+    """Drop a cached RAGSystem built before the current pipeline integrity policy."""
+    current = st.session_state.get('_bookrag_pipeline_runtime_version')
+    if current == _PIPELINE_RUNTIME_VERSION:
+        return
+    try:
+        clear = getattr(bookrag_ui.get_system, 'clear', None)
+        if callable(clear):
+            clear()
+    finally:
+        st.session_state['_bookrag_pipeline_runtime_version'] = _PIPELINE_RUNTIME_VERSION
+
+
 def main():
-    _load_local_env();_clamp_local_embedding_profile();_install_ui_guards();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+    _load_local_env();_clamp_local_embedding_profile();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+
+
 if __name__=='__main__':main()
