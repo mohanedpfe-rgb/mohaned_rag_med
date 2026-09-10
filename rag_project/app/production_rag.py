@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 from pathlib import Path
 from typing import Any,Dict
 from rag_project.app import rag_system as rag_system_module
@@ -9,6 +10,12 @@ from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace,validate_feature_contract
 from rag_project.application import ANSWER_PIPELINE_AUTHORITY
+
+_FOLLOWUP_PATTERN=re.compile(r"\b(it|this|that|they|them|those|these|the latter|the former|what about|how about)\b|^(and|also|then|et|puis|و|ثم)\b|\b(ça|cela|celui|celle|et le|et la)\b",re.I|re.UNICODE)
+
+def _is_explicit_followup(question:str)->bool:
+    text=str(question or '').strip()
+    return bool(_FOLLOWUP_PATTERN.search(text))
 
 class ProductionRAGSystem(ResilientRAGSystem):
     _certified_god_answer=enhanced_god_answer
@@ -46,10 +53,23 @@ class ProductionRAGSystem(ResilientRAGSystem):
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
         if not self._production_feature_contract['all_resolved']:
             return {'status':'SYSTEM_NOT_READY','answer':'The production feature contract is incomplete; a grounded answer is disabled.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'production_contract':self._production_feature_contract}
-        result=self._certified_god_answer(question,metadata_filter);result=apply_medical_safety_policy(question,result,self.settings);result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
-        if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
-        result['production_contract']={'feature_count':44,'all_features_resolved':True}
-        return result
+        isolated=not _is_explicit_followup(question)
+        saved_history=list(getattr(self.conversation_memory,'history',[]) or []) if isolated else []
+        result=None
+        if isolated:
+            self.conversation_memory.history=[]
+        try:
+            result=self._certified_god_answer(question,metadata_filter)
+            result=apply_medical_safety_policy(question,result,self.settings)
+            result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
+            if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
+            result['production_contract']={'feature_count':44,'all_features_resolved':True}
+            return result
+        finally:
+            if isolated:
+                self.conversation_memory.history=saved_history
+                if isinstance(result,dict) and str(result.get('answer') or '').strip():
+                    self.conversation_memory.add(question,str(result.get('answer') or ''))
     def audit_god_mode_index(self):return audit_god_mode_index(self)
     def health_report(self):
         checks={}
