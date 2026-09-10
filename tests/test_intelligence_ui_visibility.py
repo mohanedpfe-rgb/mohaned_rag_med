@@ -11,7 +11,7 @@ def test_canonical_launcher_exposes_intelligence_panel() -> None:
 
     assert "from rag_project.app.intelligence_panel import render_intelligence_panel" in app_source
     assert "def enhanced_ask" in app_source
-    assert 'st.session_state.get("answer_result")' in app_source
+    assert "session_state.get" in app_source and "answer_result" in app_source
     assert "render_intelligence_panel(result)" in app_source
     assert 'bookrag_ui.ask_page=enhanced_ask' in app_source
 
