@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from rag_project.intelligence.advanced_reasoning import (
     abstention_ladder,
@@ -17,6 +18,7 @@ from rag_project.intelligence.advanced_reasoning import (
     sentence_compress,
 )
 from rag_project.intelligence.final_44 import FEATURE_IMPLEMENTATIONS, fail_closed, report, validate_citations
+from rag_project.app.production_rag import ProductionRAGSystem
 
 
 @dataclass
@@ -89,3 +91,29 @@ def test_citation_validation_rejects_nonexistent_sources():
     assert "[S?]" in answer
     assert state["valid"] == [1]
     assert state["invalid"] == [99]
+
+
+def test_production_answer_does_not_double_bind_wrapped_certifier(monkeypatch):
+    system = ProductionRAGSystem.__new__(ProductionRAGSystem)
+    system._production_feature_contract = {"all_resolved": True}
+    system.settings = SimpleNamespace()
+
+    def fake_certified_answer(self, question, metadata_filter=None):
+        assert question == "What is the dose?"
+        assert metadata_filter == {"document_id": "doc-1"}
+        return {"status": "OK", "answer": "500 mg", "hits": [], "confidence": {}}
+
+    monkeypatch.setattr(ProductionRAGSystem, "_certified_god_answer", fake_certified_answer)
+    monkeypatch.setattr(
+        "rag_project.app.production_rag.apply_medical_safety_policy",
+        lambda question, result, settings: result,
+    )
+    monkeypatch.setattr(
+        "rag_project.app.production_rag.sanitize_trace",
+        lambda trace: trace,
+    )
+
+    result = system.answer("What is the dose?", {"document_id": "doc-1"})
+
+    assert result["answer"] == "500 mg"
+    assert result["production_contract"] == {"feature_count": 44, "all_features_resolved": True}
