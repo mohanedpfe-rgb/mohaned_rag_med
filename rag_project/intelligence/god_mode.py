@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 import uuid
@@ -54,6 +55,11 @@ def _as_list(value: Any) -> list[Any]:
 
 def _clean(value: str) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:1600]
+
+
+def _logger(system: Any) -> logging.Logger:
+    logger = getattr(system, "logger", None)
+    return logger if logger is not None and hasattr(logger, "warning") else logging.getLogger(__name__)
 
 
 def _metadata_boost(hit: Any, plan: QueryPlan) -> float:
@@ -123,12 +129,13 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
     bridge_variants = list(_bridge_variants(plan))
     initial_budget = max(1, rerank_budget - min(12, len(bridge_variants) * 2))
     base_share, remainder = divmod(initial_budget, len(variants))
+    logger = _logger(system)
     for index, variant in enumerate(variants):
         variant_budget = min(candidate_count, max(1, base_share + (1 if index < remainder else 0)))
         try:
             hits = system.retriever.retrieve(_clean(variant), top_k=variant_budget, where=where)
         except Exception as exc:
-            system.logger.warning("Retrieval branch failed: %s", exc)
+            logger.warning("Retrieval branch failed: %s", exc)
             continue
         for hit in hits:
             meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
@@ -142,7 +149,7 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
             try:
                 hits = system.retriever.retrieve(_clean(variant), top_k=min(candidate_count, budget), where=where)
             except Exception as exc:
-                system.logger.warning("Second-hop retrieval branch failed: %s", exc)
+                logger.warning("Second-hop retrieval branch failed: %s", exc)
                 continue
             for hit in hits:
                 meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
@@ -160,7 +167,7 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
             hit.score = 0.60 * base_scores.get(key, rerank_score) + 0.40 * rerank_score
         candidates = reranked
     except Exception as exc:
-        system.logger.warning("Reranking failed; retaining fused candidates: %s", exc)
+        logger.warning("Reranking failed; retaining fused candidates: %s", exc)
         for hit in candidates:
             hit.score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
     for hit in candidates:
@@ -188,12 +195,12 @@ def _answer_with_ladder(system: Any, question: str, context: str, selected_hits:
         answer, _ = _generate_with_citations(system.llm, question=question, context=prompt_context, selected_hits=selected_hits, conversation_context=conversation_context, temperature=system.settings.temperature)
         return answer, "primary"
     except Exception as exc:
-        system.logger.warning("Primary generation failed: %s", exc)
+        _logger(system).warning("Primary generation failed: %s", exc)
     try:
         answer = system.llm.generate(prompt="Return only directly supported facts from the evidence. Use [S#] markers.\n\n" + prompt_context, system_prompt="You are an extractive evidence verifier. Never invent facts or clinical recommendations. For causal or multi-hop questions, connect only relationships explicitly supported by the evidence.", temperature=0.0)
         return answer, "extractive_fallback"
     except Exception as exc:
-        system.logger.warning("Fallback generation failed: %s", exc)
+        _logger(system).warning("Fallback generation failed: %s", exc)
         return "The language model is unavailable; I cannot safely generate a grounded answer right now.", "abstained"
 
 
