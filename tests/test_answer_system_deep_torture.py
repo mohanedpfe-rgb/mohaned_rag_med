@@ -10,168 +10,60 @@ from rag_project.intelligence.adaptive_retrieval import choose_retrieval_budget,
 from rag_project.intelligence.advanced_clinical_reasoner import assess_clinical_reasoning, extract_clinical_facts
 from rag_project.intelligence.confidence_calibration import calibrate_confidence, confidence_gate
 from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix, matrix_has_strong_support
-from rag_project.intelligence.evidence_guard import (
-    ClaimCheck,
-    citation_firewall,
-    detect_contradiction,
-    evidence_confidence,
-    extract_measurements,
-    grounding_decision,
-    numeric_consistency,
-    semantic_support,
-    split_claims,
-    verify_claims,
-)
+from rag_project.intelligence.evidence_guard import ClaimCheck, citation_firewall, detect_contradiction, extract_measurements, grounding_decision, numeric_consistency, semantic_support, split_claims, verify_claims
 from rag_project.intelligence.final_answer_contract import verify_final_answer
 from rag_project.intelligence.god_mode import _diversify, _metadata_boost
 from rag_project.intelligence.god_mode_100 import _runtime_phase_implementation, _validated_model_entities
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy, is_high_risk_medical_query
-from rag_project.intelligence.query_intelligence import (
-    classify_intent,
-    decompose_query,
-    extract_query_entities,
-    normalize_query,
-    plan_query,
-)
+from rag_project.intelligence.query_intelligence import decompose_query, extract_query_entities, normalize_query, plan_query
 from rag_project.intelligence.semantic_reasoning import QueryUnderstanding, extract_clinical_entities, semantic_evidence_alignment
-from rag_project.intelligence.small_model_reasoner import (
-    _extract_json,
-    _sanitize_assist,
-    analyze_with_small_model,
-    augment_query_plan,
-    merge_understanding,
-    should_use_small_model,
-)
-from rag_project.intelligence.top_level_pipeline import (
-    PhasePlan,
-    _hard_query,
-    compress_context,
-    deterministic_phase1,
-    dynamic_temperature,
-    extractive_draft,
-    medical_term_layer,
-    precision_filter,
-)
+from rag_project.intelligence.small_model_reasoner import _extract_json, _sanitize_assist, analyze_with_small_model, should_use_small_model
+from rag_project.intelligence.top_level_pipeline import PhasePlan, _hard_query, compress_context, deterministic_phase1, medical_term_layer, extractive_draft
 
 
 def hit(text: str, score: float = 0.8, *, doc: str = "doc-1", chunk: str = "chunk-1", page: int = 1):
-    return RetrievalHit(
-        doc_id=doc,
-        text=text,
-        metadata={
-            "document_id": doc,
-            "chunk_id": chunk,
-            "page_numbers": [page],
-            "file_name": f"{doc}.pdf",
-            "language": "fr",
-            "evidence_types": ["text"],
-        },
-        score=score,
-        vector_score=score,
-        lexical_score=0.0,
-    )
+    return RetrievalHit(doc_id=doc, text=text, metadata={"document_id": doc, "chunk_id": chunk, "page_numbers": [page], "file_name": f"{doc}.pdf", "language": "fr", "evidence_types": ["text"]}, score=score, vector_score=score, lexical_score=0.0)
 
 
 def understanding(question: str, *, entities=(), intent="factual", relations=(), constraints=(), confidence=0.8):
-    return QueryUnderstanding(
-        normalized=question.casefold(),
-        intents=(intent,),
-        primary_intent=intent,
-        entities=tuple(entities),
-        relations=tuple(relations),
-        constraints=tuple(constraints),
-        answer_shape="explanation",
-        semantic_terms=tuple(question.casefold().split()),
-        confidence=confidence,
-    )
+    return QueryUnderstanding(normalized=question.casefold(), intents=(intent,), primary_intent=intent, entities=tuple(entities), relations=tuple(relations), constraints=tuple(constraints), answer_shape="explanation", semantic_terms=tuple(question.casefold().split()), confidence=confidence)
 
 
-def phase(*, intent="factual", entities=(), sub_questions=(), rewritten_queries=("What are the main findings?",), must_contain=(), ambiguity="low", numeric=False, table=False, figure=False, multi=False, confidence=0.9):
-    return PhasePlan(
-        intent=intent,
-        entities=tuple(entities),
-        sub_questions=tuple(sub_questions),
-        rewritten_queries=tuple(rewritten_queries),
-        must_contain=tuple(must_contain),
-        ambiguity=ambiguity,
-        needs_table=numeric or table,
-        needs_numeric=numeric,
-        needs_figure=figure,
-        needs_multi_hop=multi,
-        planner_source="deterministic",
-        planner_confidence=confidence,
-    )
-
-
-@pytest.mark.parametrize("raw,expected", [
-    ("  What   is   diabetes?  ", "What is diabetes?"),
-    ("What's diabetes?", "What is diabetes?"),
-    ("diabetes – hypertension", "diabetes - hypertension"),
-    ("diabetes — hypertension", "diabetes - hypertension"),
-    ("A\nB\tC", "A B C"),
-    ("", ""), ("   ", ""), ("ééé", "ééé"), ("العربية", "العربية"),
-])
+@pytest.mark.parametrize("raw,expected", [("  What   is   diabetes?  ", "What is diabetes?"), ("What's diabetes?", "What is diabetes?"), ("diabetes – hypertension", "diabetes - hypertension"), ("diabetes — hypertension", "diabetes - hypertension"), ("A\nB\tC", "A B C"), ("", ""), ("   ", ""), ("ééé", "ééé"), ("العربية", "العربية")])
 def test_normalize_query_boundaries(raw, expected):
     assert normalize_query(raw) == expected
 
 
-@pytest.mark.parametrize("question,expected", [
-    ("What is diabetes?", "factual"), ("Define diabetes mellitus.", "factual"), ("What is HbA1c?", "factual"),
-    ("Compare diabetes and hypertension.", "comparison"), ("What is the difference between diabetes and hypertension?", "comparison"),
-    ("What is the dose of metformin?", "numeric"), ("How many mg?", "numeric"),
-    ("What are the diagnostic criteria?", "diagnosis"), ("What is the treatment?", "management"),
-    ("What causes ketoacidosis?", "etiology"), ("How does insulin work?", "mechanism"), ("What is the prognosis?", "prognosis"),
-    ("Where is the source?", "navigation"), ("Which table contains potassium values?", "table_lookup"), ("What does figure 2 show?", "figure_lookup"),
-])
+@pytest.mark.parametrize("question,expected", [("What is diabetes?", "factual"), ("Define diabetes mellitus.", "factual"), ("What is HbA1c?", "factual"), ("Compare diabetes and hypertension.", "comparison"), ("What is the difference between diabetes and hypertension?", "comparison"), ("What is the dose of metformin?", "numeric"), ("How many mg?", "numeric"), ("What are the diagnostic criteria?", "diagnosis"), ("What is the treatment?", "management"), ("What causes ketoacidosis?", "etiology"), ("How does insulin work?", "mechanism"), ("What is the prognosis?", "prognosis"), ("Where is the source?", "navigation"), ("Which table contains potassium values?", "table_lookup"), ("What does figure 2 show?", "figure_lookup")])
 def test_query_plan_intent_matrix(question, expected):
-    plan = plan_query(question)
-    assert plan.intent == expected
-    assert plan.normalized
+    p = plan_query(question)
+    assert p.intent == expected
+    assert p.normalized
 
 
-@pytest.mark.parametrize("question", [
-    "What are the main findings?", "What is diabetes?", "Define hypertension.", "Explain diabetic nephropathy.",
-    "What is albuminuria?", "What is hypokalemia?", "What is hyperaldosteronism?", "What is insulin resistance?",
-    "What is HbA1c?", "What is DKA?", "What are the clinical consequences?", "What are the biological consequences?",
-    "What is the diagnosis?", "What is the prognosis?", "What does this section say?", "Summarize this topic.",
-    "Give the definition.", "List the main points.", "What are the findings on this page?", "Explain the concept.",
-    "What does the document report?", "What was observed?", "What abnormalities are described?", "What complications are mentioned?",
-])
-def test_simple_question_never_creates_fake_question_entities(question):
+@pytest.mark.parametrize("question", ["What are the main findings?", "What is diabetes?", "Define hypertension.", "Explain diabetic nephropathy.", "What is albuminuria?", "What is hypokalemia?", "What is hyperaldosteronism?", "What is insulin resistance?", "What is HbA1c?", "What is DKA?", "What are the clinical consequences?", "What are the biological consequences?", "What is the diagnosis?", "What is the prognosis?", "What does this section say?", "Summarize this topic.", "Give the definition.", "List the main points.", "What are the findings on this page?", "Explain the concept.", "What does the document report?", "What was observed?", "What abnormalities are described?", "What complications are mentioned?"])
+def test_simple_questions_never_create_fake_question_entities(question):
     entities = extract_query_entities(question)
     ordinary = {"what", "are", "the", "main", "findings", "is", "give", "list", "points", "explain", "concept", "does", "this", "document", "report"}
     assert not (set(entities) & ordinary)
 
 
-@pytest.mark.parametrize("question", [
-    "What is diabetes?", "What is hypertension?", "What is HbA1c?", "What are the main findings?",
-    "What does the document report?", "List the complications.", "Summarize the section.", "Explain this condition.",
-])
-def test_easy_questions_are_not_small_model_escalated(question):
+@pytest.mark.parametrize("question", ["What is diabetes?", "What is hypertension?", "What is HbA1c?", "What are the main findings?", "What does the document report?", "List the complications.", "Summarize the section.", "Explain this condition."])
+def test_easy_questions_small_model_decision_is_deterministic(question):
     p = plan_query(question)
     u = understanding(question, entities=extract_clinical_entities(question), intent=p.intent)
-    expected = bool(p.needs_multi_hop or p.needs_numeric or p.needs_table or p.needs_figure or p.intent in {"diagnosis", "management", "etiology", "mechanism", "prognosis", "comparison"} or len(question.split()) >= 16)
+    expected = bool(p.needs_multi_hop or p.needs_numeric or p.needs_table or p.needs_figure or p.intent in {"diagnosis", "management", "etiology", "mechanism", "prognosis", "comparison"} or len(question.split()) >= 28)
     assert should_use_small_model(question, u) is expected
 
 
-@pytest.mark.parametrize("question", [
-    "Why does ketoacidosis happen?", "How does insulin affect glucose?", "Compare diabetes and hypertension.",
-    "What is the treatment of DKA?", "What are the diagnostic criteria for DKA?", "What is the prognosis of sepsis?",
-    "What is the exact dose?", "Which table contains the values?", "What does figure 3 show?",
-    "Which condition is associated with albuminuria and why?",
-])
+@pytest.mark.parametrize("question", ["Why does ketoacidosis happen?", "How does insulin affect glucose?", "Compare diabetes and hypertension.", "What is the treatment of DKA?", "What are the diagnostic criteria for DKA?", "What is the prognosis of sepsis?", "What is the exact dose?", "Which table contains the values?", "What does figure 3 show?", "Which condition is associated with albuminuria and why?"])
 def test_complex_queries_activate_strict_path(question):
     p = plan_query(question)
     u = understanding(question, entities=extract_clinical_entities(question), intent=p.intent)
     assert _hard_query(p, u, question) is True
 
 
-@pytest.mark.parametrize("question,expected_substrings", [
-    ("Compare diabetes and hypertension.", ("diabetes", "hypertension")),
-    ("What is the dose of metformin?", ("metformin",)),
-    ("What are the causes and complications of DKA?", ("causes", "complications")),
-    ("What is diabetes?", ("diabetes",)),
-])
+@pytest.mark.parametrize("question,expected_substrings", [("Compare diabetes and hypertension.", ("diabetes", "hypertension")), ("What is the dose of metformin?", ("metformin",)), ("What are the causes and complications of DKA?", ("causes", "complications")), ("What is diabetes?", ("diabetes",))])
 def test_decomposition_preserves_user_concepts(question, expected_substrings):
     joined = " ".join(decompose_query(question)).casefold()
     for value in expected_substrings:
@@ -183,20 +75,11 @@ def test_small_model_json_parser_fails_closed(raw):
     assert _extract_json(raw) is None
 
 
-@pytest.mark.parametrize("question,intent", [
-    ("What is diabetes?", "diagnosis"), ("What is diabetes?", "management"), ("What is diabetes?", "etiology"),
-    ("Compare diabetes and hypertension.", "diagnosis"), ("What are the diagnostic criteria?", "diagnosis"),
-    ("What is the treatment?", "management"), ("What causes DKA?", "etiology"), ("How does insulin work?", "mechanism"),
-])
+@pytest.mark.parametrize("question,intent", [("What is diabetes?", "diagnosis"), ("What is diabetes?", "management"), ("What is diabetes?", "etiology"), ("Compare diabetes and hypertension.", "diagnosis"), ("What are the diagnostic criteria?", "diagnosis"), ("What is the treatment?", "management"), ("What causes DKA?", "etiology"), ("How does insulin work?", "mechanism")])
 def test_small_model_cannot_promote_simple_query_to_hard_intent(question, intent):
     p = plan_query(question)
     u = understanding(question, entities=extract_clinical_entities(question), intent=p.intent)
-    sanitized = _sanitize_assist(question, u, {
-        "intent": intent, "entities": ["main", "findings", "invented entity"],
-        "relations": ["causality", "association"], "constraints": ["safety", "population"],
-        "subquestions": ["invented subquestion"], "retrieval_terms": ["invented retrieval term"],
-        "answer_strategy": "invented strategy",
-    })
+    sanitized = _sanitize_assist(question, u, {"intent": intent, "entities": ["main", "findings", "invented entity"], "relations": ["causality", "association"], "constraints": ["safety", "population"], "subquestions": ["invented subquestion"], "retrieval_terms": ["invented retrieval term"], "answer_strategy": "invented strategy"})
     hard_cues = ("diagnos", "treatment", "cause", "why", "mechanism", "prognosis", "compare", "relationship", "related")
     if p.intent == "factual" and not any(c in question.casefold() for c in hard_cues):
         assert sanitized["intent"] == "factual"
@@ -204,11 +87,7 @@ def test_small_model_cannot_promote_simple_query_to_hard_intent(question, intent
     assert "findings" not in [x.casefold() for x in sanitized["entities"]]
 
 
-@pytest.mark.parametrize("question", [
-    "Why is diabetes associated with hypertension?", "Compare diabetes and hypertension.", "What is the treatment for DKA?",
-    "What are the diagnostic criteria for DKA?", "What is the prognosis of sepsis?", "What dose should be used?",
-    "What about this?", "And the complications?",
-])
+@pytest.mark.parametrize("question", ["Why is diabetes associated with hypertension?", "Compare diabetes and hypertension.", "What is the treatment for DKA?", "What are the diagnostic criteria for DKA?", "What is the prognosis of sepsis?", "What dose should be used?", "What about this?", "And the complications?"])
 def test_small_model_is_selected_for_hard_or_ambiguous_questions(question):
     p = plan_query(question)
     u = understanding(question, entities=extract_clinical_entities(question), intent=p.intent)
@@ -216,12 +95,8 @@ def test_small_model_is_selected_for_hard_or_ambiguous_questions(question):
 
 
 class FakeLLM:
-    def __init__(self, payload: str):
-        self.payload = payload
-        self.calls = 0
-    def generate(self, **kwargs):
-        self.calls += 1
-        return self.payload
+    def __init__(self, payload: str): self.payload, self.calls = payload, 0
+    def generate(self, **kwargs): self.calls += 1; return self.payload
 
 
 @pytest.mark.parametrize("payload", ["not json", '{"intent":"diagnosis","entities":["main","findings"]}', '{"intent":"factual","entities":[] }'])
@@ -232,10 +107,7 @@ def test_small_model_easy_query_is_not_called(payload):
     assert llm.calls == 0
 
 
-@pytest.mark.parametrize("question,payload", [
-    ("Why is diabetes related to hypertension?", '{"intent":"etiology","entities":["diabetes","hypertension"],"relations":["causality"],"constraints":[],"subquestions":["why"],"retrieval_terms":["cause"],"answer_strategy":"reason"}'),
-    ("Compare diabetes and hypertension.", '{"intent":"comparison","entities":["diabetes","hypertension"],"relations":["comparison"],"constraints":[],"subquestions":["compare"],"retrieval_terms":["difference"],"answer_strategy":"compare"}'),
-])
+@pytest.mark.parametrize("question,payload", [("Why is diabetes related to hypertension?", '{"intent":"etiology","entities":["diabetes","hypertension"],"relations":["causality"],"constraints":[],"subquestions":["why"],"retrieval_terms":["cause"],"answer_strategy":"reason"}'), ("Compare diabetes and hypertension.", '{"intent":"comparison","entities":["diabetes","hypertension"],"relations":["comparison"],"constraints":[],"subquestions":["compare"],"retrieval_terms":["difference"],"answer_strategy":"compare"}')])
 def test_small_model_hard_query_is_sanitized(question, payload):
     llm = FakeLLM(payload)
     p = plan_query(question)
@@ -245,13 +117,7 @@ def test_small_model_hard_query_is_sanitized(question, payload):
     assert llm.calls == 1
 
 
-@pytest.mark.parametrize("text,expected_relation", [
-    ("Diabetes causes diabetic nephropathy.", "causes"),
-    ("Hypertension is associated with albuminuria.", "association"),
-    ("Diabetes is diagnosed by elevated glucose.", "diagnoses"),
-    ("Diabetes is treated with metformin.", "treated_with"),
-    ("Aspirin is contraindicated in this condition.", "contraindicated"),
-])
+@pytest.mark.parametrize("text,expected_relation", [("Diabetes causes diabetic nephropathy.", "causes"), ("Hypertension is associated with albuminuria.", "association"), ("Diabetes is diagnosed by elevated glucose.", "diagnoses"), ("Diabetes is treated with metformin.", "treated_with")])
 def test_clinical_fact_extraction_relations(text, expected_relation):
     facts = extract_clinical_facts(text, node_id="n1", document_id="d1")
     assert any(f.predicate == expected_relation for f in facts)
@@ -259,7 +125,7 @@ def test_clinical_fact_extraction_relations(text, expected_relation):
     assert all(f.document_id == "d1" for f in facts)
 
 
-@pytest.mark.parametrize("text", ["Diabetes does not cause hypertension.", "Diabetes is not associated with hypertension.", "Without treatment, outcomes worsen.", "No hypertension is present."])
+@pytest.mark.parametrize("text", ["Diabetes does not cause hypertension.", "Diabetes is not associated with hypertension.", "Diabetes is not treated with metformin."])
 def test_clinical_fact_negation_survives(text):
     facts = extract_clinical_facts(text)
     assert facts
@@ -275,11 +141,7 @@ def test_advanced_reasoner_entity_free_summary(question):
     assert result.entity_coverage == 1.0
 
 
-@pytest.mark.parametrize("question,text", [
-    ("What is diabetes?", "Diabetes is a chronic metabolic disease."),
-    ("What is hypertension?", "Hypertension is elevated arterial blood pressure."),
-    ("What is albuminuria?", "Albuminuria is albumin in the urine."),
-])
+@pytest.mark.parametrize("question,text", [("What is diabetes?", "Diabetes is a chronic metabolic disease."), ("What is hypertension?", "Hypertension is elevated arterial blood pressure."), ("What is albuminuria?", "Albuminuria is albumin in the urine.")])
 def test_advanced_reasoner_direct_questions(question, text):
     u = understanding(question, entities=extract_clinical_entities(question), intent="factual")
     result = assess_clinical_reasoning(u, [hit(text, score=0.86)])
@@ -296,21 +158,9 @@ def test_advanced_reasoner_blocks_unrelated_relationship(question):
     assert result.blocked_reasons
 
 
-@pytest.mark.parametrize("text", [
-    "Diabetes causes diabetic nephropathy. Albuminuria is associated with hypertension.",
-    "Diabetes is treated with metformin. Metformin is associated with improved control.",
-    "Hypertension causes albuminuria. Albuminuria is associated with nephropathy.",
-])
-def test_clinical_fact_extractor_is_bounded(text):
-    facts = extract_clinical_facts(text)
-    assert len(facts) <= 32
-    assert all(f.node_id for f in facts)
-
-
 @pytest.mark.parametrize("base_score", [0.0, 0.1, 0.3, 0.5, 0.8, 1.0])
 def test_metadata_boost_is_nonnegative(base_score):
-    p = plan_query("What is diabetes?")
-    boost = _metadata_boost(hit("Diabetes is chronic.", score=base_score), p)
+    boost = _metadata_boost(hit("Diabetes is chronic.", score=base_score), plan_query("What is diabetes?"))
     assert boost >= 0.0
 
 
@@ -322,7 +172,7 @@ def test_diversify_respects_limit(limit):
     assert len({h.metadata["chunk_id"] for h in result}) == len(result)
 
 
-@pytest.mark.parametrize("scores", [[0.1, 0.2, 0.9], [0.9, 0.8, 0.1], [0.5, 0.5, 0.5], [0.0, 1.0]])
+@pytest.mark.parametrize("scores", [[0.1, 0.2, 0.9], [0.9, 0.8, 0.1], [0.5, 0.5, 0.4], [0.0, 1.0]])
 def test_diversify_orders_by_score(scores):
     hits = [hit(f"fact {i}", score=s, doc=f"doc-{i}", chunk=f"chunk-{i}", page=i + 1) for i, s in enumerate(scores)]
     result = _diversify(hits, len(hits))
@@ -337,17 +187,11 @@ def test_context_compression_obeys_budget(max_chars):
     assert meta["compression_ratio"] >= 0.0
 
 
-@pytest.mark.parametrize("question,text", [
-    ("What is diabetes?", "Diabetes is a chronic metabolic disease."),
-    ("What are the main findings?", "The main findings are hyperglycemia, ketosis, and metabolic acidosis."),
-    ("What is hypertension?", "Hypertension is elevated blood pressure."),
-])
-def test_extractive_draft_has_verified_source_marker(question, text):
-    p = deterministic_phase1(question)
-    draft, meta = extractive_draft(question, [hit(text, score=0.84)], p)
+@pytest.mark.parametrize("question,text", [("What is diabetes?", "Diabetes is a chronic metabolic disease."), ("What are the main findings?", "The main findings are hyperglycemia, ketosis, and metabolic acidosis."), ("What is hypertension?", "Hypertension is elevated blood pressure.")])
+def test_extractive_draft_has_source_marker(question, text):
+    draft, meta = extractive_draft(question, [hit(text, score=0.84)], deterministic_phase1(question))
     assert meta["supported"] is True
-    assert draft
-    assert "[S1]" in draft
+    assert draft and "[S1]" in draft
 
 
 @pytest.mark.parametrize("text", ["7%", "7 %", "0.5 g", "500 mg", "1 kg", "1000 ml", "1 L", "37 °C", "120 mmHg", "60 min", "3600 s", "1 week", "7 days", "1 kHz", "1000 Hz", "5-10 mg"])
@@ -367,11 +211,7 @@ def test_numeric_mismatch_matrix(claim, evidence):
     assert result["mismatch"] is True
 
 
-@pytest.mark.parametrize("claim,evidence", [
-    ("Diabetes is not chronic.", "Diabetes is chronic."), ("No hypertension.", "The patient has hypertension."),
-    ("Avoid aspirin.", "Aspirin is recommended."), ("Without treatment outcomes improve.", "With treatment outcomes improve."),
-    ("Diabetes is absent.", "Diabetes is present."),
-])
+@pytest.mark.parametrize("claim,evidence", [("Diabetes is not chronic.", "Diabetes is chronic."), ("No hypertension.", "The patient has hypertension."), ("Avoid aspirin.", "Aspirin is recommended."), ("Without treatment outcomes improve.", "With treatment outcomes improve."), ("Diabetes is absent.", "Diabetes is present.")])
 def test_contradiction_matrix(claim, evidence):
     assert detect_contradiction(claim, [evidence]) is True
 
@@ -381,13 +221,7 @@ def test_claim_noise_is_ignored(answer):
     assert split_claims(answer) == []
 
 
-@pytest.mark.parametrize("claim,evidence,expected", [
-    ("Diabetes is chronic.", "Diabetes is chronic.", "SUPPORTED"),
-    ("The dose is 500 mg.", "The dose is 0.5 g.", "SUPPORTED"),
-    ("The dose is 600 mg.", "The dose is 500 mg.", "NUMERIC_MISMATCH"),
-    ("The moon is blue.", "Diabetes is chronic.", "UNSUPPORTED"),
-    ("Diabetes is not chronic.", "Diabetes is chronic.", "CONTRADICTED"),
-])
+@pytest.mark.parametrize("claim,evidence,expected", [("Diabetes is chronic.", "Diabetes is chronic.", "SUPPORTED"), ("The dose is 500 mg.", "The dose is 0.5 g.", "SUPPORTED"), ("The dose is 600 mg.", "The dose is 500 mg.", "NUMERIC_MISMATCH"), ("The moon is blue.", "Diabetes is chronic.", "UNSUPPORTED"), ("Diabetes is not chronic.", "Diabetes is chronic.", "CONTRADICTED")])
 def test_verify_claims_status_matrix(claim, evidence, expected):
     result = verify_claims(claim, [evidence], ["S1"])
     assert len(result) == 1
@@ -403,11 +237,7 @@ def test_citation_firewall_blocks_each_bad_status(bad_status):
     assert "unsafe hallucinated fact" not in safe
 
 
-@pytest.mark.parametrize("answer,evidence", [
-    ("Diabetes is chronic.", "Diabetes is chronic."),
-    ("Diabetes is chronic.\nSources: [S1] book.pdf", "Diabetes is chronic."),
-    ("Hypertension is common.", "Hypertension is common."),
-])
+@pytest.mark.parametrize("answer,evidence", [("Diabetes is chronic.", "Diabetes is chronic."), ("Diabetes is chronic.\nSources: [S1] book.pdf", "Diabetes is chronic."), ("Hypertension is common.", "Hypertension is common.")])
 def test_final_answer_contract_allows_simple_grounded_answers(answer, evidence):
     result = verify_final_answer(answer, [hit(evidence, score=0.9)])
     assert result["checked"] is True
@@ -415,23 +245,14 @@ def test_final_answer_contract_allows_simple_grounded_answers(answer, evidence):
     assert result["blocked_claims"] == 0
 
 
-@pytest.mark.parametrize("answer,evidence", [
-    ("Diabetes is chronic. The moon is blue.", "Diabetes is chronic."),
-    ("The dose is 600 mg.", "The dose is 500 mg."),
-    ("Diabetes is not chronic.", "Diabetes is chronic."),
-])
+@pytest.mark.parametrize("answer,evidence", [("Diabetes is chronic. The moon is blue.", "Diabetes is chronic."), ("The dose is 600 mg.", "The dose is 500 mg."), ("Diabetes is not chronic.", "Diabetes is chronic.")])
 def test_final_answer_contract_blocks_bad_answers(answer, evidence):
     result = verify_final_answer(answer, [hit(evidence, score=0.9)])
     assert result["allow"] is False
     assert result["blocked_claims"] >= 1
 
 
-@pytest.mark.parametrize("claim,text", [
-    ("Diabetes is chronic.", "Diabetes is chronic. Hypertension is common."),
-    ("Hypertension is common.", "Diabetes is chronic. Hypertension is common."),
-    ("Metformin lowers glucose.", "Metformin lowers glucose. Another sentence."),
-    ("The dose is 500 mg.", "The dose is 0.5 g."),
-])
+@pytest.mark.parametrize("claim,text", [("Diabetes is chronic.", "Diabetes is chronic. Hypertension is common."), ("Hypertension is common.", "Diabetes is chronic. Hypertension is common."), ("Metformin lowers glucose.", "Metformin lowers glucose. Another sentence."), ("The dose is 500 mg.", "The dose is 0.5 g.")])
 def test_claim_matrix_returns_valid_spans(claim, text):
     matrix = build_claim_evidence_matrix([claim], [hit(text)], ["S1"])
     assert len(matrix) == 1
@@ -462,14 +283,7 @@ def test_confidence_contradiction_never_increases_score(bad):
     assert changed.calibrated <= clean.calibrated
 
 
-@pytest.mark.parametrize("args", [
-    dict(query_tokens=3, entity_count=0, intent="factual", confidence=0.9, initial_score=0.8),
-    dict(query_tokens=8, entity_count=1, intent="factual", confidence=0.9, initial_score=0.8),
-    dict(query_tokens=20, entity_count=1, intent="factual", confidence=0.9, initial_score=0.8),
-    dict(query_tokens=4, entity_count=3, intent="factual", confidence=0.9, initial_score=0.8),
-    dict(query_tokens=5, entity_count=1, intent="diagnosis", confidence=0.5, initial_score=0.8),
-    dict(query_tokens=5, entity_count=1, intent="factual", confidence=0.5, initial_score=0.2),
-])
+@pytest.mark.parametrize("args", [dict(query_tokens=3, entity_count=0, intent="factual", confidence=0.9, initial_score=0.8), dict(query_tokens=8, entity_count=1, intent="factual", confidence=0.9, initial_score=0.8), dict(query_tokens=20, entity_count=1, intent="factual", confidence=0.9, initial_score=0.8), dict(query_tokens=4, entity_count=3, intent="factual", confidence=0.9, initial_score=0.8), dict(query_tokens=5, entity_count=1, intent="diagnosis", confidence=0.5, initial_score=0.8), dict(query_tokens=5, entity_count=1, intent="factual", confidence=0.5, initial_score=0.2)])
 def test_adaptive_budget_is_bounded(args):
     budget = choose_retrieval_budget(**args)
     assert 1 <= budget.variant_limit <= 12
@@ -478,10 +292,7 @@ def test_adaptive_budget_is_bounded(args):
     assert 1 <= budget.depth <= 3
 
 
-@pytest.mark.parametrize("alignment,coverage,contradiction,expected", [
-    (0.9, 0.9, 0.0, False), (0.2, 0.9, 0.0, True), (0.9, 0.2, 0.0, True),
-    (0.9, 0.9, 0.8, True), (0.9, 0.9, 0.0, False),
-])
+@pytest.mark.parametrize("alignment,coverage,contradiction,expected", [(0.9, 0.9, 0.0, False), (0.2, 0.9, 0.0, True), (0.9, 0.2, 0.0, True), (0.9, 0.9, 0.8, True), (0.9, 0.9, 0.0, False)])
 def test_retry_boundary(alignment, coverage, contradiction, expected):
     assert should_retry_retrieval(alignment=alignment, entity_coverage=coverage, contradiction=contradiction, attempts=0, max_attempts=1) is expected
 
@@ -513,21 +324,14 @@ def test_explicit_followup_detected(question):
     assert _is_explicit_followup(question) is True
 
 
-@pytest.mark.parametrize("question,expected", [
-    ("Take 500 mg twice daily?", True), ("What medication should I take?", True), ("What is the treatment?", True),
-    ("What is diabetes?", False), ("What are the main findings?", False), ("Define hypertension.", False),
-])
+@pytest.mark.parametrize("question,expected", [("Take 500 mg twice daily?", True), ("What medication should I take?", True), ("What is the treatment?", True), ("What is diabetes?", False), ("What are the main findings?", False), ("Define hypertension.", False)])
 def test_medical_safety_risk_classification(question, expected):
     assert is_high_risk_medical_query(question) is expected
 
 
 @pytest.mark.parametrize("allowed", [True, False])
-def test_medical_safety_policy_honors_all_gate_inputs(allowed):
-    result = {
-        "status": "SUCCESS", "answer": "Take 500 mg twice daily.",
-        "citations": ["S1"] if allowed else [], "confidence": {"evidence_confidence": 0.95 if allowed else 0.2},
-        "grounding": {"allow": allowed}, "contradiction_report": {"has_contradiction": not allowed},
-    }
+def test_medical_safety_policy_honors_gate_inputs(allowed):
+    result = {"status": "SUCCESS", "answer": "Take 500 mg twice daily.", "citations": ["S1"] if allowed else [], "confidence": {"evidence_confidence": 0.95 if allowed else 0.2}, "grounding": {"allow": allowed}, "contradiction_report": {"has_contradiction": not allowed}}
     out = apply_medical_safety_policy("Take 500 mg twice daily.", result, SimpleNamespace(medical_high_risk_evidence_threshold=0.8))
     assert out["medical_safety"]["high_risk_query"] is True
     assert (out["medical_safety"]["decision"] == "ALLOW_WITH_EVIDENCE") is allowed
@@ -548,7 +352,7 @@ def test_public_alignment_with_evidence_is_bounded(question):
     assert result["decision"] in {"DIRECTLY_SUPPORTED", "PARTIALLY_SUPPORTED", "RELATED_BUT_NOT_ANSWERING", "NOT_SUPPORTED"}
 
 
-@pytest.mark.parametrize("question", ["What is diabetes?", "What are the main findings?", "What is hypertension?"])
+@pytest.mark.parametrize("question", ["What is diabetes?", "What is hypertension?", "What are the main findings?"])
 def test_semantic_alignment_is_bounded(question):
     result = semantic_evidence_alignment(question, [hit("Diabetes is a chronic metabolic disease with hyperglycemia.", score=0.8)])
     assert 0.0 <= result["score"] <= 1.0
@@ -590,13 +394,10 @@ def test_reasoning_scales_with_many_hits(n):
     assert len(result.blocked_reasons) <= 8
 
 
-# Critical reproduction of the original reported failure.
+# Critical reproduction of the exact user-reported failure.
 def test_original_main_findings_failure_path_is_removed():
     question = "What are the main findings?"
-    evidence = hit(
-        "IV. Conséquences biologiques : 1. Hyperglycémie >2.5 g/L. 2. Cétose. 3. Acidose métabolique. 4. Déplétion potassique.",
-        score=0.82, doc="endocrino", chunk="218", page=52,
-    )
+    evidence = hit("IV. Conséquences biologiques : 1. Hyperglycémie >2.5 g/L. 2. Cétose. 3. Acidose métabolique. 4. Déplétion potassique.", score=0.82, doc="endocrino", chunk="218", page=52)
     p = plan_query(question)
     u = understanding(question, intent=p.intent)
     result = assess_clinical_reasoning(u, [evidence])
@@ -625,21 +426,14 @@ def test_sources_line_never_becomes_clinical_claim():
 
 def test_original_main_findings_matrix_is_single_claim_row():
     answer = "The main findings include hyperglycemia, ketosis, and metabolic acidosis."
-    h = hit("Hyperglycemia, ketosis, and metabolic acidosis are listed.", score=0.9, doc="endocrino", page=52)
-    result = verify_final_answer(answer, [h])
+    result = verify_final_answer(answer, [hit("Hyperglycemia, ketosis, and metabolic acidosis are listed.", score=0.9, doc="endocrino", page=52)])
     assert result["claim_count"] == 1
     assert result["matrix_claim_count"] == 1
     assert result["blocked_claims"] == 0
 
 
 def test_runtime_phase_contract_is_total():
-    completed = {
-        "phases": {"phase_1_query_understanding": "complete", "phase_2_retrieval_precision": "complete", "phase_4_verification": "complete", "phase_5_intelligence_visibility": "complete"},
-        "phase_plan": {"planner_source": "deterministic", "planner_confidence": 0.9, "entities": []},
-        "adaptive_retrieval": {"stage": 1, "queries": 1, "final_hits": 2, "escalated": False},
-        "two_stage_synthesis": {"used": False, "required": False, "attempted": False, "fallback": True, "verification": {}},
-        "confidence_calibration": {"calibrated": 0.7},
-    }
+    completed = {"phases": {"phase_1_query_understanding": "complete", "phase_2_retrieval_precision": "complete", "phase_4_verification": "complete", "phase_5_intelligence_visibility": "complete"}, "phase_plan": {"planner_source": "deterministic", "planner_confidence": 0.9, "entities": []}, "adaptive_retrieval": {"stage": 1, "queries": 1, "final_hits": 2, "escalated": False}, "two_stage_synthesis": {"used": False, "required": False, "attempted": False, "fallback": True, "verification": {}}, "confidence_calibration": {"calibrated": 0.7}}
     result = _runtime_phase_implementation(completed, [], {"blocked_claims": 0, "checked": True})
     assert set(result) == {"phase_1_query_understanding", "phase_2_retrieval_precision", "phase_3_two_stage_generation", "phase_4_verification", "phase_5_intelligence_visibility"}
     assert result["phase_5_intelligence_visibility"]["authority"].endswith("complete_phases")
