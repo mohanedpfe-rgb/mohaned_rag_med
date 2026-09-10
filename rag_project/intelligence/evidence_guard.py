@@ -12,11 +12,36 @@ class ClaimCheck:
 
 SENT = re.compile(r'(?<=[.!?。！？])\s+|\n+')
 MEASURE = re.compile(r'(?P<value>[-+]?\d+(?:[.,]\d+)?(?:\s*[-–]\s*\d+(?:[.,]\d+)?)?)\s*(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)(?=\s|$|[^\w])', re.I)
-NEG = re.compile(r'\b(no|not|without|never|none|cannot|does not|doesn\'t|non|aucun|sans|jamais|ne pas|ممنوع|منع|لا|ليس|دون)\b', re.I | re.UNICODE)
-OPPOSITES = ((r'\bcontraindicated\b', r'\bindicated\b'), (r'\bshould not\b', r'\bshould\b'), (r'\bavoid\b', r'\brecommended\b'), (r'\bno\b', r'\bhas\b|\bwith\b'), (r'\bwithout\b', r'\bwith\b'))
+NEG = re.compile(r'\b(no|not|without|never|none|cannot|does not|doesn\'t|non|aucun|sans|jamais|ne pas|ممنوع|منع|لا|ليس|دون|absent|absence|inexistent|absent[e]?|غير موجود|غياب)\b', re.I | re.UNICODE)
+OPPOSITES = (
+    (r'\bcontraindicated\b', r'\bindicated\b'),
+    (r'\bshould not\b', r'\bshould\b'),
+    (r'\bavoid\b', r'\brecommended\b'),
+    (r'\bno\b', r'\bhas\b|\bwith\b'),
+    (r'\bwithout\b', r'\bwith\b'),
+    (r'\babsent\b|\babsence\b', r'\bpresent\b|\bdetected\b'),
+    (r'\bnegative\b', r'\bpositive\b'),
+)
 SCALE = {'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':('time',2592000),'year':('time',31536000),'years':('time',31536000)}
 _TINY = {'yes','no','ok','okay','thanks','thank','maybe','sure'}
 
+# Small bilingual normalization layer for common medical paraphrases. It changes
+# matching behavior only; it does not add facts to an answer.
+_CONCEPT_SYNONYMS = (
+    (r'\bhyperglyc(?:emia|émie|émie)\b', 'hyperglycemia'),
+    (r'\bhyperglycemia\b', 'hyperglycemia'),
+    (r'\bcétose\b|\bketosis\b', 'ketosis'),
+    (r'\bacidose métabolique\b|\bmetabolic acidosis\b', 'metabolic acidosis'),
+    (r'\bhypoglyc(?:emia|émie)\b|\bhypoglycemia\b', 'hypoglycemia'),
+    (r'\bhypokali(?:emia|émie)\b|\bhypokalemia\b', 'hypokalemia'),
+    (r'\bacidocétose diabétique\b|\bdiabetic ketoacidosis\b', 'diabetic ketoacidosis'),
+)
+
+def _normalize_semantic_text(text: str) -> str:
+    value = str(text or '').casefold()
+    for pattern, replacement in _CONCEPT_SYNONYMS:
+        value = re.sub(pattern, replacement, value, flags=re.I | re.UNICODE)
+    return value
 
 def split_claims(answer: str) -> list[str]:
     raw = str(answer or '').strip()
@@ -25,10 +50,7 @@ def split_claims(answer: str) -> list[str]:
     for sentence in SENT.split(raw):
         sentence = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', sentence.strip())
         if not sentence: continue
-        # Citation/source metadata is not a clinical assertion and must never lower
-        # the support ratio or create a blocked claim by itself.
-        if re.match(r'^\s*(?:sources?|citations?|references?)\s*:', sentence, re.I):
-            continue
+        if re.match(r'^\s*(?:sources?|citations?|references?)\s*:', sentence, re.I): continue
         if re.fullmatch(r'(?:\[S\d+\]\s*)+', sentence, re.I):
             if out: out[-1] = f'{out[-1]} {sentence}'.strip()
             continue
@@ -73,15 +95,17 @@ def _remove_measurements(text: str) -> str: return MEASURE.sub(' ', text or '')
 def semantic_support(claim, evidence):
     claim = _score_text(claim); evidence = str(evidence or '').strip()
     if not claim or not evidence: return 0.
-    if re.sub(r'\s+',' ',claim).casefold() == re.sub(r'\s+',' ',evidence).casefold(): return 1.0
-    ct = set(meaningful_tokens(claim)); et = set(meaningful_tokens(evidence))
+    nclaim = re.sub(r'\s+',' ',_normalize_semantic_text(claim)).strip(); nevidence = re.sub(r'\s+',' ',_normalize_semantic_text(evidence)).strip()
+    if nclaim == nevidence: return 1.0
+    ct = set(meaningful_tokens(nclaim)); et = set(meaningful_tokens(nevidence))
     if not ct or not et: return 0.
-    overlap = len(ct & et) / len(ct); jac = len(ct & et) / max(1,len(ct | et)); char = keyword_overlap_score(claim,evidence); polarity_penalty = .35 if _polarity(claim) != _polarity(evidence) else 0
+    framing = {'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','sont','les','des'}
+    ct = {t for t in ct if t not in framing} or ct
+    overlap = len(ct & et) / len(ct); jac = len(ct & et) / max(1,len(ct | et)); char = keyword_overlap_score(nclaim,nevidence); polarity_penalty = .35 if _polarity(nclaim) != _polarity(nevidence) else 0
     return max(0., min(1., .50*overlap + .25*jac + .25*char - polarity_penalty))
 
 def detect_contradiction(claim, evidence_blocks: Sequence[str]) -> bool:
-    cl = _score_text(claim).casefold()
-    cl_tokens = set(meaningful_tokens(cl))
+    cl = _score_text(claim).casefold(); cl_tokens = set(meaningful_tokens(cl))
     for ev in evidence_blocks:
         el = ev.casefold(); ev_tokens = set(meaningful_tokens(el)); shared = cl_tokens & ev_tokens
         explicit = any(re.search(a, cl, re.I) and re.search(b, el, re.I) for a,b in OPPOSITES)
