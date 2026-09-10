@@ -18,27 +18,7 @@ _RELATIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("follows", ("after", "subsequently", "then", "followed by", "après", "ensuite", "puis", "بعد", "ثم")),
 )
 
-_OPPOSITE: dict[str, str] = {
-    "causes": "not_causes",
-    "association": "not_association",
-    "diagnoses": "not_diagnoses",
-    "treated_with": "not_treated_with",
-    "contraindicated": "recommended",
-    "precedes": "follows",
-    "follows": "precedes",
-}
-
-_NEGATED_RELATION_PATTERNS: tuple[str, ...] = (
-    r"\bnot\s+(?:a\s+)?cause\b",
-    r"\bdoes\s+not\s+cause\b",
-    r"\bnot\s+associated\b",
-    r"\bnot\s+related\b",
-    r"\bnot\s+recommended\b",
-    r"\bshould\s+not\s+be\s+treated\s+with\b",
-    r"\bne\s+cause\s+pas\b",
-    r"\bnon\s+associé\b",
-    r"\bne\s+doit\s+pas\s+être\s+traité\b",
-)
+_NEGATION = re.compile(r"\b(no|not|never|without|cannot|does not|doesn't|non|ne pas|sans|aucun|ممنوع|ليس|لا|دون)\b", re.I | re.UNICODE)
 
 
 @dataclass(frozen=True)
@@ -88,7 +68,7 @@ def _normal(text: str) -> str:
 
 def _is_negated(sentence: str, start: int) -> bool:
     prefix = sentence[max(0, start - 90): start]
-    return bool(re.search(r"\b(no|not|never|without|cannot|does not|doesn't|non|ne pas|sans|aucun|ممنوع|ليس|لا)\b", prefix, re.I | re.UNICODE))
+    return bool(_NEGATION.search(prefix))
 
 
 def _relation_hits(sentence: str) -> list[tuple[str, int]]:
@@ -119,20 +99,14 @@ def extract_clinical_facts(text: str, *, node_id: str = "", document_id: str = "
         relation_hits = _relation_hits(sentence)
         if len(entities) < 2 or not relation_hits:
             continue
+        ordered = sorted(entities, key=lambda entity: sentence.casefold().find(entity.text.casefold()))
         for rel_index, (relation, position) in enumerate(relation_hits[:3]):
-            ordered = sorted(entities, key=lambda entity: sentence.casefold().find(entity.text.casefold()))
-            if len(ordered) < 2:
-                continue
-            if rel_index == 0:
-                pairs = list(combinations(ordered, 2))
-            else:
-                pairs = list(combinations(ordered, 2))[:3]
-            for pair_index, (left, right) in enumerate(pairs[:6]):
+            for pair_index, (left, right) in enumerate(combinations(ordered, 2)):
                 left_pos = sentence.casefold().find(left.text.casefold())
                 right_pos = sentence.casefold().find(right.text.casefold())
                 subject, obj = (left, right) if left_pos <= right_pos else (right, left)
                 polarity = -1 if _is_negated(sentence, position) or subject.negated or obj.negated else 1
-                confidence = min(0.97, 0.55 + 0.08 * min(len(entities), 3) + 0.06 * min(pair_index, 2))
+                confidence = min(0.97, 0.56 + 0.08 * min(len(entities), 3) + 0.05 * min(pair_index, 2))
                 facts.append(ClinicalFact(
                     subject=subject.normalized,
                     predicate=relation,
@@ -144,11 +118,6 @@ def extract_clinical_facts(text: str, *, node_id: str = "", document_id: str = "
                     document_id=document_id,
                 ))
     return tuple(facts[:24])
-
-
-def _query_edges(understanding: QueryUnderstanding) -> set[tuple[str, str]]:
-    entities = [entity.normalized for entity in understanding.entities]
-    return set(zip(entities, entities[1:]))
 
 
 def _fact_support(fact: ClinicalFact, query_entities: set[str]) -> float:
@@ -179,14 +148,7 @@ def _find_paths(facts: Sequence[ClinicalFact], understanding: QueryUnderstanding
             if len(relations) > max_depth:
                 continue
             if node == target and relations:
-                results.append(ReasoningPath(
-                    nodes=nodes,
-                    relations=relations,
-                    fact_ids=fact_ids,
-                    support=round(score, 3),
-                    explicit=True,
-                    cross_document=len(documents) > 1,
-                ))
+                results.append(ReasoningPath(nodes, relations, fact_ids, round(score, 3), True, len(documents) > 1))
                 continue
             for fact in adjacency.get(node, ()):
                 if fact.object in nodes:
@@ -222,25 +184,30 @@ def _safety_conflict(understanding: QueryUnderstanding, facts: Sequence[Clinical
 
 def assess_clinical_reasoning(understanding: QueryUnderstanding, hits: Sequence[Any], *, max_depth: int = 3) -> ClinicalReasoningAssessment:
     all_facts: list[ClinicalFact] = []
+    direct_entity_scores: list[float] = []
     for index, hit in enumerate(hits):
         meta = getattr(hit, "metadata", {}) or {}
-        all_facts.extend(extract_clinical_facts(
-            str(getattr(hit, "text", "") or ""),
-            node_id=str(meta.get("chunk_id") or f"N{index + 1}"),
-            document_id=str(meta.get("document_id") or getattr(hit, "doc_id", "")),
-        ))
+        text = str(getattr(hit, "text", "") or "")
+        facts = extract_clinical_facts(text, node_id=str(meta.get("chunk_id") or f"N{index + 1}"), document_id=str(meta.get("document_id") or getattr(hit, "doc_id", "")))
+        all_facts.extend(facts)
+        evidence_entities = {entity.normalized for entity in extract_clinical_entities(text)}
+        query_entities = {entity.normalized for entity in understanding.entities}
+        overlap = len(query_entities & evidence_entities) / max(1, len(query_entities))
+        if overlap:
+            direct_entity_scores.append(overlap * max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))))
     query_entities = {entity.normalized for entity in understanding.entities}
     covered = {fact.subject for fact in all_facts} | {fact.object for fact in all_facts}
-    entity_coverage = len(query_entities & covered) / max(1, len(query_entities))
+    entity_coverage = len(query_entities & covered) / max(1, len(query_entities)) if all_facts else max(direct_entity_scores, default=0.0)
     positive_direct = [fact for fact in all_facts if fact.polarity > 0 and fact.subject in query_entities and fact.object in query_entities]
-    direct_support = max((_fact_support(fact, query_entities) for fact in positive_direct), default=0.0)
+    direct_support = max((_fact_support(fact, query_entities) for fact in positive_direct), default=max(direct_entity_scores, default=0.0) * 0.90)
     paths = _find_paths(all_facts, understanding, max_depth=max_depth)
     path_support = max((path.support for path in paths), default=0.0)
     source_agreement = 0.0
     if paths:
         path = paths[0]
-        path_docs = {fact.document_id for fact in all_facts if fact.node_id in path.nodes and fact.document_id}
-        source_agreement = min(1.0, 0.5 + 0.25 * len(path_docs))
+        fact_nodes = {fact_id.split(":", 1)[0] for fact_id in path.fact_ids}
+        path_docs = {fact.document_id for fact in all_facts if fact.node_id in fact_nodes and fact.document_id}
+        source_agreement = min(1.0, 0.50 + 0.25 * len(path_docs))
     contradiction = _same_claim_conflict(all_facts)
     safety_conflict = _safety_conflict(understanding, all_facts)
     relation_needed = bool(understanding.relations or understanding.primary_intent in {"etiology", "mechanism", "association", "comparison"})
@@ -250,6 +217,9 @@ def assess_clinical_reasoning(understanding: QueryUnderstanding, hits: Sequence[
     elif paths and relation_needed:
         mode = "MULTI_HOP" if len(paths[0].relations) > 1 else "ONE_HOP"
         depth = len(paths[0].relations)
+    elif not relation_needed and entity_coverage >= 0.5:
+        mode = "DIRECT"
+        depth = 1
     else:
         mode = "INSUFFICIENT"
         depth = 0
@@ -263,32 +233,15 @@ def assess_clinical_reasoning(understanding: QueryUnderstanding, hits: Sequence[
     if safety_conflict >= 1.0:
         blocked.append("safety_conflict")
     confidence = max(0.0, min(1.0, 0.35 * direct_support + 0.35 * path_support + 0.15 * entity_coverage + 0.15 * source_agreement - 0.30 * contradiction - 0.35 * safety_conflict))
-    allow = not blocked and confidence >= (0.42 if mode == "DIRECT" else 0.50)
-    return ClinicalReasoningAssessment(
-        allow_generation=allow,
-        mode=mode,
-        depth=depth,
-        entity_coverage=round(entity_coverage, 3),
-        direct_support=round(direct_support, 3),
-        path_support=round(path_support, 3),
-        source_agreement=round(source_agreement, 3),
-        contradiction=round(contradiction, 3),
-        safety_conflict=round(safety_conflict, 3),
-        confidence=round(confidence, 3),
-        supported_paths=paths,
-        blocked_reasons=tuple(blocked),
-    )
+    allow_threshold = 0.35 if mode == "DIRECT" else 0.50
+    allow = not blocked and confidence >= allow_threshold
+    return ClinicalReasoningAssessment(allow, mode, depth, round(entity_coverage, 3), round(direct_support, 3), round(path_support, 3), round(source_agreement, 3), round(contradiction, 3), round(safety_conflict, 3), round(confidence, 3), paths, tuple(blocked))
 
 
 def build_reasoning_instruction(understanding: QueryUnderstanding, assessment: ClinicalReasoningAssessment) -> str:
     if assessment.mode == "MULTI_HOP":
         path_text = " -> ".join(assessment.supported_paths[0].nodes) if assessment.supported_paths else ""
-        return (
-            f"Use the explicit evidence path only: {path_text}. "
-            "Each relationship must be supported by a retrieved source. Do not invent a missing link. "
-            "Separate what is directly stated from what is only inferred. Preserve population, timing, contraindications, and numeric qualifiers. "
-            "Do not reveal private reasoning steps; provide only the evidence-supported conclusion."
-        )
+        return f"Use the explicit evidence path only: {path_text}. Each relationship must be supported by a retrieved source. Do not invent a missing link. Separate direct evidence from inference and preserve population, timing, contraindications, and numeric qualifiers. Do not reveal private reasoning steps; provide only the evidence-supported conclusion."
     if assessment.mode == "ONE_HOP":
         return "Use the explicit relationship supported by the evidence. Do not extend beyond the retrieved fact or introduce unstated clinical conclusions."
     if "safety" in understanding.constraints:
