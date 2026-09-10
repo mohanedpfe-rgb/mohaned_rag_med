@@ -31,6 +31,14 @@ def settings(top_k=4, max_query_variants=8, retrieval_candidate_multiplier=5):
     return SimpleNamespace(top_k=top_k, max_query_variants=max_query_variants, retrieval_candidate_multiplier=retrieval_candidate_multiplier)
 
 
+def understanding(question: str, *, entities=(), intent="factual", relations=(), constraints=(), confidence=0.8):
+    return QueryUnderstanding(
+        normalized=question.casefold(), intents=(intent,), primary_intent=intent,
+        entities=tuple(entities), relations=tuple(relations), constraints=tuple(constraints),
+        answer_shape="explanation", semantic_terms=tuple(question.casefold().split()), confidence=confidence,
+    )
+
+
 class FakeRetriever:
     def __init__(self, batches=None, error_on=None):
         self.batches = batches or {}
@@ -269,7 +277,8 @@ def test_production_answer_always_sets_pipeline_authority(monkeypatch, question)
 
 @pytest.mark.parametrize("question", ["What is diabetes?", "What are the main findings?", "Define hypertension."])
 def test_production_answer_handles_certified_answer_exception_without_corrupting_history(monkeypatch, question):
-    history = [("previous", "answer")]
+    history = [("previous", "answer")
+]
     def broken_answer(q, metadata_filter=None):
         raise RuntimeError("generation failure")
     obj = bare_production(broken_answer, history)
