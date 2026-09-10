@@ -14,34 +14,37 @@ _ALLOWED_INTENTS = {
 }
 _ALLOWED_RELATIONS = {"causality", "association", "comparison", "sequence"}
 _ALLOWED_CONSTRAINTS = {"exactness", "population", "clinical_phase", "safety"}
+
 _SYSTEM = (
     "You are a constrained medical query analyst inside a document RAG system. "
     "Do not answer the medical question. Return ONLY one JSON object. "
     "Identify the user's task, entities, relationships, clinical constraints, and the smallest set of retrieval subquestions. "
     "Do not invent facts. Preserve uncertainty. Keep every array <= 6 items."
 )
+
 _HARD_INTENTS = {"comparison", "diagnosis", "management", "etiology", "mechanism", "prognosis", "relationship", "numeric", "table_lookup", "figure_lookup"}
 _RELATION_CUES = ("cause", "caused by", "due to", "leads to", "results in", "related", "relationship", "associated", "linked", "association", "why", "because", "pourquoi", "caus", "lié", "associé", "سبب", "علاقة", "مرتبط")
 _SAFETY_CUES = ("contraindication", "contraindicated", "avoid", "not recommended", "contre-indication", "contre-indiqué", "ممنوع", "تجنب")
 _EXACTNESS_CUES = ("exact", "exactly", "precise", "strictly", "exacte", "précis")
 _POPULATION_CUES = ("adult", "child", "children", "pediatric", "pregnan", "grossesse", "enfant", "adulte", "neonate", "newborn")
 _PHASE_CUES = ("first-line", "second-line", "initial", "maintenance", "acute", "chronic", "aigu", "chronique", "initiale", "entretien")
+_FOLLOWUP_CUES = re.compile(r"\b(this|that|it|they|them|the latter|the former|what about|how about)\b|^(and|also|then|et|puis)\b|^(و|ثم)(?=\S)", re.I | re.UNICODE)
+
 
 def _contains_any(text: str, cues: tuple[str, ...]) -> bool:
     low = str(text or "").casefold()
     return any(cue.casefold() in low for cue in cues)
 
+
 def should_use_small_model(question: str, understanding: QueryUnderstanding) -> bool:
+    """Escalate only queries whose structure genuinely benefits from model analysis."""
     text = str(question or "").strip()
     tokens = re.findall(r"\S+", text)
     lowered = text.casefold()
-    ambiguity = bool(
-        re.search(r"\b(this|that|it|they|them|the latter|the former|what about|how about)\b", lowered)
-        or re.search(r"^(?:and|also|then|et|puis|ثم)\b", lowered)
-        or re.match(r"^و(?=\S)", lowered)
-    )
+    ambiguity = bool(_FOLLOWUP_CUES.search(lowered))
     hard_reasoning = bool(understanding.relations) or understanding.primary_intent in _HARD_INTENTS
     return ambiguity or hard_reasoning or len(understanding.intents) >= 2 or len(tokens) >= 28
+
 
 def _extract_json(text: str) -> dict[str, Any] | None:
     raw = str(text or "").strip()
@@ -58,6 +61,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
             return value
     return None
 
+
 def _clean_list(value: Any, *, limit: int = 6, max_chars: int = 180) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -70,6 +74,7 @@ def _clean_list(value: Any, *, limit: int = 6, max_chars: int = 180) -> list[str
             break
     return out
 
+
 def _question_entities(question: str) -> set[str]:
     allowed: set[str] = set()
     try:
@@ -78,13 +83,13 @@ def _question_entities(question: str) -> set[str]:
         pass
     return allowed
 
+
 def _sanitize_assist(question: str, understanding: QueryUnderstanding, parsed: dict[str, Any]) -> dict[str, Any]:
     deterministic_entities = _question_entities(question)
     entities: list[str] = []
-    understanding_entities = {str(e.normalized).casefold() for e in understanding.entities}
     for item in _clean_list(parsed.get("entities"), limit=8):
         norm = item.casefold().strip()
-        if norm in deterministic_entities or norm in understanding_entities:
+        if norm in deterministic_entities or norm in {str(e.normalized).casefold() for e in understanding.entities}:
             entities.append(item)
     intent = str(parsed.get("intent") or "").strip().casefold()
     if intent not in _ALLOWED_INTENTS:
@@ -98,7 +103,13 @@ def _sanitize_assist(question: str, understanding: QueryUnderstanding, parsed: d
         if not hard_cue:
             intent = "factual"
     relation_items = [item for item in _clean_list(parsed.get("relations")) if item in _ALLOWED_RELATIONS]
-    relations = relation_items if _contains_any(question, _RELATION_CUES) else []
+    # An association relation returned by the copilot is useful retrieval structure when
+    # the query already contains deterministic medical entities, even if the user did not
+    # use the literal word "associated". Causal/sequence relations remain cue-gated.
+    if "association" in relation_items and deterministic_entities:
+        relations = ["association"]
+    else:
+        relations = relation_items if _contains_any(question, _RELATION_CUES) else []
     constraint_items = [item for item in _clean_list(parsed.get("constraints")) if item in _ALLOWED_CONSTRAINTS]
     constraints: list[str] = []
     if "safety" in constraint_items and _contains_any(question, _SAFETY_CUES): constraints.append("safety")
@@ -114,6 +125,7 @@ def _sanitize_assist(question: str, understanding: QueryUnderstanding, parsed: d
         "retrieval_terms": _clean_list(parsed.get("retrieval_terms")),
         "answer_strategy": re.sub(r"\s+", " ", str(parsed.get("answer_strategy") or "")).strip()[:400],
     }
+
 
 def analyze_with_small_model(llm: Any, question: str, understanding: QueryUnderstanding, conversation_context: str = "") -> dict[str, Any] | None:
     if llm is None or not should_use_small_model(question, understanding):
@@ -134,54 +146,37 @@ def analyze_with_small_model(llm: Any, question: str, understanding: QueryUnders
         return None
     return _sanitize_assist(question, understanding, parsed)
 
+
 def augment_query_plan(plan: QueryPlan, assist: dict[str, Any] | None) -> QueryPlan:
-    if not assist:
-        return plan
+    if not assist: return plan
     entities = list(plan.entities)
     for item in assist.get("entities", []):
-        if item and item not in entities:
-            entities.append(item)
-        if len(entities) >= 16:
-            break
+        if item and item not in entities: entities.append(item)
+        if len(entities) >= 16: break
     variants = list(plan.variants)
     for item in assist.get("subquestions", []):
-        if item and item not in variants:
-            variants.append(item)
-        if len(variants) >= 10:
-            break
+        if item and item not in variants: variants.append(item)
+        if len(variants) >= 10: break
     for item in assist.get("retrieval_terms", []):
         if item:
             candidate = f"{plan.normalized} {item}".strip()
-            if candidate not in variants:
-                variants.append(candidate)
-        if len(variants) >= 10:
-            break
+            if candidate not in variants: variants.append(candidate)
+        if len(variants) >= 10: break
     intent = str(assist.get("intent") or plan.intent)
-    if intent not in _ALLOWED_INTENTS:
-        intent = plan.intent
-    return replace(
-        plan,
-        intent=intent,
-        entities=tuple(entities[:16]),
-        variants=tuple(variants[:10]),
-        needs_multi_hop=plan.needs_multi_hop or bool(assist.get("relations")) or len(assist.get("subquestions", [])) > 1,
-    )
+    if intent not in _ALLOWED_INTENTS: intent = plan.intent
+    return replace(plan, intent=intent, entities=tuple(entities[:16]), variants=tuple(variants[:10]), needs_multi_hop=plan.needs_multi_hop or bool(assist.get("relations")) or len(assist.get("subquestions", [])) > 1)
+
 
 def merge_understanding(understanding: QueryUnderstanding, assist: dict[str, Any] | None) -> QueryUnderstanding:
-    if not assist:
-        return understanding
-    intents = list(understanding.intents)
-    intent = str(assist.get("intent") or "")
-    if intent and intent not in intents:
-        intents.append(intent)
+    if not assist: return understanding
+    intents = list(understanding.intents); intent = str(assist.get("intent") or "")
+    if intent and intent not in intents: intents.append(intent)
     relations = list(understanding.relations)
     for relation in assist.get("relations", []):
-        if relation not in relations:
-            relations.append(relation)
+        if relation not in relations: relations.append(relation)
     constraints = list(understanding.constraints)
     for constraint in assist.get("constraints", []):
-        if constraint not in constraints:
-            constraints.append(constraint)
+        if constraint not in constraints: constraints.append(constraint)
     hard_intent_conflict = understanding.primary_intent == "factual" and intent in _HARD_INTENTS and not _contains_any(understanding.normalized, (
         "compare", "difference", "versus", "between", "diagnos", "criteri", "treatment", "therapy", "cause", "why",
         "mechanism", "prognosis", "dose", "dosage", "mg", "ml", "table", "figure", "relationship", "related", "associated",
@@ -190,11 +185,4 @@ def merge_understanding(understanding: QueryUnderstanding, assist: dict[str, Any
     if hard_intent_conflict:
         intent = understanding.primary_intent
         intents = [x for x in intents if x != str(assist.get("intent") or "")]
-    return replace(
-        understanding,
-        intents=tuple(intents[:8]),
-        primary_intent=intent or understanding.primary_intent,
-        relations=tuple(relations[:6]),
-        constraints=tuple(constraints[:8]),
-        confidence=min(1.0, understanding.confidence + (0.08 if assist else 0.0)),
-    )
+    return replace(understanding, intents=tuple(intents[:8]), primary_intent=intent or understanding.primary_intent, relations=tuple(relations[:6]), constraints=tuple(constraints[:8]), confidence=min(1.0, understanding.confidence + (0.08 if assist else 0.0)))
