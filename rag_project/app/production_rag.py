@@ -6,7 +6,8 @@ from typing import Any, Dict, List
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import robust_ingestor
-from rag_project.intelligence.god_mode import _god_answer, audit_god_mode_index
+from rag_project.intelligence.god_mode import audit_god_mode_index
+from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.final_44 import _wrap_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace, validate_feature_contract
@@ -15,7 +16,7 @@ from rag_project.intelligence.production_contract import sanitize_trace, validat
 class ProductionRAGSystem(ResilientRAGSystem):
     """Canonical production composition for ingestion, retrieval and answering."""
 
-    _certified_god_answer = _wrap_answer(_god_answer)
+    _certified_god_answer = _wrap_answer(enhanced_god_answer)
 
     def __init__(self, settings: Any | None = None):
         super().__init__(settings)
@@ -101,7 +102,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
         result = apply_medical_safety_policy(question, result, self.settings)
         if "query_trace" in result:
             result["query_trace"] = sanitize_trace(result["query_trace"])
-        result["production_contract"] = {"feature_count": 44, "all_features_resolved": True}
+        result["production_contract"] = {"feature_count": 44, "all_features_resolved": True, "god_mode_100": bool(result.get("god_mode_100", False))}
         return result
 
     def audit_god_mode_index(self) -> dict[str, Any]:
@@ -139,6 +140,12 @@ class ProductionRAGSystem(ResilientRAGSystem):
             "durable_page_checkpoints": True,
             "serialized_local_index_writes": True,
             "canonical_ingestion": "robust_ingestor",
+            "god_mode_100": True,
+            "claim_evidence_matrix": True,
+            "hierarchical_evidence": True,
+            "adaptive_retrieval": True,
+            "confidence_calibration": True,
+            "critic_repair_reverification": True,
         }
         index_status = str(checks.get("index", {}).get("status", "READY")).upper()
         checks["ready"] = bool(checks["embedding"]["ok"] and index_status in {"READY", "OK"} and self._production_feature_contract["all_resolved"])
