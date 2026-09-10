@@ -86,6 +86,36 @@ def _validate_document_index(
             for index, metadata in enumerate(metadatas)
             if isinstance(metadata, dict) and metadata.get("version_id") == version_id
         ]
+
+    # The application historically stored content_hash in vector metadata while
+    # the state store may expose a profile-aware version_id. Resolve that alias
+    # only when the state record proves the relationship for this exact document.
+    if not selected and version_id is not None:
+        state_database = self.persist_directory.parent / "ingestion.sqlite3"
+        if state_database.exists():
+            try:
+                with _connect(state_database) as connection:
+                    row = connection.execute(
+                        "SELECT content_hash, version_id FROM documents WHERE document_id = ?",
+                        (document_id,),
+                    ).fetchone()
+                canonical_state_version = str(row[1] or "") if row else ""
+                content_hash = str(row[0] or "") if row else ""
+                if canonical_state_version == version_id and content_hash:
+                    selected = [
+                        index
+                        for index, metadata in enumerate(metadatas)
+                        if isinstance(metadata, dict)
+                        and str(metadata.get("version_id") or "") == content_hash
+                    ]
+                    if selected:
+                        print(
+                            f"DEBUG RUNTIME VERSION ALIAS: canonical={version_id!r}, "
+                            f"stored_content_hash={content_hash!r}, selected_indices={selected}"
+                        )
+            except sqlite3.Error as exc:
+                print(f"DEBUG RUNTIME VERSION ALIAS ERROR: {type(exc).__name__}: {exc}")
+
     print(
         f"DEBUG RUNTIME VERSION MATCH: requested={version_id!r}, selected_indices={selected}"
     )
@@ -142,52 +172,15 @@ def _validate_document_index(
     return result
 
 
-def _synchronize_ingestion_version(self: Any, document_id: str) -> None:
-    """Make the canonical state-store version_id authoritative in retrieval stores."""
-    if not document_id:
-        return
-    state_document = self.state_store.get_document(document_id)
-    if not state_document:
-        return
-    canonical_version = str(
-        state_document.get("version_id") or state_document.get("content_hash") or ""
-    )
-    if not canonical_version:
-        return
-
-    matches = self.collection.get(
-        where={"document_id": document_id},
-        include=["metadatas"],
-    )
-    ids = _normalize_sequence(matches.get("ids"))
-    metadatas = _normalize_sequence(matches.get("metadatas"))
-    for item_id, metadata in zip(ids, metadatas, strict=False):
-        meta = self._coerce_metadata(metadata)
-        if str(meta.get("version_id") or "") != canonical_version:
-            meta["version_id"] = canonical_version
-            self.collection.update(ids=[str(item_id)], metadatas=[meta])
-
-    with _database_lock(Path(self.lexical_database)):
-        with _connect(Path(self.lexical_database)) as connection:
-            connection.execute(
-                "UPDATE lexical_documents "
-                "SET metadata = json_set(metadata, '$.version_id', ?) "
-                "WHERE json_extract(metadata, '$.document_id') = ?",
-                (canonical_version, document_id),
-            )
-
-
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
 
-    from rag_project.app.rag_system import RAGSystem
     from rag_project.storage.vector_store import VectorStore
 
     original_init = VectorStore.__init__
     original_resolve_dimension = VectorStore._resolve_dimension
-    original_ingest_file = RAGSystem.ingest_file
 
     def hardened_init(
         self: Any,
@@ -206,19 +199,9 @@ def install() -> None:
                 return 0
         return original_resolve_dimension(self, embeddings)
 
-    def synchronized_ingest_file(self: Any, pdf_path: Any) -> Any:
-        result = original_ingest_file(self, pdf_path)
-        if isinstance(result, dict) and result.get("status") == "success":
-            _synchronize_ingestion_version(
-                self.vector_store,
-                str(result.get("document_id") or ""),
-            )
-        return result
-
     VectorStore.__init__ = hardened_init
     VectorStore._resolve_dimension = hardened_resolve_dimension
     VectorStore.validate_document_index = _validate_document_index
-    RAGSystem.ingest_file = synchronized_ingest_file
 
     for method_name in (
         "_upsert_lexical_records",
