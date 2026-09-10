@@ -47,16 +47,51 @@ def _ordered_entities(sentence:str):
         if pos>=0:selected.append((pos,entity));seen.add(entity.normalized)
     selected.sort(key=lambda x:x[0]);return [e for _,e in selected]
 
+def _entity_spans(sentence:str,entities:Sequence[ClinicalEntity]):
+    low=sentence.casefold();out=[]
+    for entity in entities:
+        pos=low.find(entity.text.casefold())
+        if pos>=0:out.append((pos,pos+len(entity.text),entity))
+    return sorted(out,key=lambda x:x[0])
+
+def _relation_entity_pairs(sentence:str,relation_positions:Sequence[tuple[str,int]]):
+    """Choose relation endpoints by their position around the cue, allowing nested terms.
+
+    This is intentionally separate from the UI/entity list: a general concept such as
+    `diabetes` may occur inside `diabetic nephropathy`, but in a causal sentence the
+    correct endpoints are the concept before the cue and the complete concept after it.
+    """
+    entities=extract_clinical_entities(sentence)
+    spans=_entity_spans(sentence,entities)
+    if len(spans)<2:return []
+    pairs=[]
+    for relation,pos in relation_positions[:3]:
+        left=[row for row in spans if row[1]<=pos]
+        right=[row for row in spans if row[0]>=pos]
+        if not left or not right:
+            continue
+        subject=max(left,key=lambda row:row[1])[2]
+        obj=min(right,key=lambda row:row[0])[2]
+        if subject.normalized==obj.normalized:
+            continue
+        pairs.append((relation,pos,subject,obj))
+    return pairs
+
 def extract_clinical_facts(text:str,*,node_id:str='',document_id:str='')->tuple[ClinicalFact,...]:
     facts=[]
     for sentence in re.split(r'(?<=[.!?。！？])\s+|\n+',str(text or '').strip()):
         if not sentence:continue
-        ents=_ordered_entities(sentence);rels=_relation_hits(sentence)
-        if len(ents)<2 or not rels:continue
-        ordered=sorted(ents,key=lambda e:sentence.casefold().find(e.text.casefold()))
-        for ri,(rel,pos) in enumerate(rels[:3]):
-            left,right=ordered[0],ordered[1];neg=_is_negated(sentence,pos,rel) or left.negated or right.negated
-            facts.append(ClinicalFact(left.normalized,rel,right.normalized,-1 if neg else 1,min(.97,.68+.07*min(len(ents),3)+.03*ri),node_id or f'N{len(facts)+1}',sentence,document_id))
+        relations=_relation_hits(sentence)
+        if not relations:continue
+        pairs=_relation_entity_pairs(sentence,relations)
+        if not pairs:
+            ents=_ordered_entities(sentence)
+            if len(ents)>=2:
+                ordered=sorted(ents,key=lambda e:sentence.casefold().find(e.text.casefold()))
+                for relation,pos in relations[:3]:pairs.append((relation,pos,ordered[0],ordered[1]))
+        for ri,(rel,pos,left,right) in enumerate(pairs[:3]):
+            neg=_is_negated(sentence,pos,rel) or left.negated or right.negated
+            facts.append(ClinicalFact(left.normalized,rel,right.normalized,-1 if neg else 1,min(.97,.68+.07*min(len(pairs)+1,3)+.03*ri),node_id or f'N{len(facts)+1}',sentence,document_id))
     return tuple(facts[:32])
 
 def _find_paths(facts:Sequence[ClinicalFact],u:QueryUnderstanding,max_depth:int=3)->tuple[ReasoningPath,...]:
