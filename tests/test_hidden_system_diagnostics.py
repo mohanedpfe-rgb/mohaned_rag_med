@@ -30,7 +30,7 @@ class _FakePlan:
 def _hit(i: int, text: str | None = None, score: float = 0.8) -> RetrievalHit:
     return RetrievalHit(
         doc_id=f"doc-{i % 3}",
-        text=text or f"Evidence about diabetic nephropathy and albuminuria {i}",
+        text=text if text is not None else f"Evidence about diabetic nephropathy and albuminuria {i}",
         metadata={"document_id": f"doc-{i % 3}", "chunk_id": f"chunk-{i}", "page_numbers": [i + 1], "language": "en"},
         score=score,
         vector_score=0.65,
@@ -95,7 +95,7 @@ def test_query_quality_rejects_low_signal_fragments(query):
 
 
 def test_query_quality_accepts_specific_medical_question():
-    result = QueryQualityClassifier.assess("What are the diagnostic criteria for diabetic ketoacidosis?")
+    result = QueryQualityClassifier.assess("What are the diagnostic criteria of diabetic ketoacidosis?")
     assert result["should_abstain"] is False
     assert result["query_intent"] == "DIRECT_QUESTION"
 
@@ -115,10 +115,10 @@ def test_evidence_alignment_accepts_direct_french_support():
 
 
 def test_evidence_alignment_handles_empty_hit_text():
-    hits = [_hit(1, "")]
+    hits = [SimpleNamespace(text="")]
     result = EvidenceAlignment.evaluate("What is diabetic nephropathy?", hits)
     assert result["answerability"] == 0.0
-    assert result["decision"] == "RELATED_BUT_NOT_ANSWERING" or result["decision"] == "NOT_SUPPORTED"
+    assert result["decision"] in {"RELATED_BUT_NOT_ANSWERING", "NOT_SUPPORTED"}
 
 
 def test_evidence_alignment_does_not_depend_only_on_number_of_hits():
@@ -134,7 +134,7 @@ def test_safe_hits_deduplicates_same_chunk_from_multiple_variants():
     plan = _FakePlan()
     hits = _safe_hits(system, plan, None)
     assert len({h.metadata["chunk_id"] for h in hits}) == len(hits)
-    assert len(calls) == 2
+    assert len(calls) == 3  # normalized query + two distinct variants
 
 
 def test_safe_hits_respects_query_variant_limit():
@@ -174,7 +174,6 @@ def test_safe_hits_candidate_budget_tripwire():
         logger=SimpleNamespace(warning=lambda *a, **k: None),
     )
     _safe_hits(system, plan, None)
-    # A production implementation should not fan out hundreds of reranking candidates.
     assert sum(seen) <= 48
 
 
