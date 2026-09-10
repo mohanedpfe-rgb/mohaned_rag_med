@@ -53,7 +53,6 @@ def normalize_query(query: str) -> str:
     text = text.replace("–", "-").replace("—", "-")
     text = re.sub(r"\bwhat's\b", "what is", text, flags=re.I)
     text = re.sub(r"\bvs\.?\b", "versus", text, flags=re.I)
-    # Normalization is not a casing policy: preserve the user's leading case.
     if raw and raw[0].isupper() and text:
         text = text[0].upper() + text[1:]
     return text[:3000]
@@ -75,7 +74,7 @@ def extract_query_entities(query: str) -> tuple[str, ...]:
 
 
 def _split_top_level(query: str) -> list[str]:
-    parts = [p.strip(" ?!;,.") for p in re.split(r"\?|;|\band\b|\bet\b|\bو\b|\balso\b|\bthen\b|\bwhile\b|\bmais\b", query, flags=re.I) if p.strip()]
+    parts = [p.strip(" ?!;,." ) for p in re.split(r"\?|;|\band\b|\bet\b|\bو\b|\balso\b|\bthen\b|\bwhile\b|\bmais\b", query, flags=re.I) if p.strip()]
     return list(dict.fromkeys(parts))
 
 
@@ -86,7 +85,7 @@ def decompose_query(query: str) -> tuple[str, ...]:
     pieces = _split_top_level(q)
     if len(pieces) == 1 and re.search(r"\bversus\b|\bbetween\b", q, re.I):
         pieces = re.split(r"\bversus\b|\bbetween\b|\band\b", q, flags=re.I)
-        pieces = [p.strip(" ?!;,.") for p in pieces if p.strip()]
+        pieces = [p.strip(" ?!;,." ) for p in pieces if p.strip()]
     return tuple(dict.fromkeys(pieces))[:8]
 
 
@@ -147,7 +146,7 @@ def plan_query(query: str, conversation_context: str = "") -> QueryPlan:
     subqueries = decompose_query(normalized)
     entities = extract_query_entities(normalized)
     numeric = "numeric" in semantic.intents or _contains_any(normalized, _NUMERIC)
-    table = numeric or "table_lookup" in semantic.intents or _contains_any(normalized, _TABLE)
+    table = "table_lookup" in semantic.intents or _contains_any(normalized, _TABLE)
     figure = "figure_lookup" in semantic.intents or _contains_any(normalized, _FIGURE)
     relation = "relationship" in semantic.intents or "association" in semantic.intents or _contains_any(normalized, _RELATION)
     navigation = "navigation" in semantic.intents or _contains_any(normalized, _NAV)
