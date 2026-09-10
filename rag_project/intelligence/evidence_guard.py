@@ -24,15 +24,8 @@ class ClaimCheck:
 
 _SENTENCE_RE = re.compile(r"(?<=[.!?。！？])\s+|\n+")
 _NUM_RE = re.compile(r"[-+]?\d+(?:[\.,]\d+)?")
-_VALUE_UNIT_RE = re.compile(
-    r"(?P<value>[-+]?\d+(?:[\.,]\d+)?(?:\s*[-–]\s*\d+(?:[\.,]\d+)?)?)\s*"
-    r"(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)\b",
-    re.I,
-)
-_NEGATION = re.compile(
-    r"\b(no|not|without|never|none|contraindicated|avoid|cannot|does not|doesn't|non|aucun|sans|jamais|ne\s+pas|لا|ليس|دون|ممنوع|منع)\b",
-    re.I,
-)
+_VALUE_UNIT_RE = re.compile(r"(?P<value>[-+]?\d+(?:[\.,]\d+)?(?:\s*[-–]\s*\d+(?:[\.,]\d+)?)?)\s*(?P<unit>mg|g|kg|mcg|µg|ug|ml|l|mmhg|cmh2o|%|bpm|°c|c|mm|cm|m|hz|khz|m/s|h|min|s|day|days|week|weeks|month|months|year|years)\b", re.I)
+_NEGATION = re.compile(r"\b(no|not|without|never|none|contraindicated|avoid|cannot|does not|doesn't|non|aucun|sans|jamais|ne\s+pas|لا|ليس|دون|ممنوع|منع)\b", re.I)
 _MODAL = re.compile(r"\b(may|might|can|could|should|recommended|suggested|possibly|likely|probably|must|shall|may not|should not)\b", re.I)
 
 _UNIT_SCALE = {
@@ -50,20 +43,19 @@ def split_claims(answer: str) -> list[str]:
     raw = (answer or "").strip()
     if not raw:
         return []
-    # Treat explicit Markdown/plain-text bullets as hard claim boundaries.
     bullet_lines = re.findall(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", raw)
     if bullet_lines:
         claims: list[str] = []
         for line in bullet_lines:
             line = line.strip()
-            if len(meaningful_tokens(line)) >= 3:
+            if len(meaningful_tokens(line)) >= 2:
                 claims.append(line)
         if claims:
             return claims[:40]
     claims = []
     for sentence in _SENTENCE_RE.split(raw):
         sentence = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence.strip())
-        if len(meaningful_tokens(sentence)) >= 3:
+        if len(meaningful_tokens(sentence)) >= 2:
             claims.append(sentence)
     return claims[:40]
 
@@ -117,13 +109,7 @@ def numeric_consistency(claim: str, evidence: str) -> dict[str, Any]:
     if not claim_values:
         return {"checked": False, "mismatch": False, "claim_values": [], "evidence_values": [], "unsupported_numeric": []}
     unsupported = [item for item in claim_values if not any(_measurement_compatible(item, ev) for ev in evidence_values)]
-    return {
-        "checked": True,
-        "mismatch": bool(unsupported),
-        "claim_values": [f"{v} {u}" for v, u in claim_values],
-        "evidence_values": [f"{v} {u}" for v, u in evidence_values],
-        "unsupported_numeric": [f"{v} {u}" for v, u in unsupported],
-    }
+    return {"checked": True, "mismatch": bool(unsupported), "claim_values": [f"{v} {u}" for v, u in claim_values], "evidence_values": [f"{v} {u}" for v, u in evidence_values], "unsupported_numeric": [f"{v} {u}" for v, u in unsupported]}
 
 
 def _polarity(text: str) -> int:
@@ -133,8 +119,7 @@ def _polarity(text: str) -> int:
 
 
 def semantic_support(claim: str, evidence: str) -> float:
-    claim_tokens = set(meaningful_tokens(claim))
-    evidence_tokens = set(meaningful_tokens(evidence))
+    claim_tokens = set(meaningful_tokens(claim)); evidence_tokens = set(meaningful_tokens(evidence))
     if not claim_tokens or not evidence_tokens:
         return 0.0
     overlap = len(claim_tokens & evidence_tokens) / max(len(claim_tokens), 1)
@@ -146,8 +131,7 @@ def semantic_support(claim: str, evidence: str) -> float:
 
 
 def detect_contradiction(claim: str, evidence_blocks: Sequence[str]) -> bool:
-    claim_tokens = set(meaningful_tokens(claim.casefold()))
-    claim_pol = _polarity(claim)
+    claim_tokens = set(meaningful_tokens(claim.casefold())); claim_pol = _polarity(claim)
     if not claim_tokens or claim_pol == 0:
         return False
     for evidence in evidence_blocks:
@@ -156,8 +140,6 @@ def detect_contradiction(claim: str, evidence_blocks: Sequence[str]) -> bool:
         if not overlap_tokens or _polarity(evidence) in (0, claim_pol):
             continue
         score = semantic_support(claim, evidence)
-        # Short binary claims such as "treatment is contraindicated" vs
-        # "treatment is indicated" have only one shared content token.
         min_score = 0.18 if len(claim_tokens) <= 3 else 0.35
         if score >= min_score:
             return True
@@ -170,8 +152,7 @@ def _best_support(claim: str, evidence_blocks: Sequence[str], source_ids: Sequen
         score = semantic_support(claim, evidence)
         if score <= 0:
             continue
-        source = source_ids[index] if index < len(source_ids) else f"S{index + 1}"
-        ranked.append((score, source))
+        ranked.append((score, source_ids[index] if index < len(source_ids) else f"S{index + 1}"))
     ranked.sort(reverse=True)
     return (ranked[0][0] if ranked else 0.0, tuple(source for _, source in ranked[:3]))
 
@@ -200,9 +181,7 @@ def verify_claims(answer: str, evidence_blocks: Sequence[str], source_ids: Seque
 
 
 def evidence_confidence(*, retrieval: float, rerank: float, entailment: float, quality: float, contradiction: float = 0.0, ocr_penalty: float = 0.0) -> float:
-    value = 0.24 * retrieval + 0.26 * rerank + 0.30 * entailment + 0.20 * quality
-    value -= 0.40 * contradiction
-    value -= 0.20 * ocr_penalty
+    value = 0.24 * retrieval + 0.26 * rerank + 0.30 * entailment + 0.20 * quality - 0.40 * contradiction - 0.20 * ocr_penalty
     return round(max(0.0, min(1.0, value)), 4)
 
 
@@ -215,16 +194,15 @@ def citation_firewall(answer: str, claim_checks: Iterable[ClaimCheck]) -> tuple[
     checks = list(claim_checks)
     if not checks:
         return answer, False
-    safe = [c for c in checks if c.status in {"SUPPORTED", "PARTIAL"} and not c.contradiction]
     unsafe = [c for c in checks if c.status in {"UNSUPPORTED", "NUMERIC_MISMATCH", "CONTRADICTED"}]
     if not unsafe:
         return answer, False
+    safe = [c for c in checks if c.status in {"SUPPORTED", "PARTIAL"} and not c.contradiction]
     lines: list[str] = []
     if safe:
         lines.append("Verified findings:")
         for c in safe:
-            refs = " ".join(f"[{s}]" for s in c.sources)
-            lines.append(f"- {c.claim} {refs}".strip())
+            lines.append(f"- {c.claim} {' '.join(f'[{s}]' for s in c.sources)}".strip())
     lines.append("\nSome generated details were withheld because they could not be verified against the indexed evidence.")
     return "\n".join(lines), True
 
