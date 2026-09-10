@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import fitz
-import pytest
 
 from rag_project.parsing.pdf_extractor import PDFExtractor
 from rag_project.ingestion.document_classifier import DocumentClassifier
@@ -68,7 +66,8 @@ def _make_pdf(path: Path, pages: list[str]) -> None:
     document = fitz.open()
     for text in pages:
         page = document.new_page()
-        page.insert_textbox(page.rect + (50, 50, -50, -50), text, fontsize=11)
+        rect = fitz.Rect(50, 50, page.rect.width - 50, page.rect.height - 50)
+        page.insert_textbox(rect, text, fontsize=11)
     document.save(str(path))
     document.close()
 
@@ -291,7 +290,7 @@ def test_hybrid_retriever_handles_missing_metadata_and_distances():
     assert all(hit.score >= 0.0 for hit in hits)
 
 
-def test_hybrid_retriever_forwards_metadata_filter_to_both_backends():
+def test_hybrid_retriever_forwards_metadata_filter_to_lexical_backend():
     embedding = _EmbeddingStub()
     store = _VectorStoreStub()
     retriever = HybridRetriever(store, embedding)
