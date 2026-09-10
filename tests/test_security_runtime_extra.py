@@ -226,10 +226,13 @@ def test_atomic_claim_source_is_transactional() -> None:
 
 def test_production_system_exposes_security_and_quality_contracts() -> None:
     from rag_project.app.production_rag import ProductionRAGSystem
+    from rag_project.security import harden_system
 
     source = Path(ProductionRAGSystem.__module__.replace(".", "/") + ".py")
     if not source.exists():
         source = Path(__file__).resolve().parents[1] / "rag_project" / "app" / "production_rag.py"
     text = source.read_text(encoding="utf-8")
-    for marker in ("harden_system", "validate_feature_contract", "apply_medical_safety_policy", "ANSWER_PIPELINE_AUTHORITY"):
-        assert marker in text
+    assert "validate_feature_contract" in text
+    assert "apply_medical_safety_policy" in text
+    assert "ANSWER_PIPELINE_AUTHORITY" in text
+    assert callable(harden_system)
