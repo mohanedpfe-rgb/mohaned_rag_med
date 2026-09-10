@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from rag_project.utils.text_utils import meaningful_tokens
 
@@ -52,18 +52,18 @@ class ReasoningEdge:
 
 
 _MEDICAL_ALIASES: dict[str, tuple[str, ...]] = {
-    "diabetes mellitus": ("diabetes", "diabète", "diabete", "dm", "d2", "type 2 diabetes", "diabète de type 2"),
-    "diabetic ketoacidosis": ("dka", "acidocétose diabétique", "acidocetose diabetique", "ketoacidosis"),
-    "diabetic nephropathy": ("nephropathie diabetique", "néphropathie diabétique", "diabetic kidney disease", "dkd"),
-    "albuminuria": ("albuminurie", "microalbuminuria", "microalbuminurie", "urinary albumin"),
-    "hypertension": ("hta", "high blood pressure", "hypertension artérielle", "hypertension arterielle"),
-    "hypokalemia": ("hypokaliémie", "hypokaliemia", "low potassium", "dyskaliémie", "dyskaliemia"),
-    "hyperaldosteronism": ("hyperaldostéronisme", "hyperaldosteronisme", "primary aldosteronism", "hpa"),
-    "thyroid cancer": ("cancer thyroïde", "cancer de la thyroïde", "thyroid carcinoma", "thyroid neoplasm"),
-    "insulin resistance": ("insulin resistance", "insulinorésistance", "insulinorésistance", "insulin resistance syndrome"),
-    "albumin": ("albumine",),
-    "potassium": ("kaliémie", "kalemie", "k+", "potassium"),
-    "insulin": ("insuline", "insulin"),
+    "diabetes mellitus": ("diabetes", "diabète", "diabete", "dm", "d2", "type 2 diabetes", "diabète de type 2", "داء السكري", "السكري"),
+    "diabetic ketoacidosis": ("dka", "acidocétose diabétique", "acidocetose diabetique", "ketoacidosis", "acidocétose", "الحماض الكيتوني السكري", "الحماض الكيتوني"),
+    "diabetic nephropathy": ("nephropathie diabetique", "néphropathie diabétique", "diabetic kidney disease", "dkd", "maladie rénale diabétique", "maladie renale diabetique", "اعتلال الكلية السكري"),
+    "albuminuria": ("albuminurie", "microalbuminuria", "microalbuminurie", "urinary albumin", "albumin in urine", "بيلة الألبومين", "زلال البول"),
+    "hypertension": ("hta", "high blood pressure", "hypertension artérielle", "hypertension arterielle", "ارتفاع ضغط الدم"),
+    "hypokalemia": ("hypokaliémie", "hypokaliemia", "low potassium", "dyskaliémie", "dyskaliemia", "نقص بوتاسيوم الدم"),
+    "hyperaldosteronism": ("hyperaldostéronisme", "hyperaldosteronisme", "primary aldosteronism", "hpa", "فرط الألدوستيرونية"),
+    "thyroid cancer": ("cancer thyroïde", "cancer de la thyroïde", "thyroid carcinoma", "thyroid neoplasm", "سرطان الغدة الدرقية"),
+    "insulin resistance": ("insulin resistance", "insulinorésistance", "insulinorésistance", "insulin resistance syndrome", "مقاومة الأنسولين"),
+    "albumin": ("albumine", "albumin", "الألبومين"),
+    "potassium": ("kaliémie", "kalemie", "k+", "potassium", "البوتاسيوم"),
+    "insulin": ("insuline", "insulin", "الأنسولين", "الإنسولين"),
 }
 
 _ENTITY_KIND = {
@@ -179,17 +179,7 @@ def understand_query(query: str, *, conversation_context: str = "") -> QueryUnde
     entities = extract_clinical_entities(combined)
     semantic_terms = tuple(dict.fromkeys([e.normalized for e in entities] + meaningful_tokens(normalized)))[:32]
     cue_conf = min(1.0, 0.40 + 0.12 * len(hits) + 0.04 * len(entities) + (0.10 if len(meaningful_tokens(normalized)) >= 5 else 0.0))
-    return QueryUnderstanding(
-        normalized=normalized,
-        intents=tuple(intents),
-        primary_intent=primary,
-        entities=entities,
-        relations=relations,
-        constraints=tuple(constraints),
-        answer_shape=answer_shape,
-        semantic_terms=semantic_terms,
-        confidence=round(cue_conf, 3),
-    )
+    return QueryUnderstanding(normalized, tuple(intents), primary, entities, relations, tuple(constraints), answer_shape, semantic_terms, round(cue_conf, 3))
 
 
 def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding) -> tuple[tuple[EvidenceNode, ...], tuple[ReasoningEdge, ...]]:
@@ -200,20 +190,11 @@ def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding)
         meta = getattr(hit, "metadata", {}) or {}
         node_id = str(meta.get("chunk_id") or f"N{index + 1}")
         entities = extract_clinical_entities(str(getattr(hit, "text", "")))
-        nodes.append(EvidenceNode(
-            node_id=node_id,
-            text=str(getattr(hit, "text", "")),
-            score=max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))),
-            document_id=str(meta.get("document_id") or getattr(hit, "doc_id", "")),
-            chunk_id=node_id,
-            page_numbers=tuple(meta.get("page_numbers") or ()),
-        ))
+        nodes.append(EvidenceNode(node_id, str(getattr(hit, "text", "")), max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))), str(meta.get("document_id") or getattr(hit, "doc_id", "")), node_id, tuple(meta.get("page_numbers") or ())))
         for entity in entities:
             entity_to_nodes.setdefault(entity.normalized, []).append(node_id)
     for relation in understanding.relations:
         labels = list(understanding.entities)
-        if len(labels) < 2:
-            continue
         for left, right in zip(labels, labels[1:]):
             left_nodes = entity_to_nodes.get(left.normalized, [])
             right_nodes = entity_to_nodes.get(right.normalized, [])
@@ -227,15 +208,8 @@ def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding)
 def clinical_reasoning_ready(understanding: QueryUnderstanding, nodes: Sequence[EvidenceNode], edges: Sequence[ReasoningEdge]) -> dict[str, Any]:
     direct = bool(nodes)
     multi_hop = bool(edges) and (understanding.primary_intent in {"etiology", "mechanism", "association", "comparison"} or len(understanding.relations) > 0)
-    entity_coverage = sum(1 for entity in understanding.entities if any(normalize_medical_term(entity.normalized) in _norm(node.text) or entity.normalized in _norm(node.text) for node in nodes)) / max(len(understanding.entities), 1)
-    return {
-        "direct_evidence": direct,
-        "multi_hop": multi_hop,
-        "node_count": len(nodes),
-        "edge_count": len(edges),
-        "entity_coverage": round(entity_coverage, 3),
-        "reasoning_depth": 2 if multi_hop else 1,
-    }
+    entity_coverage = sum(1 for entity in understanding.entities if any(entity.normalized in _norm(node.text) for node in nodes)) / max(len(understanding.entities), 1)
+    return {"direct_evidence": direct, "multi_hop": multi_hop, "node_count": len(nodes), "edge_count": len(edges), "entity_coverage": round(entity_coverage, 3), "reasoning_depth": 2 if multi_hop else 1}
 
 
 def _token_overlap(left: str, right: str) -> float:
@@ -248,30 +222,15 @@ def _entity_surface_score(query_entities: Sequence[ClinicalEntity], text: str) -
     if not query_entities:
         return 0.0
     evidence_entities = {entity.normalized for entity in extract_clinical_entities(text)}
-    if not evidence_entities:
-        return 0.0
     matched = sum(1 for entity in query_entities if entity.normalized in evidence_entities)
     return matched / len(query_entities)
 
 
 def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversation_context: str = "") -> dict[str, Any]:
-    """Score evidence using medical entity normalization plus lexical meaning.
-
-    This is deliberately model-free: it adds multilingual/synonym awareness without
-    requiring another Ollama call or introducing a second failure/latency surface.
-    """
     understanding = understand_query(question, conversation_context=conversation_context)
     nonempty = [hit for hit in hits if str(getattr(hit, "text", "") or "").strip()]
     if not nonempty:
-        return {
-            "score": 0.0,
-            "entity_coverage": 0.0,
-            "semantic_overlap": 0.0,
-            "relation_coverage": 0.0,
-            "best_hit_score": 0.0,
-            "decision": "NOT_SUPPORTED",
-            "reason": "No non-empty evidence was available for semantic alignment.",
-        }
+        return {"score": 0.0, "entity_coverage": 0.0, "semantic_overlap": 0.0, "relation_coverage": 0.0, "best_hit_score": 0.0, "decision": "NOT_SUPPORTED", "reason": "No non-empty evidence was available for semantic alignment.", "understanding": understanding.to_dict()}
     per_hit: list[dict[str, Any]] = []
     for hit in nonempty:
         text = str(getattr(hit, "text", "") or "")
@@ -280,13 +239,11 @@ def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversat
         evidence_relations = {kind for kind, pattern in _RELATION_PATTERNS if re.search(pattern, text, re.I | re.UNICODE)}
         relation_score = len(set(understanding.relations) & evidence_relations) / max(len(understanding.relations), 1) if understanding.relations else 0.0
         retrieval_score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
-        # Entity matches are the strongest cross-lingual signal; lexical overlap provides
-        # a useful secondary signal; retrieval score prevents semantic aliases from accepting
-        # a weak candidate solely because a generic medical term was present.
         score = min(1.0, 0.55 * entity_score + 0.25 * lexical_score + 0.10 * relation_score + 0.10 * retrieval_score)
         per_hit.append({"score": round(score, 3), "entity_score": round(entity_score, 3), "lexical_score": round(lexical_score, 3), "relation_score": round(relation_score, 3)})
     best = max(per_hit, key=lambda item: item["score"])
-    mean_top = sum(item["score"] for item in sorted(per_hit, reverse=True)[: min(3, len(per_hit))]) / min(3, len(per_hit))
+    top_scores = sorted((item["score"] for item in per_hit), reverse=True)[:3]
+    mean_top = sum(top_scores) / max(1, len(top_scores))
     score = max(best["score"], mean_top * 0.85)
     if score >= 0.55:
         decision = "DIRECTLY_SUPPORTED"
@@ -296,12 +253,4 @@ def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversat
         decision = "RELATED_BUT_NOT_ANSWERING"
     else:
         decision = "NOT_SUPPORTED"
-    return {
-        "score": round(score, 3),
-        "entity_coverage": round(best["entity_score"], 3),
-        "semantic_overlap": round(best["lexical_score"], 3),
-        "relation_coverage": round(best["relation_score"], 3),
-        "best_hit_score": best["score"],
-        "decision": decision,
-        "reason": "Semantic entity and concept alignment was computed across the retrieved evidence.",
-    }
+    return {"score": round(score, 3), "entity_coverage": round(best["entity_score"], 3), "semantic_overlap": round(best["lexical_score"], 3), "relation_coverage": round(best["relation_score"], 3), "best_hit_score": best["score"], "decision": decision, "reason": "Semantic entity and concept alignment was computed across the retrieved evidence.", "understanding": understanding.to_dict()}
