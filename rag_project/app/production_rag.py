@@ -97,7 +97,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
                 "confidence": {"level": "none", "evidence_confidence": 0.0},
                 "production_contract": self._production_feature_contract,
             }
-        result = self._certified_god_answer(self, question, metadata_filter)
+        result = self._certified_god_answer(question, metadata_filter)
         result = apply_medical_safety_policy(question, result, self.settings)
         if "query_trace" in result:
             result["query_trace"] = sanitize_trace(result["query_trace"])
