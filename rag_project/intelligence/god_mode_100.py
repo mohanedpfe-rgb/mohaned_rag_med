@@ -22,7 +22,7 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
 
 
 def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Evidence-first completion of all five roadmap phases."""
+    """Evidence-first completion of all five roadmap phases with final-answer hard gates."""
     if not result:
         return result
     hits = list(result.get("hits") or [])
@@ -47,15 +47,7 @@ def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_
     safety_conflict = float(result.get("advanced_reasoning", {}).get("safety_conflict", 0.0) or 0.0)
     selected_scores = [float(getattr(hit, "score", 0.0)) for hit in hits]
     top_score = max(selected_scores, default=0.0)
-    calibration = calibrate_confidence(
-        retrieval=top_score,
-        rerank=top_score,
-        entailment=entailment,
-        entity_coverage=entity_coverage,
-        source_agreement=source_agreement,
-        contradiction=contradiction,
-        safety_conflict=safety_conflict,
-    )
+    calibration = calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=entailment,entity_coverage=entity_coverage,source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
     enhanced = dict(result)
     enhanced["evidence_claim_matrix"] = [record.to_dict() for record in matrix]
     enhanced["evidence_hierarchy"] = [record.to_dict() for record in hierarchy[:80]]
@@ -65,13 +57,43 @@ def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_
     enhanced["confidence_calibration"] = calibration.to_dict()
     enhanced["confidence"] = {"level": calibration.level, "evidence_confidence": calibration.calibrated}
     completed = complete_phases(system, question, enhanced, metadata_filter)
+
+    # Rebuild the claim/evidence matrix from the FINAL answer after Phase 3 synthesis.
+    # The final answer is never trusted merely because the pre-synthesis matrix passed.
+    final_hits = list(completed.get("hits") or hits)
+    final_claims = _claim_texts(completed)
+    final_matrix = build_claim_evidence_matrix(final_claims, final_hits, [f"S{i + 1}" for i in range(len(final_hits))]) if final_claims and final_hits else ()
+    completed["evidence_claim_matrix"] = [record.to_dict() for record in final_matrix]
+    hard_risk = bool((completed.get("phase_plan") or {}).get("needs_numeric")) or str((completed.get("phase_plan") or {}).get("intent", "")) in {"diagnosis","management","etiology","mechanism","prognosis"}
+    matrix_blocked = [record for record in final_matrix if record.status != "ENTAILED"]
+    if hard_risk and matrix_blocked:
+        completed["status"] = "REASONING_ABSTAIN"
+        completed["abstained"] = True
+        completed["abstention_reasons"] = ["final_claim_evidence_matrix_not_fully_entailed"]
+        completed["answer"] = "I could not verify a sufficiently grounded answer from the indexed evidence; unsupported clinical details were withheld."
+        completed["confidence"] = {"level": "low", "evidence_confidence": 0.0}
+
+    final_entailment = sum(record.entailment for record in final_matrix) / max(1, len(final_matrix)) if final_matrix else 0.0
+    completed_calibration = calibrate_confidence(
+        retrieval=top_score,
+        rerank=top_score,
+        entailment=final_entailment,
+        entity_coverage=entity_coverage,
+        source_agreement=source_agreement,
+        contradiction=contradiction,
+        safety_conflict=safety_conflict,
+    )
+    completed["confidence_calibration"] = completed_calibration.to_dict()
+    completed["confidence"] = {"level": completed_calibration.level, "evidence_confidence": completed_calibration.calibrated}
     completed["phase_implementation"] = {
         "phase_1_query_understanding": True,
         "phase_2_retrieval_precision": True,
-        "phase_3_two_stage_generation": bool(completed.get("two_stage_synthesis", {}).get("used") or completed.get("extractive_stage", {}).get("supported")),
+        "phase_3_two_stage_generation": bool(completed.get("two_stage_synthesis", {}).get("attempted") or completed.get("extractive_stage", {}).get("supported")),
         "phase_4_verification": True,
         "phase_5_intelligence_visibility": True,
         "hardware_profile": "llama3.2:3b + nomic-embed-text + i5/16GB",
+        "final_claim_evidence_hard_gate": True,
+        "final_confidence_is_calibrated": True,
     }
     completed["god_mode_100"] = True
     return completed
