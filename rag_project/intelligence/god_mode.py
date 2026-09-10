@@ -6,6 +6,7 @@ import uuid
 from typing import Any, Sequence
 
 from rag_project.intelligence.atomic_versioning import install as install_atomic_versioning
+from rag_project.intelligence.advanced_clinical_reasoner import assess_clinical_reasoning, build_reasoning_instruction
 from rag_project.intelligence.evidence_guard import citation_firewall, contradiction_report, evidence_confidence, grounding_decision, verify_claims
 from rag_project.intelligence.index_auditor import audit_index
 from rag_project.intelligence.pdf_intelligence import enrich_text
@@ -24,6 +25,9 @@ GOD_MODE_FEATURES = (
     "citation_firewall", "citation_validation", "answer_grounding_gate", "abstention_ladder", "untrusted_evidence_prompt_boundary",
     "prompt_injection_sanitization", "conversation_context_isolation", "query_trace_metadata", "degraded_lexical_fallback",
     "resilient_generation_fallback", "index_visibility_guard", "retrieval_fail_closed_behavior", "exact_feature_certification_contract",
+    "structured_semantic_understanding", "multilingual_entity_normalization", "contextual_follow_up_understanding",
+    "typed_clinical_fact_extraction", "evidence_graph_reasoning", "explicit_path_search", "three_hop_reasoning",
+    "conflict_aware_reasoning", "safety_aware_reasoning_gate", "calibrated_reasoning_confidence", "reasoning_contract",
 )
 
 
@@ -57,6 +61,8 @@ def _metadata_boost(hit: Any, plan: QueryPlan) -> float:
     enriched = enrich_text(str(hit.text or ""))
     if set(plan.entities).intersection(_as_list(enriched.get("keywords"))):
         boost *= plan.score_boosts.get("entity", 1.0)
+    if plan.score_boosts.get("semantic", 1.0) > 1.0 and meta.get("language"):
+        boost *= 1.02
     return boost
 
 
@@ -109,7 +115,6 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
     candidate_count = max(8, int(system.settings.top_k) * int(getattr(system.settings, "retrieval_candidate_multiplier", 5)))
     rerank_budget = 48
     bridge_variants = list(_bridge_variants(plan))
-    # Reserve a small portion of the budget for genuine second-hop bridge retrieval.
     initial_budget = max(1, rerank_budget - min(12, len(bridge_variants) * 2))
     base_share, remainder = divmod(initial_budget, len(variants))
     for index, variant in enumerate(variants):
@@ -202,33 +207,31 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     plan = plan_query(question, conversation_context=conversation_context)
     understanding = understand_query(question, conversation_context=conversation_context)
     if not plan.normalized:
-        return {"status": "LOW_QUALITY_QUERY", "answer": "Please provide a precise question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": "LOW_QUALITY_QUERY", "answer": "Please provide a precise question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
         self._ensure_embedding_dimension()
         compatibility = self.vector_store.compatibility_report(self.embedding_service.identity)
     except Exception as exc:
-        return {"status": "INTERNAL_ERROR", "answer": "The retrieval index is temporarily unavailable.", "error": type(exc).__name__, "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": "INTERNAL_ERROR", "answer": "The retrieval index is temporarily unavailable.", "error": type(exc).__name__, "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     if str(compatibility.get("status", "")).upper() != "READY":
-        return {"status": compatibility.get("status", "NOT_READY"), "answer": compatibility.get("message", "The index is not ready."), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": compatibility.get("status", "NOT_READY"), "answer": compatibility.get("message", "The index is not ready."), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
         from rag_project.retrieval.metadata_filter import MetadataFilter
         where = MetadataFilter.build(metadata_filter)
     except Exception:
-        return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
     if not hits:
-        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict()}
+        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     semantic_alignment = semantic_evidence_alignment(plan.normalized, hits, conversation_context=conversation_context)
     try:
         alignment = self.evaluate_evidence_alignment(plan.normalized, hits[: max(int(self.settings.top_k) * 3, 12)])
     except Exception as exc:
         self.logger.exception("Evidence-alignment evaluation failed")
         alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
-    # Semantic entity alignment is allowed to rescue multilingual or synonym-heavy evidence,
-    # while the legacy gate remains as a conservative secondary signal.
     combined_score = max(float(alignment.get("answerability", 0.0) or 0.0), float(semantic_alignment.get("score", 0.0) or 0.0))
     if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"} and combined_score < 0.25:
-        return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment}
+        return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "semantic_understanding": understanding.to_dict()}
     selected = hits[: max(int(self.settings.top_k) * 3, 12)]
     try:
         context, selected = self.context_builder.build(selected)
@@ -236,14 +239,22 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         context = "\n\n".join(f"<evidence id=\"S{i + 1}\">{h.text}</evidence>" for i, h in enumerate(selected[:self.settings.top_k]))
     nodes, edges = build_evidence_graph(selected, understanding)
     reasoning_state = clinical_reasoning_ready(understanding, nodes, edges)
-    reasoning_instruction = (
-        "Extract the requested clinical answer by checking each relevant entity and relationship against the evidence. "
-        "For multi-hop questions, use only explicit evidence links between sources; distinguish direct evidence from inference. "
-        "For diagnosis, treatment, prognosis, and causal questions, preserve uncertainty, contraindications, populations, and numeric values. "
-        "Do not expose hidden reasoning steps; output only the concise evidence-supported answer."
-        if understanding.primary_intent in {"diagnosis", "management", "etiology", "mechanism", "prognosis", "comparison", "association"} or reasoning_state["multi_hop"]
-        else "Answer directly from the evidence; preserve numbers, negations, units, and qualifiers."
-    )
+    advanced_reasoning = assess_clinical_reasoning(understanding, selected, max_depth=3)
+    if not advanced_reasoning.allow_generation:
+        return {
+            "status": "REASONING_ABSTAIN",
+            "answer": "The retrieved evidence is insufficient or conflicting for a safe clinical reasoning answer.",
+            "citations": [],
+            "hits": list(selected),
+            "confidence": {"level": "low", "evidence_confidence": advanced_reasoning.confidence},
+            "query_analysis": plan.to_dict(),
+            "semantic_understanding": understanding.to_dict(),
+            "evidence_alignment": alignment,
+            "semantic_alignment": semantic_alignment,
+            "clinical_reasoning": reasoning_state,
+            "advanced_reasoning": advanced_reasoning.to_dict(),
+        }
+    reasoning_instruction = build_reasoning_instruction(understanding, advanced_reasoning)
     answer, generation_path = _answer_with_ladder(self, question, context, selected, conversation_context, reasoning_instruction)
     blocks = [str(h.text or "") for h in selected]
     source_ids = [f"S{i + 1}" for i in range(len(selected))]
@@ -256,13 +267,31 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
     citations = self.citation_manager.validate(self.citation_manager.build(selected), selected)
     query_id = str(uuid.uuid4())
-    trace = {"query_id": query_id, "original_query": question, "rewritten_query": plan.normalized, "retrieval_method": "multi_query_hybrid", "candidate_count": len(hits), "selected_count": len(selected), "generation_path": generation_path, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}, "claims": [c.to_dict() for c in claims], "grounding": ground, "contradiction_report": contradiction, "firewall_used": firewall_used, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "evidence_graph": {"nodes": len(nodes), "edges": len(edges)}}
+    trace = {
+        "query_id": query_id,
+        "original_query": question,
+        "rewritten_query": plan.normalized,
+        "retrieval_method": "multi_query_hybrid_plus_bridge",
+        "candidate_count": len(hits),
+        "selected_count": len(selected),
+        "generation_path": generation_path,
+        "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)},
+        "claims": [c.to_dict() for c in claims],
+        "grounding": ground,
+        "contradiction_report": contradiction,
+        "firewall_used": firewall_used,
+        "semantic_alignment": semantic_alignment,
+        "clinical_reasoning": reasoning_state,
+        "advanced_reasoning": advanced_reasoning.to_dict(),
+        "semantic_understanding": understanding.to_dict(),
+        "evidence_graph": {"nodes": len(nodes), "edges": len(edges)},
+    }
     try:
         self.state_store.record_query_trace(query_id, sanitize_trace(trace))
     except Exception:
         self.logger.exception("Failed to record query trace")
     self.conversation_memory.add(question, safe_answer)
-    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "god_mode": True}
+    return {"query_id": query_id, "status": "SUCCESS" if ground.get("allow") and generation_path != "abstained" and not contradiction.get("has_contradiction") else "SUCCESS_WITH_WARNINGS", "answer": safe_answer, "citations": citations, "hits": list(selected), "confidence": {"level": "high" if evidence_conf >= 0.75 else "medium" if evidence_conf >= 0.50 else "low", "evidence_confidence": evidence_conf}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "grounding": ground, "claims": [c.to_dict() for c in claims], "contradiction_report": contradiction, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "god_mode": True}
 
 
 def report() -> dict[str, object]:
