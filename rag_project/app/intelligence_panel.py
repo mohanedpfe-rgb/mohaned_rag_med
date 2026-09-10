@@ -4,6 +4,8 @@ from typing import Any
 
 import streamlit as st
 
+from rag_project.intelligence.ui_visibility_contract import build_visibility_contract
+
 
 def _pct(value: Any) -> str:
     try:
@@ -39,6 +41,40 @@ def _row_dict(row: Any) -> dict[str, Any]:
     return {}
 
 
+def _render_phase5_transparency(result: dict[str, Any]) -> None:
+    """Render the mandatory Phase-5 signals as a first-class, human-readable contract."""
+    visibility = build_visibility_contract(result)
+    signals = visibility["signals"]
+    st.markdown("### Decision transparency")
+    state = "READY" if visibility["signals_present"] else "INCOMPLETE"
+    st.caption(
+        f"Phase 5 visibility: **{state}** · "
+        f"{visibility['visible_signal_count']}/{visibility['required_signal_count']} required signals exposed"
+    )
+
+    left, right = st.columns(2)
+    with left:
+        st.write(f"**Intent:** {visibility['intent']} {'✅' if signals['intent'] else '⚠️'}")
+        entities = ", ".join(map(str, visibility["entities"][:16])) or "—"
+        st.write(f"**Entities:** {entities} {'✅' if signals['entities'] else '⚠️'}")
+        st.write(f"**Calibrated confidence:** {_pct(visibility['calibrated_confidence'])} · level `{visibility['confidence_level']}` {'✅' if signals['calibrated_confidence'] else '⚠️'}")
+        reasons = visibility["abstention_reasons"]
+        st.write(f"**Abstention reason:** {'; '.join(reasons) if reasons else 'None — answer was not withheld for an abstention reason.'} ✅")
+    with right:
+        st.write("**Rewritten question:**")
+        st.code(visibility["rewritten_question"], language=None)
+        matrix = visibility["claim_support_matrix"]
+        st.write(f"**Claim support matrix:** {len(matrix)} claim row(s) {'✅' if signals['claim_support_matrix'] else '⚠️'}")
+        if matrix:
+            for raw_row in matrix[:8]:
+                row = _row_dict(raw_row)
+                status = row.get("status", "UNKNOWN")
+                st.write(
+                    f"{_status_icon(status)} **{status}** · {row.get('claim', '')} · "
+                    f"support {_pct(row.get('support', row.get('entailment', 0)))}"
+                )
+
+
 def render_intelligence_panel(result: dict[str, Any]) -> None:
     """Render the runtime intelligence contract exposed by the canonical answer pipeline."""
     result = result if isinstance(result, dict) else {}
@@ -60,6 +96,8 @@ def render_intelligence_panel(result: dict[str, Any]) -> None:
                 value = value or phase_state.get(key) or "unknown"
                 st.metric(f"{code} {label}", str(value).upper())
 
+        st.divider()
+        _render_phase5_transparency(result)
         st.divider()
         _show_list("Intent", [plan.get("intent", "")])
         _show_list("Entities", plan.get("entities"))
