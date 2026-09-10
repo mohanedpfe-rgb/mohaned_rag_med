@@ -19,7 +19,7 @@ _OPEN_SET_MEDICAL_SUFFIXES = (
     "mycin", "cycline", "vir", "mab", "nib", "tinib", "caine", "statin", "oxetine", "pramine",
     "pam", "lam", "zepam", "barb", "bital", "caine", "phylline", "terol", "lukast", "setron",
 )
-_OPEN_SET_MEDICAL_TERMS = {"dapagliflozin"}
+_OPEN_SET_MEDICAL_TERMS = {"dapagliflozin", "metformin"}
 
 
 def _norm(value: str) -> str:
@@ -78,9 +78,6 @@ def extract_query_entities(question: str, planned_entities: Iterable[str] = ()) 
     for match in _ABBREVIATION.finditer(question or ""):
         token = match.group(0)
         if token.upper() not in _STOP:
-            # Keep both the canonical expansion (when known) and the exact
-            # abbreviation supplied by the user. This preserves query observability
-            # without sacrificing synonym matching during evidence scoring.
             _append_entity(found, token, preserve_alias=True)
 
     for match in re.finditer(r"\b(?:[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\s+){1,3}[A-Za-zÀ-ÿ][\wÀ-ÿ'/-]*\b", question or ""):
@@ -102,12 +99,9 @@ def extract_query_entities(question: str, planned_entities: Iterable[str] = ()) 
 
 
 def _entity_overlap(query_entity: str, evidence_entity: str) -> float:
-    q = set(meaningful_tokens(query_entity))
-    e = set(meaningful_tokens(evidence_entity))
-    if not q or not e:
-        return 0.0
-    if query_entity == evidence_entity:
-        return 1.0
+    q = set(meaningful_tokens(query_entity)); e = set(meaningful_tokens(evidence_entity))
+    if not q or not e: return 0.0
+    if query_entity == evidence_entity: return 1.0
     return len(q & e) / max(1, len(q))
 
 
@@ -117,70 +111,35 @@ def score_entity_coverage(question: str, evidence: Sequence[Any], planned_entiti
     evidence_entities: list[tuple[str, str]] = []
     planned_norms = {_norm(x) for x in planned_entities if _norm(x)}
     for index, hit in enumerate(evidence):
-        text = str(getattr(hit, "text", "") or "")
-        source_id = f"S{index + 1}"
-        try:
-            extracted = extract_clinical_entities(text)
-        except Exception:
-            extracted = ()
+        text = str(getattr(hit, "text", "") or ""); source_id = f"S{index + 1}"
+        try: extracted = extract_clinical_entities(text)
+        except Exception: extracted = ()
         for entity in extracted:
             normalized = _canonical(entity.normalized or entity.text)
-            if normalized:
-                evidence_entities.append((normalized, source_id))
-        for lexical in _lexical_open_set_terms(text):
-            evidence_entities.append((lexical, source_id))
+            if normalized: evidence_entities.append((normalized, source_id))
+        for lexical in _lexical_open_set_terms(text): evidence_entities.append((lexical, source_id))
         for planned in planned_norms:
-            if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])", text, re.I):
-                evidence_entities.append((planned, source_id))
-        for match in _MEASUREMENT.finditer(text):
-            evidence_entities.append((_norm(match.group(0)), source_id))
+            if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])", text, re.I): evidence_entities.append((planned, source_id))
+        for match in _MEASUREMENT.finditer(text): evidence_entities.append((_norm(match.group(0)), source_id))
         for match in _ABBREVIATION.finditer(text):
             token = match.group(0)
             if token.upper() not in _STOP:
-                normalized = _canonical(token)
-                evidence_entities.append((normalized, source_id))
-                # Preserve the source abbreviation too so coverage/debugging can
-                # explain an exact alias hit independently of its expansion.
+                normalized = _canonical(token); evidence_entities.append((normalized, source_id))
                 alias = _norm(token)
-                if alias != normalized:
-                    evidence_entities.append((alias, source_id))
+                if alias != normalized: evidence_entities.append((alias, source_id))
 
-    evidence_norms = [name for name, _ in evidence_entities]
-    source_counts = Counter(source for _, source in evidence_entities)
-    covered: list[str] = []
-    missing: list[str] = []
-    matches: list[dict[str, Any]] = []
-    per_entity: list[dict[str, Any]] = []
-
+    evidence_norms = [name for name, _ in evidence_entities]; source_counts = Counter(source for _, source in evidence_entities)
+    covered: list[str] = []; missing: list[str] = []; matches: list[dict[str, Any]] = []; per_entity: list[dict[str, Any]] = []
     for entity in query_entities:
         best = max((_entity_overlap(entity, candidate) for candidate in evidence_norms), default=0.0)
         candidate_sources = tuple(dict.fromkeys(source for candidate, source in evidence_entities if _entity_overlap(entity, candidate) >= max(0.72, best - 0.05)))
         status = "covered" if best >= 0.72 else "partial" if best >= 0.45 else "missing"
-        row = {"entity": entity, "status": status, "match_score": round(best, 3), "sources": candidate_sources}
-        per_entity.append(row)
-        if status == "covered":
-            covered.append(entity)
-        elif status == "missing":
-            missing.append(entity)
-        if candidate_sources:
-            matches.append({"entity": entity, "evidence_sources": candidate_sources, "match_score": round(best, 3)})
-
-    coverage = len(covered) / max(1, len(query_entities))
-    partial_coverage = (len(covered) + 0.5 * sum(row["status"] == "partial" for row in per_entity)) / max(1, len(query_entities))
-    return {
-        "query_entities": list(query_entities),
-        "entity_count": len(query_entities),
-        "covered": covered,
-        "missing": missing,
-        "partial": [row["entity"] for row in per_entity if row["status"] == "partial"],
-        "coverage": round(coverage, 3),
-        "partial_coverage": round(partial_coverage, 3),
-        "per_entity": per_entity,
-        "evidence_entity_count": len(evidence_entities),
-        "evidence_entities": list(dict.fromkeys(evidence_norms))[:64],
-        "source_entity_counts": dict(source_counts),
-        "matches": matches,
-    }
+        row = {"entity": entity, "status": status, "match_score": round(best, 3), "sources": candidate_sources}; per_entity.append(row)
+        if status == "covered": covered.append(entity)
+        elif status == "missing": missing.append(entity)
+        if candidate_sources: matches.append({"entity": entity, "evidence_sources": candidate_sources, "match_score": round(best, 3)})
+    coverage = len(covered) / max(1, len(query_entities)); partial_coverage = (len(covered) + 0.5 * sum(row["status"] == "partial" for row in per_entity)) / max(1, len(query_entities))
+    return {"query_entities": list(query_entities), "entity_count": len(query_entities), "covered": covered, "missing": missing, "partial": [row["entity"] for row in per_entity if row["status"] == "partial"], "coverage": round(coverage, 3), "partial_coverage": round(partial_coverage, 3), "per_entity": per_entity, "evidence_entity_count": len(evidence_entities), "evidence_entities": list(dict.fromkeys(evidence_norms))[:64], "source_entity_counts": dict(source_counts), "matches": matches}
 
 
 __all__ = ["extract_query_entities", "score_entity_coverage"]
