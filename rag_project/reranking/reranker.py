@@ -18,6 +18,7 @@ class Reranker:
             self.original = original
 
     DEFAULT_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    DEFAULT_MAX_RERANK_CANDIDATES = 48
 
     def __init__(
         self,
@@ -26,6 +27,7 @@ class Reranker:
         enabled: bool = True,
         max_batch_size: int = 8,
         max_text_length: int = 512,
+        max_rerank_candidates: int = DEFAULT_MAX_RERANK_CANDIDATES,
     ):
         self.model_name = model_name or self.DEFAULT_MODEL
         self.model = None
@@ -33,6 +35,7 @@ class Reranker:
         self.error: str | None = None
         self.max_batch_size = max(1, int(max_batch_size))
         self.max_text_length = max(64, int(max_text_length))
+        self.max_rerank_candidates = max(1, int(max_rerank_candidates))
         self.logger = logging.getLogger(__name__)
         self._model_attempted = False
 
@@ -105,6 +108,14 @@ class Reranker:
             return []
         if not self._ensure_model():
             return sorted(hits_list, key=lambda item: item.score, reverse=True)
+
+        # Multi-query retrieval can produce hundreds of unique candidates. On CPU,
+        # sending all of them through the CrossEncoder is unnecessarily expensive.
+        # Keep the strongest fused candidates only; the final answer still has its
+        # own top_k/context limits downstream.
+        if len(hits_list) > self.max_rerank_candidates:
+            hits_list = sorted(hits_list, key=lambda item: item.score, reverse=True)[: self.max_rerank_candidates]
+
         try:
             pairs: list[list[str]] = []
             for hit in hits_list:
