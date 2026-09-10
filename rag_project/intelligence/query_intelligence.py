@@ -48,10 +48,14 @@ class QueryPlan:
 
 
 def normalize_query(query: str) -> str:
-    text = re.sub(r"\s+", " ", (query or "").strip())
+    raw = str(query or "").strip()
+    text = re.sub(r"\s+", " ", raw)
     text = text.replace("–", "-").replace("—", "-")
     text = re.sub(r"\bwhat's\b", "what is", text, flags=re.I)
     text = re.sub(r"\bvs\.?\b", "versus", text, flags=re.I)
+    # Normalization is not a casing policy: preserve the user's leading case.
+    if raw and raw[0].isupper() and text:
+        text = text[0].upper() + text[1:]
     return text[:3000]
 
 
