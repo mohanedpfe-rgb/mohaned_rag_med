@@ -92,6 +92,11 @@ def decompose_query(query: str) -> tuple[str, ...]:
 def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
     semantic = understand_query(normalized)
     primary = semantic.primary_intent
+    # Multi-part requests must remain multi-part even when one clause dominates
+    # the semantic classifier (e.g. dose + contraindications). This preserves all
+    # requested retrieval paths instead of collapsing the request to one intent.
+    if len(subqueries) > 1 and (_contains_any(normalized, _NUMERIC) or _contains_any(normalized, _MANAGEMENT)):
+        return "multi_part"
     if primary == "association": return "relationship"
     if primary == "comparison" or _contains_any(normalized, _COMPARISON): return "comparison"
     if primary in {"diagnosis", "management", "etiology", "mechanism", "prognosis"}: return primary
@@ -111,7 +116,7 @@ def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
 def _make_variants(normalized: str, intent: str, entities: tuple[str, ...], *, numeric: bool, table: bool, figure: bool) -> tuple[str, ...]:
     variants = [normalized]
     if entities: variants.append(" ".join(entities[:8]))
-    if intent in {"numeric", "diagnosis", "management"} or numeric:
+    if intent in {"numeric", "diagnosis", "management", "multi_part"} or numeric:
         variants.extend([normalized + " exact numeric value units range", normalized + " dosage measurement quantity threshold"])
     if intent == "comparison": variants.extend([normalized + " differences similarities compare", normalized + " each item evidence"])
     if intent == "relationship": variants.extend([normalized + " association relationship linked evidence", normalized + " common mechanism connection"])
@@ -120,6 +125,7 @@ def _make_variants(normalized: str, intent: str, entities: tuple[str, ...], *, n
     if intent == "diagnosis": variants.append(normalized + " diagnostic criteria signs tests thresholds")
     if intent == "management": variants.append(normalized + " treatment management first line contraindications")
     if intent == "prognosis": variants.append(normalized + " prognosis outcomes risk predictors follow-up")
+    if intent == "multi_part": variants.append(normalized + " each requested part evidence")
     if table: variants.append(normalized + " table rows columns values")
     if figure: variants.append(normalized + " figure diagram chart caption")
     return tuple(dict.fromkeys(v for v in variants if v))[:10]
@@ -134,7 +140,7 @@ def plan_query(query: str, conversation_context: str = "") -> QueryPlan:
     relation = "relationship" in semantic.intents or "association" in semantic.intents or _contains_any(normalized, _RELATION)
     navigation = "navigation" in semantic.intents or _contains_any(normalized, _NAV)
     intent = classify_intent(normalized, subqueries)
-    multi_hop = len(subqueries) > 1 or relation or intent in {"etiology", "mechanism", "diagnosis", "management", "prognosis"} or bool(semantic.relations) or _contains_any(normalized, ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب", "pourquoi"))
+    multi_hop = len(subqueries) > 1 or relation or intent in {"etiology", "mechanism", "diagnosis", "management", "prognosis", "multi_part"} or bool(semantic.relations) or _contains_any(normalized, ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب", "pourquoi"))
     variants = _make_variants(normalized, intent, entities, numeric=numeric, table=table, figure=figure)
-    boosts = {"lexical": 1.20 if numeric or navigation else 1.0, "vector": 1.15 if intent in {"factual", "definition", "relationship", "etiology", "mechanism", "diagnosis", "management"} else 1.0, "table": 1.45 if table else 1.0, "figure": 1.35 if figure else 1.0, "section": 1.20 if navigation or intent in {"definition", "factual"} else 1.0, "entity": 1.25 if entities else 1.0, "parent": 1.15 if multi_hop or navigation else 1.0, "semantic": 1.30 if semantic.confidence >= 0.70 else 1.10}
+    boosts = {"lexical": 1.20 if numeric or navigation else 1.0, "vector": 1.15 if intent in {"factual", "definition", "relationship", "etiology", "mechanism", "diagnosis", "management", "multi_part"} else 1.0, "table": 1.45 if table else 1.0, "figure": 1.35 if figure else 1.0, "section": 1.20 if navigation or intent in {"definition", "factual"} else 1.0, "entity": 1.25 if entities else 1.0, "parent": 1.15 if multi_hop or navigation else 1.0, "semantic": 1.30 if semantic.confidence >= 0.70 else 1.10}
     return QueryPlan(original, normalized, intent, subqueries, variants, entities, numeric, table, figure, multi_hop, True, boosts)
