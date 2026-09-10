@@ -45,15 +45,13 @@ def _validate_document_index(
     version_id: str | None = None,
 ) -> dict[str, Any]:
     print(
-        "DEBUG RUNTIME VALIDATE: "
-        f"persist_directory={self.persist_directory}, "
+        f"DEBUG RUNTIME VALIDATE: persist_directory={self.persist_directory}, "
         f"collection_name={self.collection_name}"
     )
     print(
-        "DEBUG RUNTIME VALIDATE INPUT: "
-        f"document_id={document_id}, version_id={version_id!r}"
+        f"DEBUG RUNTIME VALIDATE INPUT: document_id={document_id}, "
+        f"version_id={version_id!r}"
     )
-
     records = self.collection.get(
         where={"document_id": document_id},
         include=["metadatas", "documents", "embeddings"],
@@ -62,26 +60,22 @@ def _validate_document_index(
     metadatas = _normalize_sequence(records.get("metadatas"))
     documents = _normalize_sequence(records.get("documents"))
     embeddings = _normalize_sequence(records.get("embeddings"))
-
     print(
-        "DEBUG RUNTIME RAW COUNTS: "
-        f"ids={len(ids)}, metadatas={len(metadatas)}, "
+        f"DEBUG RUNTIME RAW COUNTS: ids={len(ids)}, metadatas={len(metadatas)}, "
         f"documents={len(documents)}, embeddings={len(embeddings)}"
     )
-
     for index, metadata in enumerate(metadatas):
-        normalized = self._coerce_metadata(metadata)
-        print(
-            "DEBUG RUNTIME RECORD: "
-            f"index={index}, "
-            f"id={ids[index] if index < len(ids) else '<missing>'!r}, "
-            f"document_id={normalized.get('document_id')!r}, "
-            f"version_id={normalized.get('version_id')!r}, "
-            f"chunk_id={normalized.get('chunk_id')!r}, "
-            f"index_state={normalized.get('index_state')!r}, "
-            f"embedding_len={len(_normalize_sequence(embeddings[index])) if index < len(embeddings) else 0}, "
-            f"text_len={len(str(documents[index])) if index < len(documents) else 0}"
-        )
+        if isinstance(metadata, dict):
+            print(
+                f"DEBUG RUNTIME RECORD: index={index}, "
+                f"id={ids[index]!r if index < len(ids) else None}, "
+                f"document_id={metadata.get('document_id')!r}, "
+                f"version_id={metadata.get('version_id')!r}, "
+                f"chunk_id={metadata.get('chunk_id')!r}, "
+                f"index_state={metadata.get('index_state')!r}, "
+                f"embedding_len={len(embeddings[index]) if index < len(embeddings) and embeddings[index] is not None else None}, "
+                f"text_len={len(str(documents[index])) if index < len(documents) else None}"
+            )
 
     if version_id is None:
         selected = list(range(len(ids)))
@@ -91,20 +85,23 @@ def _validate_document_index(
             for index, metadata in enumerate(metadatas)
             if isinstance(metadata, dict) and metadata.get("version_id") == version_id
         ]
-
     print(
-        "DEBUG RUNTIME VERSION MATCH: "
-        f"requested={version_id!r}, selected_indices={selected}"
+        f"DEBUG RUNTIME VERSION MATCH: requested={version_id!r}, selected_indices={selected}"
     )
 
     issues: list[str] = []
     if not selected:
-        return {
+        result = {
             "document_id": document_id,
             "count": 0,
             "valid": False,
             "issues": ["no matching index records"],
         }
+        print(
+            f"DEBUG RUNTIME VALIDATE RESULT: count={result['count']}, "
+            f"valid={result['valid']}, issues={result['issues']}"
+        )
+        return result
 
     selected_ids: list[str] = []
     seen_chunk_ids: set[str] = set()
@@ -131,16 +128,52 @@ def _validate_document_index(
             issues.append(f"missing document text for record index {index}")
 
     valid = bool(selected_ids) and not issues
-    print(
-        "DEBUG RUNTIME VALIDATE RESULT: "
-        f"count={len(selected_ids)}, valid={valid}, issues={issues}"
-    )
-    return {
+    result = {
         "document_id": document_id,
         "count": len(selected_ids),
         "valid": valid,
         "issues": issues,
     }
+    print(
+        f"DEBUG RUNTIME VALIDATE RESULT: count={result['count']}, "
+        f"valid={result['valid']}, issues={result['issues']}"
+    )
+    return result
+
+
+def _synchronize_ingestion_version(self: Any, document_id: str) -> None:
+    """Make the canonical state-store version_id authoritative in retrieval stores."""
+    if not document_id:
+        return
+    state_document = self.state_store.get_document(document_id)
+    if not state_document:
+        return
+    canonical_version = str(
+        state_document.get("version_id") or state_document.get("content_hash") or ""
+    )
+    if not canonical_version:
+        return
+
+    matches = self.collection.get(
+        where={"document_id": document_id},
+        include=["metadatas"],
+    )
+    ids = _normalize_sequence(matches.get("ids"))
+    metadatas = _normalize_sequence(matches.get("metadatas"))
+    for item_id, metadata in zip(ids, metadatas, strict=False):
+        meta = self._coerce_metadata(metadata)
+        if str(meta.get("version_id") or "") != canonical_version:
+            meta["version_id"] = canonical_version
+            self.collection.update(ids=[str(item_id)], metadatas=[meta])
+
+    with _database_lock(Path(self.lexical_database)):
+        with _connect(Path(self.lexical_database)) as connection:
+            connection.execute(
+                "UPDATE lexical_documents "
+                "SET metadata = json_set(metadata, '$.version_id', ?) "
+                "WHERE json_extract(metadata, '$.document_id') = ?",
+                (canonical_version, document_id),
+            )
 
 
 def install() -> None:
@@ -148,10 +181,12 @@ def install() -> None:
     if _INSTALLED:
         return
 
+    from rag_project.app.rag_system import RAGSystem
     from rag_project.storage.vector_store import VectorStore
 
     original_init = VectorStore.__init__
     original_resolve_dimension = VectorStore._resolve_dimension
+    original_ingest_file = RAGSystem.ingest_file
 
     def hardened_init(
         self: Any,
@@ -170,9 +205,16 @@ def install() -> None:
                 return 0
         return original_resolve_dimension(self, embeddings)
 
+    def synchronized_ingest_file(self: Any, pdf_path: Any) -> Any:
+        result = original_ingest_file(self, pdf_path)
+        if isinstance(result, dict) and result.get("status") == "success":
+            _synchronize_ingestion_version(self.vector_store, str(result.get("document_id") or ""))
+        return result
+
     VectorStore.__init__ = hardened_init
     VectorStore._resolve_dimension = hardened_resolve_dimension
     VectorStore.validate_document_index = _validate_document_index
+    RAGSystem.ingest_file = synchronized_ingest_file
 
     for method_name in (
         "_upsert_lexical_records",
