@@ -38,6 +38,26 @@ def _load_local_env() -> None:
         return
 
 
+def _clamp_local_embedding_profile() -> None:
+    """Repair legacy/unsafe local embedding settings before application startup."""
+    try:
+        batch_size = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
+    except (TypeError, ValueError):
+        batch_size = 16
+    try:
+        retries = int(os.getenv("EMBEDDING_RETRIES", "2"))
+    except (TypeError, ValueError):
+        retries = 2
+    try:
+        timeout_seconds = float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "180"))
+    except (TypeError, ValueError):
+        timeout_seconds = 180.0
+
+    os.environ["EMBEDDING_BATCH_SIZE"] = str(max(16, min(batch_size, 32)))
+    os.environ["EMBEDDING_RETRIES"] = str(max(1, min(retries, 3)))
+    os.environ["EMBEDDING_TIMEOUT_SECONDS"] = str(max(30.0, min(timeout_seconds, 300.0)))
+
+
 def _install_ui_guards() -> None:
     if getattr(bookrag_ui, "_bookrag_ui_guards_installed", False):
         return
@@ -81,6 +101,7 @@ def _install_ui_guards() -> None:
 
 def main() -> None:
     _load_local_env()
+    _clamp_local_embedding_profile()
     _install_ui_guards()
     system = bookrag_ui.get_system()
     start_supervisor(system, interval_seconds=1.0)
