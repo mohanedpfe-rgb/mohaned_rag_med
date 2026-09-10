@@ -55,6 +55,8 @@ def runtime_contract()->dict[str,Any]:
         "answer_pipeline_authority":ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution":ANSWER_PIPELINE_AUTHORITY,
         "answer_monkey_patch":False,
+        "final_answer_verification":"rag_project.intelligence.final_answer_contract.verify_final_answer",
+        "entity_coverage":"rag_project.intelligence.entity_coverage.score_entity_coverage",
         "medical_safety_gate":True,
     }
 
