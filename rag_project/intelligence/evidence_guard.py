@@ -48,14 +48,14 @@ def split_claims(answer: str) -> list[str]:
         claims: list[str] = []
         for line in bullet_lines:
             line = line.strip()
-            if len(meaningful_tokens(line)) >= 2:
+            if len(meaningful_tokens(line)) >= 3:
                 claims.append(line)
         if claims:
             return claims[:40]
     claims = []
     for sentence in _SENTENCE_RE.split(raw):
         sentence = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence.strip())
-        if len(meaningful_tokens(sentence)) >= 2:
+        if len(meaningful_tokens(sentence)) >= 3:
             claims.append(sentence)
     return claims[:40]
 
