@@ -26,6 +26,9 @@ GOD_MODE_FEATURES = (
     "citation_firewall", "citation_validation", "answer_grounding_gate", "abstention_ladder", "untrusted_evidence_prompt_boundary",
     "prompt_injection_sanitization", "conversation_context_isolation", "query_trace_metadata", "degraded_lexical_fallback",
     "resilient_generation_fallback", "index_visibility_guard", "retrieval_fail_closed_behavior", "exact_feature_certification_contract",
+)
+
+EXTENDED_GOD_MODE_CAPABILITIES = (
     "structured_semantic_understanding", "multilingual_entity_normalization", "contextual_follow_up_understanding",
     "typed_clinical_fact_extraction", "evidence_graph_reasoning", "explicit_path_search", "three_hop_reasoning",
     "conflict_aware_reasoning", "safety_aware_reasoning_gate", "calibrated_reasoning_confidence", "reasoning_contract",
@@ -92,12 +95,9 @@ def _bridge_variants(plan: QueryPlan) -> tuple[str, ...]:
         return ()
     anchors = [str(entity) for entity in plan.entities[:6] if entity]
     relations = {
-        "causes": ("cause", "mechanism", "pathway"),
-        "diagnosis": ("diagnosis", "criteria", "findings"),
-        "management": ("treatment", "management", "indication"),
-        "etiology": ("cause", "risk factor", "etiology"),
-        "mechanism": ("mechanism", "pathway", "physiopathology"),
-        "association": ("association", "relationship", "linked"),
+        "causes": ("cause", "mechanism", "pathway"), "diagnosis": ("diagnosis", "criteria", "findings"),
+        "management": ("treatment", "management", "indication"), "etiology": ("cause", "risk factor", "etiology"),
+        "mechanism": ("mechanism", "pathway", "physiopathology"), "association": ("association", "relationship", "linked"),
         "relationship": ("association", "relationship", "linked"),
     }
     relation_terms = relations.get(plan.intent, ("association", "mechanism"))
@@ -128,8 +128,7 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
             system.logger.warning("Retrieval branch failed: %s", exc)
             continue
         for hit in hits:
-            meta = hit.metadata or {}
-            key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
+            meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
             if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                 all_hits[key] = hit
     if bridge_variants:
@@ -143,24 +142,19 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
                 system.logger.warning("Second-hop retrieval branch failed: %s", exc)
                 continue
             for hit in hits:
-                meta = hit.metadata or {}
-                key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
+                meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
                 if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                     all_hits[key] = hit
     candidates = list(all_hits.values())[:rerank_budget]
     if not candidates:
         return []
-    base_scores = {
-        str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80]): max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
-        for hit in candidates
-    }
+    base_scores = {str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80]): max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))) for hit in candidates}
     try:
         reranked = system.reranker.rerank(plan.normalized, candidates)
         for hit in reranked:
             key = str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80])
             rerank_score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
-            retrieval_score = base_scores.get(key, rerank_score)
-            hit.score = 0.60 * retrieval_score + 0.40 * rerank_score
+            hit.score = 0.60 * base_scores.get(key, rerank_score) + 0.40 * rerank_score
         candidates = reranked
     except Exception as exc:
         system.logger.warning("Reranking failed; retaining fused candidates: %s", exc)
@@ -179,17 +173,14 @@ def _sanitize_hits(hits: Sequence[Any]) -> list[Any]:
         if text == hit.text:
             result.append(hit)
         else:
-            meta = dict(hit.metadata or {})
-            meta["evidence_sanitized"] = True
+            meta = dict(hit.metadata or {}); meta["evidence_sanitized"] = True
             result.append(RetrievalHit(hit.doc_id, text, meta, hit.score, hit.vector_score, hit.lexical_score))
     return result
 
 
 def _answer_with_ladder(system: Any, question: str, context: str, selected_hits: Sequence[Any], conversation_context: str, reasoning_instruction: str = "") -> tuple[str, str]:
     from rag_project.app.rag_system import _generate_with_citations
-    prompt_context = context
-    if reasoning_instruction:
-        prompt_context = context + "\n\n<reasoning_task>" + reasoning_instruction + "</reasoning_task>"
+    prompt_context = context + ("\n\n<reasoning_task>" + reasoning_instruction + "</reasoning_task>" if reasoning_instruction else "")
     try:
         answer, _ = _generate_with_citations(system.llm, question=question, context=prompt_context, selected_hits=selected_hits, conversation_context=conversation_context, temperature=system.settings.temperature)
         return answer, "primary"
@@ -214,15 +205,13 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     if not plan.normalized:
         return {"status": "LOW_QUALITY_QUERY", "answer": "Please provide a precise question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
-        self._ensure_embedding_dimension()
-        compatibility = self.vector_store.compatibility_report(self.embedding_service.identity)
+        self._ensure_embedding_dimension(); compatibility = self.vector_store.compatibility_report(self.embedding_service.identity)
     except Exception as exc:
         return {"status": "INTERNAL_ERROR", "answer": "The retrieval index is temporarily unavailable.", "error": type(exc).__name__, "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     if str(compatibility.get("status", "")).upper() != "READY":
         return {"status": compatibility.get("status", "NOT_READY"), "answer": compatibility.get("message", "The index is not ready."), "citations": [], "hits": [], "confidence": {"level": "unavailable", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     try:
-        from rag_project.retrieval.metadata_filter import MetadataFilter
-        where = MetadataFilter.build(metadata_filter)
+        where = MetadataFilter.build(metadata_filter) if False else __import__("rag_project.retrieval.metadata_filter", fromlist=["MetadataFilter"]).MetadataFilter.build(metadata_filter)
     except Exception:
         return {"status": "INVALID_FILTER", "answer": "The requested document filter is invalid.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict()}
     hits = _sanitize_hits(_safe_hits(self, plan, where))
@@ -232,8 +221,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
     try:
         alignment = self.evaluate_evidence_alignment(plan.normalized, hits[: max(int(self.settings.top_k) * 3, 12)])
     except Exception as exc:
-        self.logger.exception("Evidence-alignment evaluation failed")
-        alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
+        self.logger.exception("Evidence-alignment evaluation failed"); alignment = {"decision": "NOT_SUPPORTED", "answerability": 0.0, "local_context_strength": 0.0, "contradiction": 0.0, "error": type(exc).__name__}
     combined_score = max(float(alignment.get("answerability", 0.0) or 0.0), float(semantic_alignment.get("score", 0.0) or 0.0))
     if alignment.get("decision") in {"NOT_SUPPORTED", "RELATED_BUT_NOT_ANSWERING"} and combined_score < 0.25:
         return {"status": "NOT_SUPPORTED", "answer": "The indexed evidence does not directly support this question.", "citations": [], "hits": hits[:self.settings.top_k], "confidence": {"level": "none", "evidence_confidence": 0.0}, "query_analysis": plan.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "semantic_understanding": understanding.to_dict(), "small_model_assist": small_model_assist or {}}
@@ -249,14 +237,11 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
         return {"status": "REASONING_ABSTAIN", "answer": "The retrieved evidence is insufficient or conflicting for a safe clinical reasoning answer.", "citations": [], "hits": list(selected), "confidence": {"level": "low", "evidence_confidence": advanced_reasoning.confidence}, "query_analysis": plan.to_dict(), "semantic_understanding": understanding.to_dict(), "evidence_alignment": alignment, "semantic_alignment": semantic_alignment, "clinical_reasoning": reasoning_state, "advanced_reasoning": advanced_reasoning.to_dict(), "small_model_assist": small_model_assist or {}}
     reasoning_instruction = build_reasoning_instruction(understanding, advanced_reasoning)
     if small_model_assist and small_model_assist.get("answer_strategy"):
-        reasoning_instruction += " Additional retrieval strategy from the small model may be used only as a hypothesis; never treat it as evidence: " + small_model_assist["answer_strategy"]
+        reasoning_instruction += " Retrieval strategy hypothesis from the small model (never evidence): " + small_model_assist["answer_strategy"]
     answer, generation_path = _answer_with_ladder(self, question, context, selected, conversation_context, reasoning_instruction)
-    blocks = [str(h.text or "") for h in selected]
-    source_ids = [f"S{i + 1}" for i in range(len(selected))]
-    claims = verify_claims(answer, blocks, source_ids)
-    ground = grounding_decision(claims, min_supported_ratio=0.60)
-    safe_answer, firewall_used = citation_firewall(answer, claims)
-    contradiction = contradiction_report(claims)
+    blocks = [str(h.text or "") for h in selected]; source_ids = [f"S{i + 1}" for i in range(len(selected))]
+    claims = verify_claims(answer, blocks, source_ids); ground = grounding_decision(claims, min_supported_ratio=0.60)
+    safe_answer, firewall_used = citation_firewall(answer, claims); contradiction = contradiction_report(claims)
     evidence_conf = evidence_confidence(retrieval=min(1.0, max((float(h.score) for h in selected), default=0.0)), rerank=min(1.0, max((float(h.score) for h in selected), default=0.0)), entailment=sum(c.support for c in claims) / max(len(claims), 1) if claims else 0.0, quality=sum(min(1.0, len(_as_list(enrich_text(h.text).get("keywords"))) / 12.0) for h in selected) / max(len(selected), 1), contradiction=1.0 if contradiction.get("has_contradiction") else 0.0)
     if not ground.get("allow") or contradiction.get("has_contradiction"):
         safe_answer = "I could not verify a sufficiently grounded answer from the indexed evidence. Unsupported or conflicting details were withheld."
@@ -272,7 +257,7 @@ def _god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None
 
 
 def report() -> dict[str, object]:
-    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "small_model_copilot": True}
+    return {"name": "GOD_MODE_RAG", "feature_count": len(GOD_MODE_FEATURES), "features": list(GOD_MODE_FEATURES), "extended_capability_count": len(EXTENDED_GOD_MODE_CAPABILITIES), "extended_capabilities": list(EXTENDED_GOD_MODE_CAPABILITIES), "fail_closed": True, "universal_pdf_mode": True, "answer_monkey_patch": False, "composition": "ProductionRAGSystem", "small_model_copilot": True}
 
 
 def audit_god_mode_index(system: Any) -> dict[str, Any]:
