@@ -473,13 +473,15 @@ class VectorStore:
             metadatas=normalized,
             embeddings=[list(map(float, vector)) for vector in embedding_list],
         )
-        # DIAGNOSTIC: immediate read-back
+        # DIAGNOSTIC: immediate read-back with ID comparison
+        first_doc_id = normalized[0].get("document_id")
         immediate_check = self.collection.get(
-            where={"document_id": normalized[0].get("document_id")},
+            where={"document_id": first_doc_id},
             include=["metadatas"],
         )
         print(
             f"DEBUG: Added {len(ids_list)} records. "
+            f"Searched for document_id='{first_doc_id}'. "
             f"Immediate check found: {len(immediate_check.get('ids', []))} records"
         )
         self._update_collection_identity(self.expected_identity)
