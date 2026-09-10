@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import sqlite3
 from pathlib import Path
 
 import fitz
@@ -59,8 +60,10 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
     assert document["status"] == "READY"
     assert document["index_state"] == "READY"
 
+    version_id = str(document.get("version_id") or "")
+    assert version_id
     validation = system.vector_store.validate_document_index(
-        result["document_id"], result["document_id"]
+        result["document_id"], version_id
     )
     assert validation["valid"] is True, validation
     assert validation["count"] == result["embedding_count"]
@@ -72,10 +75,9 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
     assert any("appendicitis" in str(text).lower() for text in records["documents"])
 
 
-def test_vector_store_rejects_unknown_dimension(tmp_path: Path) -> None:
+def test_empty_vector_store_reports_unknown_dimension_without_fabrication(tmp_path: Path) -> None:
     store = VectorStore(tmp_path / "vectors")
-    with pytest.raises(ValueError, match="Embedding dimension is unknown"):
-        store._resolve_dimension()
+    assert store._resolve_dimension() == 0
 
 
 def test_vector_store_lexical_writes_are_thread_safe(tmp_path: Path) -> None:
@@ -104,7 +106,7 @@ def test_vector_store_lexical_writes_are_thread_safe(tmp_path: Path) -> None:
         list(executor.map(write, records))
 
     assert store.lexical_count() == 24
-    with __import__("sqlite3").connect(store.lexical_database) as connection:
+    with sqlite3.connect(store.lexical_database) as connection:
         rows = connection.execute(
             "SELECT id, metadata FROM lexical_documents ORDER BY id"
         ).fetchall()
