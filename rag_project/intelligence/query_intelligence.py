@@ -11,14 +11,23 @@ _NUMERIC = ("dose", "dosage", "mg", "ml", "percent", "percentage", "how many", "
 _DEFINITION = ("what is", "define", "definition", "meaning", "qu'est-ce", "définition", "ما هو", "ما هي", "تعريف")
 _RELATION = ("related", "relationship", "relation", "associated", "association", "linked", "lien", "rapport", "علاقة", "مرتبط")
 _NAV = ("where", "which page", "section", "page number", "citation", "source", "où", "quelle page", "أين", "أي صفحة")
-_TABLE = ("table", "tables", "row", "column", "tabular", "tableau", "جدول", "صف", "عمود")
-_FIGURE = ("figure", "fig.", "image", "images", "diagram", "chart", "graph", "illustration", "رسم", "شكل", "صورة", "مخطط")
+_TABLE = ("table", "tables", "row", "column", "tabular", "tableau", "جدول", "الجدول", "صف", "الصف", "عمود", "العمود")
+_FIGURE = ("figure", "fig.", "image", "images", "diagram", "chart", "graph", "illustration", "رسم", "شكل", "الشكل", "صورة", "الصورة", "مخطط", "المخطط")
+_MANAGEMENT = ("manage", "managed", "management", "treat", "treated", "treatment", "therapy", "therapeutic", "contraindication", "contraindications", "how should", "prise en charge", "traitement", "contre-indication", "contre-indications", "علاج", "يعالج", "تدبير", "موانع", "موانع الاستعمال")
+_ETIOLOGY = ("cause", "causes", "caused", "etiology", "aetiology", "risk factor", "risk factors", "pourquoi", "cause", "étiologie", "سبب", "أسباب", "عوامل الخطر")
+_MECHANISM = ("mechanism", "mechanisms", "pathway", "pathophysiology", "physiopathology", "mécanisme", "physiopathologie", "آلية", "آليات", "المسار")
+_PROGNOSIS = ("prognosis", "outcome", "outcomes", "survival", "risk prediction", "prognostic", "pronostic", "مآل", "الإنذار", "البقاء")
 _STOP = {"what", "does", "the", "and", "for", "with", "which", "from", "that", "this", "about", "have", "into", "dans", "avec", "pour", "les", "des", "est", "sont", "une", "sur", "ما", "ماذا", "كيف", "هل", "عن", "من", "هذا", "هذه"}
 
 
 def _contains_term(text: str, term: str) -> bool:
     haystack = (text or "").casefold(); needle = (term or "").casefold().strip()
-    return bool(needle and re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE))
+    if not needle: return False
+    if re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE): return True
+    # Arabic definite articles are orthographic prefixes, not separate tokens.
+    if re.match(r"[\u0600-\u06ff]", needle) and not needle.startswith("ال"):
+        return bool(re.search(rf"(?<!\w)ال{re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE))
+    return False
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -86,6 +95,10 @@ def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
     if primary == "association": return "relationship"
     if primary == "comparison" or _contains_any(normalized, _COMPARISON): return "comparison"
     if primary in {"diagnosis", "management", "etiology", "mechanism", "prognosis"}: return primary
+    if _contains_any(normalized, _MANAGEMENT): return "management"
+    if _contains_any(normalized, _ETIOLOGY): return "etiology"
+    if _contains_any(normalized, _MECHANISM): return "mechanism"
+    if _contains_any(normalized, _PROGNOSIS): return "prognosis"
     if _contains_any(normalized, _NUMERIC) or "numeric" in semantic.intents: return "numeric"
     if primary == "factual":
         if _contains_any(normalized, _TABLE): return "table_lookup"
@@ -116,9 +129,6 @@ def plan_query(query: str, conversation_context: str = "") -> QueryPlan:
     original = query or ""; normalized = normalize_query(original); semantic = understand_query(normalized, conversation_context=conversation_context)
     subqueries = decompose_query(normalized); entities = extract_query_entities(normalized)
     numeric = "numeric" in semantic.intents or _contains_any(normalized, _NUMERIC)
-    # A multi-part numeric request (for example dose + contraindications) benefits
-    # from the table-oriented retrieval branch even when the user did not literally
-    # say "table". This keeps the established planner contract backward compatible.
     table = "table_lookup" in semantic.intents or _contains_any(normalized, _TABLE) or (numeric and len(subqueries) > 1)
     figure = "figure_lookup" in semantic.intents or _contains_any(normalized, _FIGURE)
     relation = "relationship" in semantic.intents or "association" in semantic.intents or _contains_any(normalized, _RELATION)
