@@ -55,26 +55,14 @@ def _entity_spans(sentence:str,entities:Sequence[ClinicalEntity]):
     return sorted(out,key=lambda x:x[0])
 
 def _relation_entity_pairs(sentence:str,relation_positions:Sequence[tuple[str,int]]):
-    """Choose relation endpoints by their position around the cue, allowing nested terms.
-
-    This is intentionally separate from the UI/entity list: a general concept such as
-    `diabetes` may occur inside `diabetic nephropathy`, but in a causal sentence the
-    correct endpoints are the concept before the cue and the complete concept after it.
-    """
-    entities=extract_clinical_entities(sentence)
-    spans=_entity_spans(sentence,entities)
+    entities=extract_clinical_entities(sentence);spans=_entity_spans(sentence,entities)
     if len(spans)<2:return []
     pairs=[]
     for relation,pos in relation_positions[:3]:
-        left=[row for row in spans if row[1]<=pos]
-        right=[row for row in spans if row[0]>=pos]
-        if not left or not right:
-            continue
-        subject=max(left,key=lambda row:row[1])[2]
-        obj=min(right,key=lambda row:row[0])[2]
-        if subject.normalized==obj.normalized:
-            continue
-        pairs.append((relation,pos,subject,obj))
+        left=[row for row in spans if row[1]<=pos];right=[row for row in spans if row[0]>=pos]
+        if not left or not right:continue
+        subject=max(left,key=lambda row:row[1])[2];obj=min(right,key=lambda row:row[0])[2]
+        if subject.normalized!=obj.normalized:pairs.append((relation,pos,subject,obj))
     return pairs
 
 def extract_clinical_facts(text:str,*,node_id:str='',document_id:str='')->tuple[ClinicalFact,...]:
@@ -130,23 +118,43 @@ def _safety_conflict(u:QueryUnderstanding,facts:Sequence[ClinicalFact],texts:Seq
 def assess_clinical_reasoning(understanding:QueryUnderstanding,hits:Sequence[Any],*,max_depth:int=3)->ClinicalReasoningAssessment:
     facts=[];coverage=[];texts=[]
     for i,h in enumerate(hits):
-        meta=getattr(h,'metadata',{}) or {};text=str(getattr(h,'text','') or '');texts.append(text);facts.extend(extract_clinical_facts(text,node_id=str(meta.get('chunk_id') or f'N{i+1}'),document_id=str(meta.get('document_id') or getattr(h,'doc_id',''))));qe={e.normalized for e in understanding.entities};ee={e.normalized for e in _ordered_entities(text)};coverage.append(len(qe&ee)/max(1,len(qe)))
-    qset={e.normalized for e in understanding.entities};direct=[f for f in facts if f.polarity>0 and f.subject in qset and f.object in qset];paths=_find_paths(facts,understanding,max_depth);cov=max(coverage,default=0.);direct_support=max((f.confidence for f in direct),default=cov*.9);path_support=max((p.support for p in paths),default=0.);docs={f.document_id for f in facts if f.document_id};source=min(1.,.5+.25*len(docs)) if paths else 0.;contradiction=_conflict(facts);safety=_safety_conflict(understanding,facts,texts);relation_needed=bool(understanding.relations or understanding.primary_intent in {'etiology','mechanism','association','comparison'})
+        meta=getattr(h,'metadata',{}) or {};text=str(getattr(h,'text','') or '');texts.append(text)
+        facts.extend(extract_clinical_facts(text,node_id=str(meta.get('chunk_id') or f'N{i+1}'),document_id=str(meta.get('document_id') or getattr(h,'doc_id',''))))
+        qe={e.normalized for e in understanding.entities};ee={e.normalized for e in _ordered_entities(text)};coverage.append(len(qe&ee)/max(1,len(qe)))
+    qset={e.normalized for e in understanding.entities};has_entities=bool(qset)
+    paths=_find_paths(facts,understanding,max_depth)
+    relation_needed=bool(understanding.relations or understanding.primary_intent in {'etiology','mechanism','association','comparison'})
+    direct=[f for f in facts if f.polarity>0 and f.subject in qset and f.object in qset]
+    cov=max(coverage,default=0.) if has_entities else (1.0 if hits else 0.0)
+    retrieval_support=max((max(0.,min(1.,float(getattr(h,'score',0.0) or 0.0))) for h in hits),default=0.0)
+    direct_support=max((f.confidence for f in direct),default=0.0)
+    path_support=max((p.support for p in paths),default=0.0)
+    docs={f.document_id for f in facts if f.document_id}
+    source=min(1.,.5+.25*len(docs)) if paths else 0.0
+    contradiction=_conflict(facts);safety=_safety_conflict(understanding,facts,texts)
     if direct:mode,depth='DIRECT',1
     elif paths and relation_needed:mode,depth=('MULTI_HOP' if len(paths[0].relations)>1 else 'ONE_HOP'),len(paths[0].relations)
-    elif not relation_needed and cov>=.5:mode,depth='DIRECT',1
+    elif not relation_needed and has_entities and cov>=.5:mode,depth='DIRECT',1
+    elif not relation_needed and not has_entities and hits:mode,depth='DIRECT_SUMMARY',1
     else:mode,depth='INSUFFICIENT',0
     blocked=[]
-    if cov<.5:blocked.append('insufficient_entity_coverage')
+    if has_entities and cov<.5:blocked.append('insufficient_entity_coverage')
+    if relation_needed and not has_entities:blocked.append('missing_reasoning_entities')
     if relation_needed and not direct and not paths:blocked.append('no_explicit_reasoning_path')
     if contradiction>=.5:blocked.append('conflicting_evidence')
     if safety>=1.:blocked.append('safety_conflict')
-    conf=max(0.,min(1.,.35*direct_support+.35*path_support+.15*cov+.15*source-.3*contradiction-.35*safety));allow=not blocked and conf>=(.35 if mode=='DIRECT' else .5)
+    if mode=='DIRECT_SUMMARY':
+        direct_support=max(direct_support,retrieval_support*.9)
+        source=max(source,retrieval_support)
+    conf=max(0.,min(1.,.35*direct_support+.35*path_support+.15*cov+.15*source-.3*contradiction-.35*safety))
+    minimum=.30 if mode in {'DIRECT','DIRECT_SUMMARY'} else .50
+    allow=not blocked and conf>=minimum
     return ClinicalReasoningAssessment(allow,mode,depth,round(cov,3),round(direct_support,3),round(path_support,3),round(source,3),round(contradiction,3),round(safety,3),round(conf,3),paths,tuple(blocked))
 
 def build_reasoning_instruction(understanding:QueryUnderstanding,assessment:ClinicalReasoningAssessment)->str:
     if assessment.mode=='MULTI_HOP':return 'Use only the explicit evidence path across the retrieved facts. Preserve uncertainty, population, timing, safety qualifiers, numbers, and units. Do not invent a missing link.'
     if assessment.mode=='ONE_HOP':return 'Use only the explicit evidence path and relationship supported by the retrieved facts. Do not invent a missing link.'
     if assessment.mode=='INSUFFICIENT' and (understanding.relations or understanding.primary_intent in {'etiology','mechanism','association','comparison'}):return 'Use only an explicit evidence path if one is present. Do not invent a missing link.'
+    if assessment.mode=='DIRECT_SUMMARY':return 'Summarize only what is directly stated or clearly enumerated in the retrieved evidence. Preserve qualifiers, uncertainty, numbers, units, and negations. Do not infer relationships that are not stated.'
     if 'safety' in understanding.constraints:return 'Prioritize contraindications and safety qualifiers. Never convert a contraindication into a recommendation.'
     return 'Answer only from directly supported evidence; preserve qualifiers and uncertainty.'
