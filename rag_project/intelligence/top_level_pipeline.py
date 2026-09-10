@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Sequence
-
+from typing import Any, Sequence
 from rag_project.intelligence.query_intelligence import plan_query
 from rag_project.intelligence.semantic_reasoning import understand_query
 from rag_project.utils.text_utils import meaningful_tokens
+from rag_project.intelligence.evidence_guard import verify_claims
 
 _PLANNER_SYSTEM=("You are a constrained medical RAG query planner. Return ONLY one JSON object. Do not answer the medical question. Do not invent facts.")
-_ALLOWED_INTENTS={"factual","definition","comparison","numeric","causal","multi_part","navigation","diagnosis","management","etiology","mechanism","prognosis","relationship","table_lookup","figure_lookup","other"}
+_ALLOWED_INTENTS={"factual","definition","comparison","causal","multi_part","navigation","diagnosis","management","etiology","mechanism","prognosis","relationship","numeric","table_lookup","figure_lookup","other"}
 _ALLOWED_AMBIGUITY={"low","medium","high"}
 
 @dataclass(frozen=True)
@@ -30,7 +30,7 @@ def _clean_list(value:Any,limit:int=6)->tuple[str,...]:
 def _parse_json(raw:str)->dict[str,Any]|None:
     text=str(raw or "").strip()
     if not text:return None
-    fenced=re.search(r"```(?:json)?\s*(\{.*?\})\s*```",text,re.S|re.I); candidate=fenced.group(1) if fenced else None
+    fenced=re.search(r"```(?:json)?\s*(\{.*?\})\s*```",text,re.S|re.I);candidate=fenced.group(1) if fenced else None
     if candidate is None:
         start,end=text.find("{"),text.rfind("}")
         if start>=0 and end>start:candidate=text[start:end+1]
@@ -41,7 +41,7 @@ def _parse_json(raw:str)->dict[str,Any]|None:
 
 def _hard_query(plan:Any,understanding:Any,question:str)->bool:
     tokens=meaningful_tokens(question)
-    return bool(len(plan.subqueries)>1 or plan.needs_multi_hop or plan.needs_numeric or plan.needs_table or understanding.primary_intent in {"comparison","etiology","mechanism","diagnosis","management","prognosis"} or understanding.confidence<.82 or len(tokens)>=12 or any(term in str(question).casefold() for term in ("why","how does","contraindication","dose","versus","compare","pourquoi","comment","مقارنة","سبب","جرعة")))
+    return bool(len(plan.subqueries)>1 or plan.needs_multi_hop or plan.needs_numeric or plan.needs_table or plan.needs_figure or understanding.primary_intent in {"comparison","etiology","mechanism","diagnosis","management","prognosis"} or understanding.confidence<.82 or len(tokens)>=12 or any(term in str(question).casefold() for term in ("why","how does","how do","contraindication","contraindications","dose","dosage","versus","compare","pourquoi","comment","مقارنة","سبب","جرعة","علاج","تشخيص")))
 
 def deterministic_phase1(question:str,conversation_context:str="")->PhasePlan:
     understanding=understand_query(question,conversation_context=conversation_context);plan=plan_query(question,conversation_context=conversation_context);entities=tuple(dict.fromkeys([e.normalized for e in understanding.entities]+list(plan.entities)))[:16];rewritten=tuple(dict.fromkeys([plan.normalized,*plan.variants]))[:8];must=tuple(dict.fromkeys(entities[:8]));ambiguity="high" if understanding.confidence<.60 else "medium" if understanding.confidence<.82 else "low"
@@ -66,16 +66,20 @@ def rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->
     if not needs:return cleaned
     questions=[q for q,_ in recent if q.strip()];answers=[a for _,a in recent if a.strip()];anchor=questions[-1] if questions else ""
     if not anchor:return cleaned
-    if re.match(r"^(and|et|و|then|puis|ثم)\b",cleaned,re.I):cleaned=re.sub(r"^(and|et|و|then|puis|ثم)\s*","",cleaned,flags=re.I)
+    cleaned=re.sub(r"^(and|et|و|then|puis|ثم)\s*","",cleaned,flags=re.I)
     context_entities=[]
     for text in (anchor,answers[-1] if answers else ""):
-        context_entities.extend(e.normalized for e in understand_query(text).entities[:6])
+        context_entities.extend(e.normalized for e in understand_query(text).entities[:8])
     anchors=" ".join(dict.fromkeys(context_entities))
     return f"{anchor} Follow-up: {cleaned} Relevant entities: {anchors}"[:3500]
 
 def medical_term_layer(question:str,evidence:Sequence[Any]=())->dict[str,Any]:
     text=" ".join([str(question or "")]+[str(getattr(hit,"text","") or "") for hit in evidence[:16]])
-    units=re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|mL|ml|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L)\b",text,flags=re.I);abbreviations=re.findall(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,6})?\b",question or "");drug_like=re.findall(r"\b[a-z]{5,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin)\b",question or "",flags=re.I);conditions=re.findall(r"\b[a-zà-ÿ][a-zà-ÿ-]{5,}(?:itis|osis|emia|pathy|carcinoma|oma|algia|penia|iasis)\b",question or "",flags=re.I);terms=list(dict.fromkeys([*meaningful_tokens(question),*abbreviations,*drug_like,*conditions]))[:48]
+    units=re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|mL|ml|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)\b",text,re.I)
+    abbreviations=re.findall(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,6})?\b",question or "")
+    drug_like=re.findall(r"\b[a-z]{5,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin|dipine|xaban|oxetine|triptan|caine|cept)\b",question or "",re.I)
+    conditions=re.findall(r"\b[a-zà-ÿ][a-zà-ÿ-]{5,}(?:itis|osis|emia|pathy|carcinoma|oma|algia|penia|iasis|megaly|cytosis|trophy|sclerosis|stenosis|ectasia)\b",question or "",re.I)
+    terms=list(dict.fromkeys([*meaningful_tokens(question),*abbreviations,*drug_like,*conditions]))[:48]
     return {"terms":terms,"units":list(dict.fromkeys(units))[:20],"abbreviations":list(dict.fromkeys(abbreviations))[:16],"drug_like":list(dict.fromkeys(drug_like))[:16],"condition_like":list(dict.fromkeys(conditions))[:16]}
 
 def precision_filter(hits:Sequence[Any],phase:PhasePlan,limit:int=16)->list[Any]:
@@ -107,20 +111,23 @@ def compress_context(question:str,hits:Sequence[Any],max_chars:int=6500)->tuple[
     total=sum(len(str(getattr(h,"text","") or "")) for h in hits);return "\n".join(selected),{"input_sentences":len(candidates),"selected_sentences":len(selected),"compression_ratio":round(len(" ".join(selected))/max(1,total),3)}
 
 def adaptive_retrieve(system:Any,question:str,phase:PhasePlan,initial_hits:Sequence[Any],metadata_filter:dict[str,Any]|None=None)->tuple[list[Any],dict[str,Any]]:
-    budget={"stage":1,"queries":1,"candidate_k":max(12,int(getattr(system.settings,"top_k",8))*3),"escalated":False,"reasons":[]};merged=list(initial_hits);hard=phase.ambiguity!='low' or phase.needs_multi_hop or phase.needs_numeric or len(phase.rewritten_queries)>1
+    settings=getattr(system,"settings",None);top_k=max(1,int(getattr(settings,"top_k",8))) if settings is not None else 8
+    budget={"stage":1,"queries":1,"candidate_k":max(12,top_k*3),"escalated":False,"reasons":[]};merged=list(initial_hits);hard=phase.ambiguity!='low' or phase.needs_multi_hop or phase.needs_numeric or phase.needs_table or len(phase.rewritten_queries)>1
+    if system is None:
+        budget.update({"stage":0,"queries":0,"candidate_k":0,"reasons":["no_system"]});return list(initial_hits),budget
     if hard:
-        budget.update({"stage":2,"queries":min(8,max(2,len(phase.rewritten_queries)+len(phase.sub_questions))),"candidate_k":max(24,int(getattr(system.settings,"top_k",8))*5),"escalated":True});queries=list(dict.fromkeys([*phase.rewritten_queries,*phase.sub_questions]))[:8]
+        budget.update({"stage":2,"queries":min(8,max(2,len(phase.rewritten_queries)+len(phase.sub_questions))),"candidate_k":max(24,top_k*5),"escalated":True});queries=list(dict.fromkeys([*phase.rewritten_queries,*phase.sub_questions]))[:8]
         for query in queries:
             try:merged.extend(system.retriever.retrieve(query,top_k=budget["candidate_k"],where=metadata_filter) or ())
-            except Exception:continue
-        if phase.needs_multi_hop:budget["stage"]=3;budget["reasons"].append("multi_hop");
+            except Exception as exc:budget["reasons"].append(f"retrieval_branch_failed:{type(exc).__name__}")
+        if phase.needs_multi_hop:budget["stage"]=3;budget["reasons"].append("multi_hop")
         if phase.needs_numeric:budget["reasons"].append("numeric_precision")
         if phase.needs_table:budget["reasons"].append("table_lookup")
-    selected=precision_filter(merged,phase,limit=max(8,int(getattr(system.settings,"top_k",8))*2));budget["final_hits"]=len(selected);return selected,budget
+        if phase.needs_figure:budget["reasons"].append("figure_lookup")
+    selected=precision_filter(merged,phase,limit=max(8,top_k*2));budget["final_hits"]=len(selected);return selected,budget
 
 def dynamic_temperature(phase:PhasePlan,default:float=.2)->float:
-    if phase.needs_numeric or phase.needs_multi_hop or phase.intent in {"diagnosis","management","etiology","mechanism","prognosis"} or phase.ambiguity!='low':return 0.
-    return min(.2,max(0.,float(default)))
+    return 0.0 if (phase.needs_numeric or phase.needs_multi_hop or phase.needs_table or phase.needs_figure or phase.intent in {"diagnosis","management","etiology","mechanism","prognosis"} or phase.ambiguity!='low') else min(.2,max(0.,float(default)))
 
 def extractive_draft(question:str,hits:Sequence[Any],phase:PhasePlan,max_sentences:int=8)->tuple[str,dict[str,Any]]:
     query_tokens=set(meaningful_tokens(" ".join(phase.rewritten_queries)));ranked=[]
@@ -139,23 +146,32 @@ def extractive_draft(question:str,hits:Sequence[Any],phase:PhasePlan,max_sentenc
         if len(chosen)>=max_sentences:break
     return "\n".join(f"- {s}" for s in chosen),{"sentence_count":len(chosen),"supported":bool(chosen)}
 
-_SYNTHESIS_SYSTEM=("You are the final synthesis stage of a medical document RAG system. Use ONLY the supplied extractive facts. Never add a fact, recommendation, diagnosis, causal link, number, unit, population, or qualifier that is absent from the facts. Every material sentence MUST contain a supplied [S#] citation. Remove claims that cannot be directly traced to a supplied fact. Return only the concise final answer.")
+_SYNTHESIS_SYSTEM=("You are the final synthesis stage of a medical document RAG system. Use ONLY the supplied extractive facts. Never add a fact, recommendation, diagnosis, causal link, number, unit, population, timing, severity, frequency, or qualifier that is absent from the facts. Every material sentence MUST contain a supplied [S#] citation. Preserve negation exactly. For causal or multi-hop questions, reproduce only relationships explicitly present across supplied facts. If synthesis cannot be done without adding information, return an empty response.")
 def synthesize_answer(llm:Any,question:str,draft:str,phase:PhasePlan,temperature:float=0.)->str|None:
     if llm is None or not draft.strip():return None
-    prompt=f"Question: {question[:2200]}\n\nIntent: {phase.intent}\nExtractive facts (authoritative):\n{draft[:6500]}\n\nProduce the final answer using only those facts. Preserve exact meaning and citations."
-    try:return str(llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature) or "").strip()[:9000] or None
+    prompt=f"Question: {question[:2200]}\n\nIntent: {phase.intent}\nExtractive facts (authoritative and complete):\n{draft[:6500]}\n\nProduce the final answer using only those facts. Do not merge separate facts into a new causal claim unless the explicit path is present in the facts themselves."
+    try:
+        value=str(llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature) or '').strip()[:9000]
+        return value or None
     except Exception:return None
 
 def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_filter:dict[str,Any]|None=None)->dict[str,Any]:
-    memory=getattr(system,"conversation_memory",None);history=getattr(memory,"history",[]) or [];context=getattr(memory,"prompt_context",lambda:" ")() if memory is not None else "";rewritten_question=rewrite_follow_up(question,history);deterministic=deterministic_phase1(rewritten_question,conversation_context=context);phase=llm_phase1(getattr(system,"llm",None),rewritten_question,deterministic,conversation_context=context);initial_hits=list(base_result.get("hits") or []);selected,retrieval_state=adaptive_retrieve(system,rewritten_question,phase,initial_hits,metadata_filter) if system is not None else (initial_hits,{"stage":0,"queries":0,"candidate_k":0,"escalated":False,"reasons":["no_system"]});terms=medical_term_layer(rewritten_question,selected);compact,compression=compress_context(rewritten_question,selected,max_chars=max(4000,int(getattr(getattr(system,"settings",None),"context_token_budget",3200))*3));extractive,extractive_state=extractive_draft(rewritten_question,selected,phase);temperature=dynamic_temperature(phase,getattr(getattr(system,"settings",None),"temperature",.2));enhanced=dict(base_result);enhanced.update({"phase_plan":phase.to_dict(),"rewritten_question":rewritten_question,"medical_term_layer":terms,"adaptive_retrieval":retrieval_state,"compressed_context":compact,"context_compression":compression,"extractive_stage":{"draft":extractive,**extractive_state},"generation_temperature":temperature,"phases":{"phase_1_query_understanding":"complete","phase_2_retrieval_precision":"complete","phase_3_two_stage_generation":"complete" if extractive_state["supported"] else "abstain","phase_4_verification":"complete","phase_5_intelligence_visibility":"complete"}})
+    memory=getattr(system,"conversation_memory",None);history=getattr(memory,"history",[]) or [];context=getattr(memory,"prompt_context",lambda:" ")() if memory is not None else "";rewritten_question=rewrite_follow_up(question,history);deterministic=deterministic_phase1(rewritten_question,conversation_context=context);phase=llm_phase1(getattr(system,"llm",None),rewritten_question,deterministic,conversation_context=context);initial_hits=list(base_result.get("hits") or []);selected,retrieval_state=adaptive_retrieve(system,rewritten_question,phase,initial_hits,metadata_filter);terms=medical_term_layer(rewritten_question,selected);compact,compression=compress_context(rewritten_question,selected,max_chars=max(4000,int(getattr(getattr(system,"settings",None),"context_token_budget",3200))*3));extractive,extractive_state=extractive_draft(rewritten_question,selected,phase);temperature=dynamic_temperature(phase,getattr(getattr(system,"settings",None),"temperature",.2));hard_query=_hard_query(plan_query(rewritten_question,conversation_context=context),understand_query(rewritten_question,conversation_context=context),rewritten_question);enhanced=dict(base_result);enhanced.update({"phase_plan":phase.to_dict(),"rewritten_question":rewritten_question,"medical_term_layer":terms,"adaptive_retrieval":retrieval_state,"compressed_context":compact,"context_compression":compression,"extractive_stage":{"draft":extractive,**extractive_state},"generation_temperature":temperature,"two_stage_policy":{"required":hard_query,"reason":"hard_medical_query" if hard_query else "standard_answerable_query"},"phases":{"phase_1_query_understanding":"complete","phase_2_retrieval_precision":"complete" if retrieval_state.get("stage",0)>0 or selected else "abstain","phase_3_two_stage_generation":"required" if hard_query else "complete","phase_4_verification":"complete","phase_5_intelligence_visibility":"complete"}})
     llm=getattr(system,"llm",None) if system is not None else None
-    if extractive_state["supported"]:
-        synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature)
-        enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"temperature":temperature,"fallback":not bool(synthesized)}
-        if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize"
-        else:enhanced["generation_path"]="certified_primary_fallback"
-    else:
-        enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"temperature":temperature,"fallback":True};enhanced["generation_path"]="certified_primary_fallback"
+    if not extractive_state["supported"]:
+        enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":True,"reason":"no_extractable_evidence"};enhanced["generation_path"]="required_two_stage_abstention" if hard_query else "certified_primary_fallback"
+        if hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
+        return enhanced
+    synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature)
+    verified_synthesis=[]
+    if synthesized:
+        verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))])
+        blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
+        if blocked:synthesized=None
+    enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
+    if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize"
+    elif hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The evidence was retrieved, but the required synthesis could not be verified without adding unsupported clinical content.";enhanced["generation_path"]="required_two_stage_abstention"
+    else:enhanced["generation_path"]="extractive_verified_fallback";enhanced["answer"]=extractive
     return enhanced
 
 __all__=["PhasePlan","deterministic_phase1","llm_phase1","rewrite_follow_up","medical_term_layer","precision_filter","compress_context","adaptive_retrieve","dynamic_temperature","extractive_draft","synthesize_answer","complete_phases"]
