@@ -207,7 +207,7 @@ def test_top_level_rewrite_follow_up_is_contextual() -> None:
 def test_top_level_medical_term_layer_extracts_units_and_abbreviations() -> None:
     from rag_project.intelligence.top_level_pipeline import medical_term_layer
 
-    report = medical_term_layer("HbA1c 7% and metformin 500 mg")
+    report = medical_term_layer("HTA 7% and metformin 500 mg")
     assert report['units']
     assert report['abbreviations']
     assert report['terms']
