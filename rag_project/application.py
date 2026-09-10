@@ -8,10 +8,12 @@ from rag_project.runtime import install
 from rag_project.security import harden_system
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
+from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 
 _FACTORY_LOCK=threading.RLock()
 ANSWER_PIPELINE_AUTHORITY="rag_project.intelligence.top_level_pipeline.complete_phases"
 PRODUCTION_CONTRACT_VERSION="2026-09-11-contract-v2"
+INGESTION_CONTRACT_VERSION="2026-09-11-ingestion-contract-v1"
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
@@ -30,6 +32,7 @@ def create_rag_system(settings: Settings | None = None):
         install()
         install_pipeline_integrity()
         install_production_contract()
+        install_ingestion_contract()
         from rag_project.app.production_rag import ProductionRAGSystem
         system=ProductionRAGSystem(_normalize_runtime_settings(settings))
         system=harden_system(system)
@@ -63,6 +66,8 @@ def runtime_contract()->dict[str,Any]:
         "pipeline_integrity":"rag_project.intelligence.pipeline_integrity.install",
         "production_contract":"rag_project.intelligence.production_contract_v2.install",
         "production_contract_version":PRODUCTION_CONTRACT_VERSION,
+        "ingestion_contract":"rag_project.ingestion.ingestion_contract.install",
+        "ingestion_contract_version":INGESTION_CONTRACT_VERSION,
         "final_answer_verification":"rag_project.intelligence.final_answer_contract.verify_final_answer",
         "entity_coverage":"rag_project.intelligence.entity_coverage.score_entity_coverage",
         "medical_safety_gate":True,
@@ -71,6 +76,9 @@ def runtime_contract()->dict[str,Any]:
         "structured_answer_envelope":True,
         "confidence_breakdown":True,
         "request_traceability":True,
+        "ingestion_traceability":True,
+        "atomic_ingestion_publication":True,
+        "post_write_index_validation":True,
     }
 
-__all__=["create_rag_system","create_default_rag_system","runtime_contract","ANSWER_PIPELINE_AUTHORITY","PRODUCTION_CONTRACT_VERSION"]
+__all__=["create_rag_system","create_default_rag_system","runtime_contract","ANSWER_PIPELINE_AUTHORITY","PRODUCTION_CONTRACT_VERSION","INGESTION_CONTRACT_VERSION"]
