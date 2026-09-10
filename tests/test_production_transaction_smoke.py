@@ -105,7 +105,8 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
     raw_ids = list(raw_records.get("ids") or [])
     raw_metadatas = list(raw_records.get("metadatas") or [])
     raw_documents = list(raw_records.get("documents") or [])
-    raw_embeddings = list(raw_records.get("embeddings") or [])
+    raw_embeddings_value = raw_records.get("embeddings")
+    raw_embeddings = [] if raw_embeddings_value is None else list(raw_embeddings_value)
     print("DEBUG RAW RECORD COUNT:", len(raw_ids))
     print("DEBUG RAW IDS:", raw_ids)
     print("DEBUG RAW METADATA COUNT:", len(raw_metadatas))
@@ -132,7 +133,9 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
         )
         print(
             f"DEBUG RAW EMBEDDING_DIM[{index}]:",
-            len(raw_embeddings[index]) if index < len(raw_embeddings) and raw_embeddings[index] is not None else None,
+            len(raw_embeddings[index])
+            if index < len(raw_embeddings) and raw_embeddings[index] is not None
+            else None,
         )
         print(
             f"DEBUG RAW DOCUMENT_TEXT_LENGTH[{index}]:",
