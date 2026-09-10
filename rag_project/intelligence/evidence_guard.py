@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import math
 import re
 from dataclasses import asdict,dataclass
@@ -28,25 +27,27 @@ def split_claims(answer:str)->list[str]:
         if value:lines.append(value)
     if bullet_mode:return lines[:40]
     out=[]
+    pending=''
     for sentence in SENT.split(raw):
-        sentence=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',sentence.strip());toks=[t.casefold() for t in meaningful_tokens(sentence)]
+        sentence=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',sentence.strip())
+        if not sentence:continue
+        if re.fullmatch(r'(?:\[S\d+\]\s*)+',sentence,re.I):
+            pending=(pending+' '+sentence).strip() if pending else sentence
+            continue
+        if pending:
+            sentence=(sentence+' '+pending).strip();pending=''
+        toks=[t.casefold() for t in meaningful_tokens(sentence)]
         if not toks:continue
         if len(toks)<=2 and set(toks).issubset(_TINY):continue
         out.append(sentence)
         if len(out)>=40:break
+    if pending and not out and not re.fullmatch(r'(?:\[S\d+\]\s*)+',pending,re.I):out.append(pending)
     return out
 
 def _norm_unit(u:str)->str:return {'µg':'ug','mcg':'ug','°c':'c'}.get(u.casefold(),u.casefold())
 def _num(v:str)->float|None:
     try:return float(v.replace(',','.').replace(' ',''))
     except:return None
-
-def extract_measurements(text:str)->list[tuple[str,str]]:
-    out=[]
-    for m in MEASURE.finditer(text or ''):
-        x=(m.group('value').replace(',','.').replace(' ',''),_norm_unit(m.group('unit')))
-        if x not in out:out.append(x)
-    return out
 
 def _compatible(a,b):
     av,au=a;bv,bu=b
@@ -63,13 +64,19 @@ def numeric_consistency(claim,evidence):
     cv,ev=extract_measurements(claim),extract_measurements(evidence);bad=[x for x in cv if not any(_compatible(x,y) for y in ev)] if cv else []
     return {'checked':bool(cv),'mismatch':bool(bad),'claim_values':[f'{v} {u}' for v,u in cv],'evidence_values':[f'{v} {u}' for v,u in ev],'unsupported_numeric':[f'{v} {u}' for v,u in bad]}
 
+def extract_measurements(text:str)->list[tuple[str,str]]:
+    out=[]
+    for m in MEASURE.finditer(text or ''):
+        x=(m.group('value').replace(',','.').replace(' ',''),_norm_unit(m.group('unit')))
+        if x not in out:out.append(x)
+    return out
+
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
 
 def semantic_support(claim,evidence):
     claim=_score_text(claim);evidence=str(evidence or '').strip()
     if not claim or not evidence:return 0.
-    # Exact evidence text (ignoring whitespace/citation markers) is authoritative support.
     if re.sub(r'\s+',' ',claim).casefold()==re.sub(r'\s+',' ',evidence).casefold():return 1.0
     ct=set(meaningful_tokens(claim));et=set(meaningful_tokens(evidence))
     if not ct or not et:return 0.
