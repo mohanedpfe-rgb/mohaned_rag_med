@@ -17,7 +17,7 @@ class ReasoningPath:
 @dataclass(frozen=True)
 class ClinicalReasoningAssessment:
     allow_generation:bool; mode:str; depth:int; entity_coverage:float; direct_support:float; path_support:float; source_agreement:float; contradiction:float; safety_conflict:float; confidence:float; supported_paths:tuple[ReasoningPath,...]; blocked_reasons:tuple[str,...]
-    def to_dict(self)->dict[str,Any]: return asdict(self)
+    def to_dict(self)->dict[str,Any]:return asdict(self)
 
 def _relation_hits(sentence:str):
     low=sentence.casefold();out=[]
@@ -30,19 +30,22 @@ def _is_negated(sentence:str,pos:int,relation:str=''):
     return bool(_NEG.search(sentence[max(0,pos-90):pos]))
 
 def _ordered_entities(sentence:str):
-    low=sentence.casefold();ordered=[];seen=set()
-    known=(('diabetes mellitus',('diabetes mellitus','diabetes','diabetic')),
-           ('diabetic nephropathy',('diabetic nephropathy',)),('albuminuria',('albuminuria','albuminurie')),
-           ('hypertension',('hypertension','high blood pressure')),('hypokalemia',('hypokalemia','hypokaliemia','hypokaliémie')),
-           ('hyperaldosteronism',('hyperaldosteronism','hyperaldosteronisme','hyperaldostéronisme')))
+    low=sentence.casefold();candidates=[]
+    known=(('diabetes mellitus',('diabetes mellitus','diabetes','diabetic')),('diabetic nephropathy',('diabetic nephropathy',)),('albuminuria',('albuminuria','albuminurie')),('hypertension',('hypertension','high blood pressure')),('hypokalemia',('hypokalemia','hypokaliemia','hypokaliémie')),('hyperaldosteronism',('hyperaldosteronism','hyperaldosteronisme','hyperaldostéronisme')))
     for normalized,cues in known:
-        pos=min((low.find(c.casefold()) for c in cues if low.find(c.casefold())>=0),default=-1)
-        if pos>=0:ordered.append((pos,ClinicalEntity(normalized,normalized,'condition',.92,False)));seen.add(normalized)
-    for e in extract_clinical_entities(sentence):
-        if e.normalized in seen:continue
-        pos=low.find(e.text.casefold())
-        if pos>=0:ordered.append((pos,e));seen.add(e.normalized)
-    ordered.sort(key=lambda x:x[0]);return [e for _,e in ordered]
+        for cue in cues:
+            start=low.find(cue.casefold())
+            if start>=0:candidates.append((start,start+len(cue),normalized,ClinicalEntity(normalized,normalized,'condition',.92,False)))
+    candidates.sort(key=lambda row:(-(row[1]-row[0]),row[0]))
+    selected=[];occupied=[];seen=set()
+    for start,end,normalized,entity in candidates:
+        if normalized in seen or any(start<e and end>s for s,e in occupied):continue
+        selected.append((start,entity));occupied.append((start,end));seen.add(normalized)
+    for entity in extract_clinical_entities(sentence):
+        if entity.normalized in seen:continue
+        pos=low.find(entity.text.casefold())
+        if pos>=0:selected.append((pos,entity));seen.add(entity.normalized)
+    selected.sort(key=lambda x:x[0]);return [e for _,e in selected]
 
 def extract_clinical_facts(text:str,*,node_id:str='',document_id:str='')->tuple[ClinicalFact,...]:
     facts=[]
