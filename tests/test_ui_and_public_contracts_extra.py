@@ -96,9 +96,9 @@ def test_app_security_guards_are_installed_before_main_ui():
     source = (ROOT / "app.py").read_text(encoding="utf-8")
     assert "_install_ui_guards()" in source
     assert "start_supervisor(system" in source
-    main_index = source.index("def main")
-    guard_index = source.index("_install_ui_guards()")
-    assert guard_index > main_index
+    main_body = source[source.index("def main") :]
+    assert main_body.index("_install_ui_guards()") < main_body.index("start_supervisor(system")
+    assert main_body.index("start_supervisor(system") < main_body.index("bookrag_ui.main()")
 
 
 def test_ui_source_does_not_directly_bypass_canonical_pipeline():
@@ -130,7 +130,7 @@ def test_security_and_ui_exports_are_present():
     security = (ROOT / "rag_project" / "security.py").read_text(encoding="utf-8")
     app = (ROOT / "app.py").read_text(encoding="utf-8")
     panel = (ROOT / "rag_project" / "app" / "intelligence_panel.py").read_text(encoding="utf-8")
-    assert "__all__" in panel
+    assert "__all__ = [\"render_intelligence_panel\"]" in panel
     assert "validate_pdf_payload" in security
     assert "validate_query" in security
     assert "render_intelligence_panel" in app
