@@ -99,9 +99,14 @@ def _evidence_entities(text:str)->list[str]:
     return [item for item in found if item]
 
 def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entities:Iterable[str]=())->dict[str,Any]:
-    query_entities=safe_extract_query_entities(question,planned_entities);evidence_entities=[]
+    planned_items=tuple(str(item or "") for item in planned_entities)
+    query_entities=safe_extract_query_entities(question,planned_items);evidence_entities=[]
+    planned_norms={_normalize(x) for x in planned_items if _normalize(x)}
     for index,hit in enumerate(evidence):
-        for entity in _evidence_entities(str(getattr(hit,"text","") or "")):evidence_entities.append((entity,f"S{index+1}"))
+        text=str(getattr(hit,"text","") or "")
+        for entity in _evidence_entities(text):evidence_entities.append((entity,f"S{index+1}"))
+        for planned in planned_norms:
+            if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])",text,re.I):evidence_entities.append((planned,f"S{index+1}"))
     evidence_norms=[name for name,_ in evidence_entities];source_counts=Counter(source for _,source in evidence_entities);covered=[];missing=[];partial=[];per_entity=[];matches=[]
     for entity in query_entities:
         best=max((_entity_overlap(entity,candidate) for candidate in evidence_norms),default=0.0);candidate_sources=tuple(dict.fromkeys(source for candidate,source in evidence_entities if _entity_overlap(entity,candidate)>=max(.72,best-.05)));status="covered" if best>=.72 else "partial" if best>=.45 else "missing";per_entity.append({"entity":entity,"status":status,"match_score":round(best,3),"sources":candidate_sources})
@@ -117,12 +122,22 @@ def _looks_like_followup(question:str,history:Sequence[tuple[str,str]])->bool:
     return bool(re.search(r"^(and|also|then|et|puis|و|ثم)\b",cleaned,re.I|re.UNICODE))
 
 def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
-    """Resolve actual follow-ups without injecting protocol labels into the query."""
+    """Resolve actual follow-ups using bounded clinical context, without protocol labels."""
     cleaned=re.sub(r"\s+"," ",str(question or "")).strip()
     if not cleaned or not history or not _looks_like_followup(cleaned,history):return cleaned
     recent=list(history[-3:]);anchor_question=next((str(q).strip() for q,_ in reversed(recent) if str(q or "").strip()),"")
+    anchor_answer=next((str(a).strip() for q,a in reversed(recent) if str(q or "").strip() and str(a or "").strip()),"")
     if not anchor_question:return cleaned
-    candidate=f"{anchor_question} {cleaned}".strip()
+    context_terms=[]
+    try:
+        for entity in extract_clinical_entities(anchor_answer):
+            term=_canonical(entity.normalized or entity.text)
+            if term and term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
+    except Exception:pass
+    for term in _open_set_medical_terms(anchor_answer):
+        if term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
+    context=" ".join(context_terms[:6])
+    candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
     return re.sub(r"\s+"," ",candidate)[:3500]
 
 def is_control_message(text:str)->bool:
@@ -147,8 +162,11 @@ def safe_verify_final_answer(answer:str,hits:Sequence[Any],*,require_entailment:
 
 def install()->None:
     from rag_project.intelligence import top_level_pipeline,entity_coverage,final_answer_contract,god_mode_100
-    if not getattr(top_level_pipeline,"_production_integrity_rewrite_installed",False):top_level_pipeline.rewrite_follow_up=safe_rewrite_follow_up;top_level_pipeline._production_integrity_rewrite_installed=True
-    if not getattr(entity_coverage,"_production_integrity_entities_installed",False):entity_coverage.extract_query_entities=safe_extract_query_entities;entity_coverage.score_entity_coverage=safe_score_entity_coverage;entity_coverage._production_integrity_entities_installed=True
+    # Always bind the canonical callables directly. This prevents stale wrappers
+    # left by test doubles or previous runtime installations from surviving a new
+    # application composition cycle.
+    top_level_pipeline.rewrite_follow_up=safe_rewrite_follow_up;top_level_pipeline._production_integrity_rewrite_installed=True
+    entity_coverage.extract_query_entities=safe_extract_query_entities;entity_coverage.score_entity_coverage=safe_score_entity_coverage;entity_coverage._production_integrity_entities_installed=True
     god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer;final_answer_contract.verify_final_answer=safe_verify_final_answer
 
 __all__=["safe_extract_query_entities","safe_score_entity_coverage","safe_rewrite_follow_up","safe_verify_final_answer","is_control_message","install"]
