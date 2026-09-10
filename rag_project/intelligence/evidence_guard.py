@@ -20,34 +20,31 @@ _TINY={'yes','no','ok','okay','thanks','thank','maybe','sure'}
 def split_claims(answer:str)->list[str]:
     raw=str(answer or '').strip()
     if not raw:return []
-    lines=[];bullet_mode=False
-    for line in raw.splitlines():
-        if not line.strip():continue
-        bullet_mode=bullet_mode or bool(re.match(r'^\s*(?:[-*•]|\d+[.)])\s+',line));value=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',line).strip()
-        if value:lines.append(value)
-    if bullet_mode:return lines[:40]
     out=[]
-    pending=''
     for sentence in SENT.split(raw):
         sentence=re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*','',sentence.strip())
         if not sentence:continue
         if re.fullmatch(r'(?:\[S\d+\]\s*)+',sentence,re.I):
-            pending=(pending+' '+sentence).strip() if pending else sentence
+            if out: out[-1]=f'{out[-1]} {sentence}'.strip()
             continue
-        if pending:
-            sentence=(sentence+' '+pending).strip();pending=''
         toks=[t.casefold() for t in meaningful_tokens(sentence)]
         if not toks:continue
         if len(toks)<=2 and set(toks).issubset(_TINY):continue
         out.append(sentence)
         if len(out)>=40:break
-    if pending and not out and not re.fullmatch(r'(?:\[S\d+\]\s*)+',pending,re.I):out.append(pending)
     return out
 
 def _norm_unit(u:str)->str:return {'µg':'ug','mcg':'ug','°c':'c'}.get(u.casefold(),u.casefold())
 def _num(v:str)->float|None:
     try:return float(v.replace(',','.').replace(' ',''))
     except:return None
+
+def extract_measurements(text:str)->list[tuple[str,str]]:
+    out=[]
+    for m in MEASURE.finditer(text or ''):
+        x=(m.group('value').replace(',','.').replace(' ',''),_norm_unit(m.group('unit')))
+        if x not in out:out.append(x)
+    return out
 
 def _compatible(a,b):
     av,au=a;bv,bu=b
@@ -63,13 +60,6 @@ def _measurement_compatible(a,b):return _compatible(a,b)
 def numeric_consistency(claim,evidence):
     cv,ev=extract_measurements(claim),extract_measurements(evidence);bad=[x for x in cv if not any(_compatible(x,y) for y in ev)] if cv else []
     return {'checked':bool(cv),'mismatch':bool(bad),'claim_values':[f'{v} {u}' for v,u in cv],'evidence_values':[f'{v} {u}' for v,u in ev],'unsupported_numeric':[f'{v} {u}' for v,u in bad]}
-
-def extract_measurements(text:str)->list[tuple[str,str]]:
-    out=[]
-    for m in MEASURE.finditer(text or ''):
-        x=(m.group('value').replace(',','.').replace(' ',''),_norm_unit(m.group('unit')))
-        if x not in out:out.append(x)
-    return out
 
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
