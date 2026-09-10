@@ -33,21 +33,28 @@ def _is_negated(sentence:str,pos:int,relation:str=''):
     return bool(_NEG.search(prefix))
 
 def _ordered_entities(sentence:str):
-    entities=list(extract_clinical_entities(sentence))
-    if len(entities)>=2:
-        return sorted(entities,key=lambda e:sentence.casefold().find(e.text.casefold()))
-    aliases=(('diabetes mellitus',('diabetes mellitus','diabetes','diabetic')),
-             ('diabetic nephropathy',('diabetic nephropathy',)),
-             ('albuminuria',('albuminuria','albuminurie')),
-             ('hypertension',('hypertension',)),
-             ('hypokalemia',('hypokalemia','hypokaliemia','hypokaliémie')),
-             ('hyperaldosteronism',('hyperaldosteronism','hyperaldosteronisme','hyperaldostéronisme')))
-    found=[]; low=sentence.casefold()
-    for normalized,cues in aliases:
-        positions=[low.find(c.casefold()) for c in cues if low.find(c.casefold())>=0]
-        if positions:
-            pos=min(positions); found.append((pos,ClinicalEntity(text=normalized,normalized=normalized,kind='condition',confidence=.82,negated=False)))
-    return [e for _,e in sorted(found,key=lambda x:x[0])]
+    low=sentence.casefold()
+    ordered=[]
+    seen=set()
+    # Prefer the known clinical normalization layer, but do not let generic/open-set
+    # entity extraction hide an important concept from multi-hop reasoning.
+    known=(('diabetes mellitus',('diabetes mellitus','diabetes','diabetic')),
+           ('diabetic nephropathy',('diabetic nephropathy',)),
+           ('albuminuria',('albuminuria','albuminurie')),
+           ('hypertension',('hypertension','high blood pressure')),
+           ('hypokalemia',('hypokalemia','hypokaliemia','hypokaliémie')),
+           ('hyperaldosteronism',('hyperaldosteronism','hyperaldosteronisme','hyperaldostéronisme')))
+    for normalized,cues in known:
+        pos=min((low.find(c.casefold()) for c in cues if low.find(c.casefold())>=0),default=-1)
+        if pos>=0:
+            ordered.append((pos,ClinicalEntity(text=normalized,normalized=normalized,kind='condition',confidence=.92,negated=False)))
+            seen.add(normalized)
+    for e in extract_clinical_entities(sentence):
+        if e.normalized in seen: continue
+        pos=low.find(e.text.casefold())
+        if pos>=0: ordered.append((pos,e)); seen.add(e.normalized)
+    ordered.sort(key=lambda x:x[0])
+    return [e for _,e in ordered]
 
 def extract_clinical_facts(text:str,*,node_id:str='',document_id:str='')->tuple[ClinicalFact,...]:
     facts=[]
@@ -63,7 +70,9 @@ def extract_clinical_facts(text:str,*,node_id:str='',document_id:str='')->tuple[
     return tuple(facts[:32])
 
 def _find_paths(facts:Sequence[ClinicalFact],u:QueryUnderstanding,max_depth:int=3)->tuple[ReasoningPath,...]:
-    q=[e.normalized for e in u.entities]
+    q=[]
+    for e in u.entities:
+        if e.normalized not in q: q.append(e.normalized)
     if len(q)<2:return ()
     target_set=set(q[1:]); adj={}
     for f in facts:
@@ -79,7 +88,7 @@ def _find_paths(facts:Sequence[ClinicalFact],u:QueryUnderstanding,max_depth:int=
             for f in adj.get(node,()):
                 if f.object in nodes:continue
                 nd=set(docs)
-                if f.document_id:nd.add(f.document_id)
+                if f.document_id: nd.add(f.document_id)
                 stack.append((f.object,nodes+(f.object,),rels+(f.predicate,),ids+(f'{f.node_id}:{len(ids)}',),score*(.72+.28*f.confidence),nd))
     unique={p.nodes+p.relations:p for p in sorted(results,key=lambda p:p.support,reverse=True)}
     return tuple(unique.values())[:8]
