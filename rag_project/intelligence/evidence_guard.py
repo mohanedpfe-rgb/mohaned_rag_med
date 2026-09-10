@@ -24,7 +24,7 @@ OPPOSITES = (
 )
 SCALE = {'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),'kg':('mass',1000),'ml':('volume',1),'l':('volume',1000),'mmhg':('pressure',1),'cmh2o':('pressure',.735559),'%':('percent',1),'bpm':('rate',1),'c':('temperature',1),'°c':('temperature',1),'mm':('length',1),'cm':('length',10),'m':('length',1000),'hz':('frequency',1),'khz':('frequency',1000),'m/s':('velocity',1),'s':('time',1),'min':('time',60),'h':('time',3600),'day':('time',86400),'days':('time',86400),'week':('time',604800),'weeks':('time',604800),'month':('time',2592000),'months':('time',2592000),'year':('time',31536000),'years':('time',31536000)}
 _TINY = {'yes','no','ok','okay','thanks','thank','maybe','sure'}
-_METADATA_PREFIX = re.compile(r'^\s*\[(?:section|source|file|page|document|metadata|citation|reference)[^\]]*\]\s*', re.I)
+_METADATA_BLOCK = re.compile(r'\[(?:section|source|file|page|document|metadata|citation|reference)\s*:\s*[^\]]*\]\s*', re.I)
 _METADATA_LABEL = re.compile(r'^\s*(?:sources?|citations?|references?)\s*:', re.I)
 
 _CONCEPT_SYNONYMS = (
@@ -42,21 +42,15 @@ def _normalize_semantic_text(text: str) -> str:
         value = re.sub(pattern, replacement, value, flags=re.I | re.UNICODE)
     return value
 
-def _strip_metadata_wrappers(sentence: str) -> str:
-    value = str(sentence or '').strip()
-    value = _METADATA_PREFIX.sub('', value)
-    if _METADATA_LABEL.match(value):
-        return ''
-    return value.strip()
-
 def split_claims(answer: str) -> list[str]:
     raw = str(answer or '').strip()
     if not raw: return []
+    # Remove display-only metadata before sentence segmentation; otherwise a period inside
+    # "[Section: 3. ...]" creates artificial claims such as "3", "85mg", etc.
+    raw = _METADATA_BLOCK.sub('', raw)
     out = []
     for sentence in SENT.split(raw):
         sentence = re.sub(r'^\s*(?:[-*•]|\d+[.)])\s*', '', sentence.strip())
-        sentence = _strip_metadata_wrappers(sentence)
-        if not sentence: continue
         if _METADATA_LABEL.match(sentence): continue
         if re.fullmatch(r'(?:\[S\d+\]\s*)+', sentence, re.I):
             if out: out[-1] = f'{out[-1]} {sentence}'.strip()
