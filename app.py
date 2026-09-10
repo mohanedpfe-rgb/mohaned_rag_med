@@ -8,10 +8,12 @@ import streamlit as st
 
 from rag_project.app import bookrag_ui
 from rag_project.app.intelligence_panel import render_intelligence_panel
+from rag_project.app.production_contract_panel import render_production_contract_panel
 from rag_project.ingestion.responsive_supervisor import start as start_supervisor
 from rag_project.security import register_session_upload,validate_ollama_url,validate_pdf_payload,validate_storage_path
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
+from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 
 _PIPELINE_RUNTIME_VERSION = "2026-09-11-contract-v2"
 
@@ -50,7 +52,9 @@ def _install_ui_guards():
     def secure_health(url:str):return health(validate_ollama_url(url))
     def enhanced_ask(system:Any):
         ask(system); result=st.session_state.get('answer_result')
-        if isinstance(result,dict):render_intelligence_panel(result)
+        if isinstance(result,dict):
+            render_intelligence_panel(result)
+            render_production_contract_panel(result)
     def enhanced_evidence_row(item:Any,index:int):
         if isinstance(item,dict):
             return (item.get('file_name') or item.get('filename') or item.get('document_id') or f'Source {index}', item.get('page_number') or item.get('page') or item.get('page_numbers') or '—', item.get('rerank_score') or item.get('score') or item.get('similarity') or item.get('relevance') or '—', str(item.get('snippet') or item.get('text') or item.get('content') or ''))
@@ -80,7 +84,7 @@ def _invalidate_stale_runtime_cache() -> None:
 
 
 def main():
-    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
 
 
 if __name__=='__main__':main()
