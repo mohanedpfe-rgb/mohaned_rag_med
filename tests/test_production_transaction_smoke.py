@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import inspect
 import json
 import sqlite3
 from pathlib import Path
@@ -62,6 +63,42 @@ def test_full_pdf_transaction_reaches_ready_and_is_retrievable(tmp_path: Path) -
 
     version_id = str(document.get("version_id") or "")
     assert version_id
+
+    print("========== DEBUG VALIDATION START ==========")
+    print("DEBUG TEST VECTOR_STORE TYPE:", type(system.vector_store))
+    print(
+        "DEBUG TEST VECTOR_STORE FILE:",
+        inspect.getfile(type(system.vector_store)),
+    )
+    method = system.vector_store.validate_document_index
+    print(
+        "DEBUG TEST VECTOR_STORE METHOD:",
+        method.__func__.__code__.co_filename,
+    )
+    print(
+        "DEBUG TEST VECTOR_STORE METHOD NAME:",
+        method.__func__.__name__,
+    )
+    print(
+        "DEBUG TEST VECTOR_STORE OBJECT ID:",
+        id(system.vector_store),
+    )
+    print("DEBUG TEST DOCUMENT ID:", result["document_id"])
+    print("DEBUG TEST VERSION ID:", version_id)
+    print(
+        "DEBUG TEST PERSIST DIRECTORY:",
+        getattr(system.vector_store, "persist_directory", "MISSING"),
+    )
+    print(
+        "DEBUG TEST COLLECTION NAME:",
+        getattr(system.vector_store, "collection_name", "MISSING"),
+    )
+    print(
+        "DEBUG TEST COLLECTION OBJECT ID:",
+        id(getattr(system.vector_store, "collection", None)),
+    )
+    print("========== DEBUG VALIDATION END ==========")
+
     validation = system.vector_store.validate_document_index(
         result["document_id"], version_id
     )
