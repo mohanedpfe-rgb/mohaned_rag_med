@@ -6,6 +6,7 @@ from rag_project.intelligence.adaptive_retrieval import choose_retrieval_budget
 from rag_project.intelligence.confidence_calibration import calibrate_confidence
 from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix
 from rag_project.intelligence.hierarchical_evidence import build_evidence_hierarchy, select_context_levels
+from rag_project.intelligence.top_level_pipeline import complete_phases
 from rag_project.utils.text_utils import meaningful_tokens
 
 
@@ -16,12 +17,12 @@ def _claim_texts(result: dict[str, Any]) -> list[str]:
 def _validated_model_entities(result: dict[str, Any]) -> list[str]:
     assist = result.get("small_model_assist") or {}
     raw = [str(x).strip() for x in assist.get("entities", []) if str(x).strip()]
-    evidence = " ".join(str(getattr(hit, "text", "") or "") for hit in (result.get("hits") or [])) .casefold()
+    evidence = " ".join(str(getattr(hit, "text", "") or "") for hit in (result.get("hits") or [])).casefold()
     return [entity for entity in raw if meaningful_tokens(entity) and entity.casefold() in evidence][:12]
 
 
-def enhance_result(system: Any, question: str, result: dict[str, Any]) -> dict[str, Any]:
-    """Final evidence-first pass; generation remains subordinate to deterministic evidence checks."""
+def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Evidence-first completion of all five roadmap phases."""
     if not result:
         return result
     hits = list(result.get("hits") or [])
@@ -63,11 +64,20 @@ def enhance_result(system: Any, question: str, result: dict[str, Any]) -> dict[s
     enhanced["validated_small_model_entities"] = _validated_model_entities(result)
     enhanced["confidence_calibration"] = calibration.to_dict()
     enhanced["confidence"] = {"level": calibration.level, "evidence_confidence": calibration.calibrated}
-    enhanced["god_mode_100"] = True
-    return enhanced
+    completed = complete_phases(system, question, enhanced, metadata_filter)
+    completed["phase_implementation"] = {
+        "phase_1_query_understanding": True,
+        "phase_2_retrieval_precision": True,
+        "phase_3_two_stage_generation": bool(completed.get("two_stage_synthesis", {}).get("used") or completed.get("extractive_stage", {}).get("supported")),
+        "phase_4_verification": True,
+        "phase_5_intelligence_visibility": True,
+        "hardware_profile": "llama3.2:3b + nomic-embed-text + i5/16GB",
+    }
+    completed["god_mode_100"] = True
+    return completed
 
 
 def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     from rag_project.intelligence.god_mode import _god_answer
     base = _god_answer(self, question, metadata_filter)
-    return enhance_result(self, question, base)
+    return enhance_result(self, question, base, metadata_filter)
