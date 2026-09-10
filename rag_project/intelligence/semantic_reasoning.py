@@ -137,12 +137,12 @@ def extract_clinical_entities(text: str) -> tuple[ClinicalEntity, ...]:
                 confidence=0.96 if len(matched_alias.split()) > 1 else 0.88,
                 negated=negated,
             )
-    # Keep important domain terms that do not have a dictionary alias.
     tokens = meaningful_tokens(value)
+    normalized_found = {e.normalized for e in found.values()}
     for token in tokens:
-        if token in {e.normalized for e in found.values()}:
+        if token in normalized_found:
             continue
-        if token.endswith(("itis", "osis", "emia", "pathy", "carcinoma")) and token not in found:
+        if token.endswith(("itis", "osis", "emia", "pathy", "carcinoma")):
             found[token] = ClinicalEntity(token, token, "medical_concept", 0.72, False)
     return tuple(found.values())[:24]
 
@@ -158,32 +158,27 @@ def _intent_hits(text: str) -> list[tuple[str, int]]:
 
 def understand_query(query: str, *, conversation_context: str = "") -> QueryUnderstanding:
     normalized = _norm(query)
-    combined = normalized
-    if conversation_context:
-        combined = f"{normalized} {conversation_context[-1200:]}"
+    combined = f"{normalized} {conversation_context[-1200:]}".strip() if conversation_context else normalized
     hits = _intent_hits(combined)
-    intents = [intent for intent, _ in hits]
-    if not intents:
-        intents = ["factual"]
+    intents = [intent for intent, _ in hits] or ["factual"]
     if len(intents) > 1 and "numeric" in intents and len(intents) > 2:
-        # Numeric is an attribute of another intent, not necessarily the primary task.
         intents.remove("numeric")
         intents.append("numeric")
     primary = intents[0]
     relations = tuple(sorted({kind for kind, pattern in _RELATION_PATTERNS if re.search(pattern, combined, re.I | re.UNICODE)}))
     constraints: list[str] = []
-    if any(re.search(r"\b(exact|precise|exactly|strictly|exacte|précis)\b", combined, re.I) for _ in [0]):
+    if re.search(r"\b(exact|precise|exactly|strictly|exacte|précis)\b", combined, re.I):
         constraints.append("exactness")
-    if any(re.search(r"\b(adult|child|pediatric|pregnan|grossesse|enfant|adulte)\b", combined, re.I) for _ in [0]):
+    if re.search(r"\b(adult|child|pediatric|pregnan|grossesse|enfant|adulte)\b", combined, re.I):
         constraints.append("population")
-    if any(re.search(r"\b(first[- ]line|second[- ]line|initial|maintenance|acute|chronic|aigu|chronique)\b", combined, re.I) for _ in [0]):
+    if re.search(r"\b(first[- ]line|second[- ]line|initial|maintenance|acute|chronic|aigu|chronique)\b", combined, re.I):
         constraints.append("clinical_phase")
+    if re.search(r"\b(contraindication|contraindicated|avoid|contre-indication|ممنوع)\b", combined, re.I):
+        constraints.append("safety")
     answer_shape = "comparison" if primary == "comparison" else "list" if primary in {"diagnosis", "management", "etiology", "prognosis", "numeric"} else "definition" if primary == "definition" else "explanation"
     entities = extract_clinical_entities(combined)
     semantic_terms = tuple(dict.fromkeys([e.normalized for e in entities] + meaningful_tokens(normalized)))[:32]
-    cue_conf = min(1.0, 0.40 + 0.12 * len(hits) + 0.04 * len(entities))
-    if len(tokens := meaningful_tokens(normalized)) >= 5:
-        cue_conf = min(1.0, cue_conf + 0.10)
+    cue_conf = min(1.0, 0.40 + 0.12 * len(hits) + 0.04 * len(entities) + (0.10 if len(meaningful_tokens(normalized)) >= 5 else 0.0))
     return QueryUnderstanding(
         normalized=normalized,
         intents=tuple(intents),
@@ -232,11 +227,81 @@ def build_evidence_graph(hits: Sequence[Any], understanding: QueryUnderstanding)
 def clinical_reasoning_ready(understanding: QueryUnderstanding, nodes: Sequence[EvidenceNode], edges: Sequence[ReasoningEdge]) -> dict[str, Any]:
     direct = bool(nodes)
     multi_hop = bool(edges) and (understanding.primary_intent in {"etiology", "mechanism", "association", "comparison"} or len(understanding.relations) > 0)
+    entity_coverage = sum(1 for entity in understanding.entities if any(normalize_medical_term(entity.normalized) in _norm(node.text) or entity.normalized in _norm(node.text) for node in nodes)) / max(len(understanding.entities), 1)
     return {
         "direct_evidence": direct,
         "multi_hop": multi_hop,
         "node_count": len(nodes),
         "edge_count": len(edges),
-        "entity_coverage": round(sum(1 for entity in understanding.entities if any(entity.normalized in _norm(node.text) for node in nodes)) / max(len(understanding.entities), 1), 3),
+        "entity_coverage": round(entity_coverage, 3),
         "reasoning_depth": 2 if multi_hop else 1,
+    }
+
+
+def _token_overlap(left: str, right: str) -> float:
+    a = set(meaningful_tokens(left))
+    b = set(meaningful_tokens(right))
+    return len(a & b) / max(1, len(a))
+
+
+def _entity_surface_score(query_entities: Sequence[ClinicalEntity], text: str) -> float:
+    if not query_entities:
+        return 0.0
+    evidence_entities = {entity.normalized for entity in extract_clinical_entities(text)}
+    if not evidence_entities:
+        return 0.0
+    matched = sum(1 for entity in query_entities if entity.normalized in evidence_entities)
+    return matched / len(query_entities)
+
+
+def semantic_evidence_alignment(question: str, hits: Sequence[Any], *, conversation_context: str = "") -> dict[str, Any]:
+    """Score evidence using medical entity normalization plus lexical meaning.
+
+    This is deliberately model-free: it adds multilingual/synonym awareness without
+    requiring another Ollama call or introducing a second failure/latency surface.
+    """
+    understanding = understand_query(question, conversation_context=conversation_context)
+    nonempty = [hit for hit in hits if str(getattr(hit, "text", "") or "").strip()]
+    if not nonempty:
+        return {
+            "score": 0.0,
+            "entity_coverage": 0.0,
+            "semantic_overlap": 0.0,
+            "relation_coverage": 0.0,
+            "best_hit_score": 0.0,
+            "decision": "NOT_SUPPORTED",
+            "reason": "No non-empty evidence was available for semantic alignment.",
+        }
+    per_hit: list[dict[str, Any]] = []
+    for hit in nonempty:
+        text = str(getattr(hit, "text", "") or "")
+        entity_score = _entity_surface_score(understanding.entities, text)
+        lexical_score = _token_overlap(understanding.normalized, text)
+        evidence_relations = {kind for kind, pattern in _RELATION_PATTERNS if re.search(pattern, text, re.I | re.UNICODE)}
+        relation_score = len(set(understanding.relations) & evidence_relations) / max(len(understanding.relations), 1) if understanding.relations else 0.0
+        retrieval_score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
+        # Entity matches are the strongest cross-lingual signal; lexical overlap provides
+        # a useful secondary signal; retrieval score prevents semantic aliases from accepting
+        # a weak candidate solely because a generic medical term was present.
+        score = min(1.0, 0.55 * entity_score + 0.25 * lexical_score + 0.10 * relation_score + 0.10 * retrieval_score)
+        per_hit.append({"score": round(score, 3), "entity_score": round(entity_score, 3), "lexical_score": round(lexical_score, 3), "relation_score": round(relation_score, 3)})
+    best = max(per_hit, key=lambda item: item["score"])
+    mean_top = sum(item["score"] for item in sorted(per_hit, reverse=True)[: min(3, len(per_hit))]) / min(3, len(per_hit))
+    score = max(best["score"], mean_top * 0.85)
+    if score >= 0.55:
+        decision = "DIRECTLY_SUPPORTED"
+    elif score >= 0.25:
+        decision = "PARTIALLY_SUPPORTED"
+    elif score > 0.05:
+        decision = "RELATED_BUT_NOT_ANSWERING"
+    else:
+        decision = "NOT_SUPPORTED"
+    return {
+        "score": round(score, 3),
+        "entity_coverage": round(best["entity_score"], 3),
+        "semantic_overlap": round(best["lexical_score"], 3),
+        "relation_coverage": round(best["relation_score"], 3),
+        "best_hit_score": best["score"],
+        "decision": decision,
+        "reason": "Semantic entity and concept alignment was computed across the retrieved evidence.",
     }
