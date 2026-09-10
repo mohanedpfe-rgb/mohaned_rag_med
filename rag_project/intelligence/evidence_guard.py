@@ -36,34 +36,13 @@ _NEGATION = re.compile(
 _MODAL = re.compile(r"\b(may|might|can|could|should|recommended|suggested|possibly|likely|probably|must|shall|may not|should not)\b", re.I)
 
 _UNIT_SCALE = {
-    "ug": ("mass", 1e-6),
-    "mg": ("mass", 1e-3),
-    "g": ("mass", 1.0),
-    "kg": ("mass", 1000.0),
-    "ml": ("volume", 1.0),
-    "l": ("volume", 1000.0),
-    "mmhg": ("pressure", 1.0),
-    "cmh2o": ("pressure", 0.735559),
-    "%": ("percent", 1.0),
-    "bpm": ("rate", 1.0),
-    "c": ("temperature", 1.0),
-    "mm": ("length", 1.0),
-    "cm": ("length", 10.0),
-    "m": ("length", 1000.0),
-    "hz": ("frequency", 1.0),
-    "khz": ("frequency", 1000.0),
-    "m/s": ("velocity", 1.0),
-    "s": ("time", 1.0),
-    "min": ("time", 60.0),
-    "h": ("time", 3600.0),
-    "day": ("time", 86400.0),
-    "days": ("time", 86400.0),
-    "week": ("time", 604800.0),
-    "weeks": ("time", 604800.0),
-    "month": ("time", 2592000.0),
-    "months": ("time", 2592000.0),
-    "year": ("time", 31536000.0),
-    "years": ("time", 31536000.0),
+    "ug": ("mass", 1e-6), "mg": ("mass", 1e-3), "g": ("mass", 1.0), "kg": ("mass", 1000.0),
+    "ml": ("volume", 1.0), "l": ("volume", 1000.0), "mmhg": ("pressure", 1.0), "cmh2o": ("pressure", 0.735559),
+    "%": ("percent", 1.0), "bpm": ("rate", 1.0), "c": ("temperature", 1.0), "mm": ("length", 1.0),
+    "cm": ("length", 10.0), "m": ("length", 1000.0), "hz": ("frequency", 1.0), "khz": ("frequency", 1000.0),
+    "m/s": ("velocity", 1.0), "s": ("time", 1.0), "min": ("time", 60.0), "h": ("time", 3600.0),
+    "day": ("time", 86400.0), "days": ("time", 86400.0), "week": ("time", 604800.0), "weeks": ("time", 604800.0),
+    "month": ("time", 2592000.0), "months": ("time", 2592000.0), "year": ("time", 31536000.0), "years": ("time", 31536000.0),
 }
 
 
@@ -71,10 +50,17 @@ def split_claims(answer: str) -> list[str]:
     raw = (answer or "").strip()
     if not raw:
         return []
-    # Bullets are hard claim boundaries even when the bullet text does not end in
-    # punctuation or contains a short medical unit token.
-    raw = re.sub(r"\n\s*(?=[-*•]|\d+[.)]\s)", "\n", raw)
-    claims: list[str] = []
+    # Treat explicit Markdown/plain-text bullets as hard claim boundaries.
+    bullet_lines = re.findall(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$", raw)
+    if bullet_lines:
+        claims: list[str] = []
+        for line in bullet_lines:
+            line = line.strip()
+            if len(meaningful_tokens(line)) >= 3:
+                claims.append(line)
+        if claims:
+            return claims[:40]
+    claims = []
     for sentence in _SENTENCE_RE.split(raw):
         sentence = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", sentence.strip())
         if len(meaningful_tokens(sentence)) >= 3:
@@ -112,8 +98,7 @@ def _measurement_compatible(claim: tuple[str, str], evidence: tuple[str, str], t
     ev, eu = evidence
     if "-" in cv or "-" in ev:
         return cv == ev and cu == eu
-    c = _to_float(cv)
-    e = _to_float(ev)
+    c, e = _to_float(cv), _to_float(ev)
     if c is None or e is None:
         return cv == ev and cu == eu
     source = _UNIT_SCALE.get(cu)
@@ -171,9 +156,10 @@ def detect_contradiction(claim: str, evidence_blocks: Sequence[str]) -> bool:
         if not overlap_tokens or _polarity(evidence) in (0, claim_pol):
             continue
         score = semantic_support(claim, evidence)
-        # Keep this conservative: a polarity reversal needs at least one shared
-        # concept token and a non-trivial semantic overlap.
-        if score >= 0.35:
+        # Short binary claims such as "treatment is contraindicated" vs
+        # "treatment is indicated" have only one shared content token.
+        min_score = 0.18 if len(claim_tokens) <= 3 else 0.35
+        if score >= min_score:
             return True
     return False
 
@@ -222,11 +208,7 @@ def evidence_confidence(*, retrieval: float, rerank: float, entailment: float, q
 
 def contradiction_report(claims: Sequence[ClaimCheck]) -> dict[str, Any]:
     contradicted = [c for c in claims if c.contradiction or c.status == "CONTRADICTED"]
-    return {
-        "has_contradiction": bool(contradicted),
-        "count": len(contradicted),
-        "claims": [c.to_dict() for c in contradicted],
-    }
+    return {"has_contradiction": bool(contradicted), "count": len(contradicted), "claims": [c.to_dict() for c in contradicted]}
 
 
 def citation_firewall(answer: str, claim_checks: Iterable[ClaimCheck]) -> tuple[str, bool]:
@@ -253,9 +235,4 @@ def grounding_decision(claims: Sequence[ClaimCheck], *, min_supported_ratio: flo
     safe = sum(1 for c in claims if c.status in {"SUPPORTED", "PARTIAL"} and not c.contradiction)
     blocked = sum(1 for c in claims if c.status in {"UNSUPPORTED", "NUMERIC_MISMATCH", "CONTRADICTED"} or c.contradiction)
     ratio = safe / max(len(claims), 1)
-    return {
-        "allow": ratio >= min_supported_ratio and blocked == 0,
-        "reason": "Grounding threshold passed." if ratio >= min_supported_ratio and blocked == 0 else "Grounding threshold failed.",
-        "supported_ratio": round(ratio, 4),
-        "blocked_claims": blocked,
-    }
+    return {"allow": ratio >= min_supported_ratio and blocked == 0, "reason": "Grounding threshold passed." if ratio >= min_supported_ratio and blocked == 0 else "Grounding threshold failed.", "supported_ratio": round(ratio, 4), "blocked_claims": blocked}
