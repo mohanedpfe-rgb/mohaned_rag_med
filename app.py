@@ -32,7 +32,7 @@ def _clamp_local_embedding_profile():
 
 def _install_ui_guards():
     if getattr(bookrag_ui,'_bookrag_ui_guards_installed',False):return
-    save=bookrag_ui.save_pdf; start=bookrag_ui.start_ingestion; health=bookrag_ui.ollama_health; ask=bookrag_ui.ask_page
+    save=bookrag_ui.save_pdf; start=bookrag_ui.start_ingestion; health=bookrag_ui.ollama_health; ask=bookrag_ui.ask_page; evidence_row=getattr(bookrag_ui,'_evidence_row',None)
     def secure_save(incoming:Any,name:str,content:bytes)->str:
         s=bookrag_ui.get_system(); safe=validate_storage_path(s.settings.project_root,incoming,'incoming folder');validate_pdf_payload(name,content);register_session_upload(len(content));return save(safe,name,content)
     def secure_start(system:Any,source_dir:str,*,trigger='manual')->str:
@@ -41,7 +41,19 @@ def _install_ui_guards():
     def enhanced_ask(system:Any):
         ask(system); result=st.session_state.get('answer_result')
         if isinstance(result,dict):render_intelligence_panel(result)
-    bookrag_ui.save_pdf=secure_save;bookrag_ui.start_ingestion=secure_start;bookrag_ui.ollama_health=secure_health;bookrag_ui.ask_page=enhanced_ask;bookrag_ui._bookrag_ui_guards_installed=True
+    def enhanced_evidence_row(item:Any,index:int):
+        if isinstance(item,dict):
+            return (item.get('file_name') or item.get('filename') or item.get('document_id') or f'Source {index}', item.get('page_number') or item.get('page') or item.get('page_numbers') or '—', item.get('rerank_score') or item.get('score') or item.get('similarity') or item.get('relevance') or '—', str(item.get('snippet') or item.get('text') or item.get('content') or ''))
+        metadata=getattr(item,'metadata',{}) or {}
+        title=metadata.get('file_name') or metadata.get('filename') or metadata.get('document_id') or getattr(item,'doc_id',None) or f'Source {index}'
+        page=metadata.get('page_numbers') or metadata.get('page_number') or metadata.get('page') or '—'
+        score=getattr(item,'score',None)
+        if score is None:score=getattr(item,'rerank_score',None)
+        if score is None:score='—'
+        return str(title),str(page),score,str(getattr(item,'text','') or '')
+    bookrag_ui.save_pdf=secure_save;bookrag_ui.start_ingestion=secure_start;bookrag_ui.ollama_health=secure_health;bookrag_ui.ask_page=enhanced_ask
+    if evidence_row is not None:bookrag_ui._evidence_row=enhanced_evidence_row
+    bookrag_ui._bookrag_ui_guards_installed=True
 
 def main():
     _load_local_env();_clamp_local_embedding_profile();_install_ui_guards();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
