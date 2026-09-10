@@ -40,12 +40,7 @@ def _parse_json(raw:str)->dict[str,Any]|None:
     except (TypeError,ValueError,json.JSONDecodeError):return None
 
 def _hard_query(plan:Any,understanding:Any,question:str)->bool:
-    """Only force strict multi-stage synthesis for genuinely complex questions.
-
-    Low confidence by itself is not clinical complexity: a short factual question
-    must remain answerable from strong retrieved evidence without an LLM failure
-    becoming an unnecessary abstention.
-    """
+    """Only force strict multi-stage synthesis for genuinely complex questions."""
     tokens=meaningful_tokens(question)
     return bool(
         len(plan.subqueries)>1
@@ -62,7 +57,9 @@ def _hard_query(plan:Any,understanding:Any,question:str)->bool:
     )
 
 def deterministic_phase1(question:str,conversation_context:str="")->PhasePlan:
-    understanding=understand_query(question,conversation_context=conversation_context);plan=plan_query(question,conversation_context=conversation_context);entities=tuple(dict.fromkeys([e.normalized for e in understanding.entities]+list(plan.entities)))[:16];rewritten=tuple(dict.fromkeys([plan.normalized,*plan.variants]))[:8];must=tuple(dict.fromkeys(entities[:8]));ambiguity="high" if understanding.confidence<.60 else "medium" if understanding.confidence<.82 else "low"
+    understanding=understand_query(question,conversation_context=conversation_context);plan=plan_query(question,conversation_context=conversation_context);entities=tuple(dict.fromkeys([e.normalized for e in understanding.entities]+list(plan.entities)))[:16];rewritten=tuple(dict.fromkeys([plan.normalized,*plan.variants]))[:8];must=tuple(dict.fromkeys(entities[:8]));
+    generic_factual=(plan.intent in {"factual","definition"} and not entities and not understanding.relations and not plan.needs_numeric and not plan.needs_table and not plan.needs_figure and not plan.needs_multi_hop)
+    ambiguity="low" if generic_factual else "high" if understanding.confidence<.60 else "medium" if understanding.confidence<.82 else "low"
     if not question.strip():ambiguity="high"
     return PhasePlan(plan.intent if plan.intent in _ALLOWED_INTENTS else "other",entities,tuple(plan.subqueries[:6]),rewritten,must,ambiguity,bool(plan.needs_table),bool(plan.needs_numeric),bool(plan.needs_figure),bool(plan.needs_multi_hop),"deterministic",float(understanding.confidence))
 
@@ -80,7 +77,7 @@ def llm_phase1(llm:Any,question:str,deterministic:PhasePlan,conversation_context
 def rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
     cleaned=re.sub(r"\s+"," ",str(question or "")).strip()
     if not cleaned or not history:return cleaned
-    recent=list(history[-3:]);needs=len(meaningful_tokens(cleaned))<=10 or bool(re.search(r"\b(it|this|that|they|them|those|these|what about|and the|and this)\b",cleaned,re.I)) or bool(re.search(r"\b(ça|cela|celui|celle|et le|et la|و|هذا|هذه|ثم)\b",cleaned,re.I))
+    recent=list(history[-3:]);needs=len(meaningful_tokens(cleaned))<=10 or bool(re.search(r"\b(it|this|that|they|them|those|these|what about|and the|and this)\b",cleaned,re.I)) or bool(re.search(r"\b(ça|cela|celui|celle|et le|et la|و|هذا|هذه|ثم)\b",cleaned,re.I)) or bool(re.match(r"^و\S+",cleaned,re.UNICODE))
     if not needs:return cleaned
     questions=[q for q,_ in recent if q.strip()];answers=[a for _,a in recent if a.strip()];anchor=questions[-1] if questions else ""
     if not anchor:return cleaned
@@ -93,9 +90,13 @@ def rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->
 
 def medical_term_layer(question:str,evidence:Sequence[Any]=())->dict[str,Any]:
     text=" ".join([str(question or "")]+[str(getattr(hit,"text","") or "") for hit in evidence[:16]])
-    units=re.findall(r"\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|mL|ml|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)\b",text,re.I)
-    abbreviations=re.findall(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,6})?\b",question or "")
-    drug_like=re.findall(r"\b[a-z]{5,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin|dipine|xaban|oxetine|triptan|caine|cept)\b",question or "",re.I)
+    units=re.findall(r"(?<!\w)\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|mL|ml|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)(?=\s|$|[^\w])",text,re.I)
+    abbreviations=re.findall(r"\b[A-Z](?:[A-Z0-9]){1,7}(?:[-/][A-Z0-9]{1,6})?\b",question or "")
+    abbreviations=[x for x in abbreviations if x.casefold() not in {"what","this","that","which","where","when","with","from","and","the"}]
+    drug_names={"metformin","dapagliflozin","lisinopril","enalapril"}
+    suffixes=("pril","olol","sartan","statin","azole","cillin","mycin","vir","mab","nib","prazole","tidine","caine","cycline","floxacin","lukast","setron","gliptin","gliflozin","tide","parin","dipine","xaban","oxetine","triptan","cept","formin")
+    word_candidates=re.findall(r"(?<!\w)[A-Za-z][A-Za-z0-9-]{3,}(?!\w)",question or "",re.I)
+    drug_like=[x for x in word_candidates if x.casefold() in drug_names or x.casefold().endswith(suffixes)]
     conditions=re.findall(r"\b[a-zà-ÿ][a-zà-ÿ-]{5,}(?:itis|osis|emia|pathy|carcinoma|oma|algia|penia|iasis|megaly|cytosis|trophy|sclerosis|stenosis|ectasia)\b",question or "",re.I)
     clinical=[]
     try:clinical=[e.normalized for e in extract_clinical_entities(question)]
@@ -153,19 +154,15 @@ def dynamic_temperature(phase:PhasePlan,default:float=.2)->float:
 def extractive_draft(question:str,hits:Sequence[Any],phase:PhasePlan,max_sentences:int=8)->tuple[str,dict[str,Any]]:
     query_tokens=set(meaningful_tokens(" ".join(phase.rewritten_queries)));ranked=[]
     for index,hit in enumerate(hits):
-        marker=f"[S{index+1}]"
-        hit_score=max(0.,min(1.,float(getattr(hit,"score",0.) or 0.)))
+        marker=f"[S{index+1}]";hit_score=max(0.,min(1.,float(getattr(hit,"score",0.) or 0.)))
         for sentence in re.split(r"(?<=[.!?؟])\s+|\n+",str(getattr(hit,"text","") or "")):
             sentence=re.sub(r"\s+"," ",sentence).strip()
             if not sentence:continue
-            overlap=len(set(meaningful_tokens(sentence))&query_tokens)/max(1,len(query_tokens));bonus=.15 if re.search(r"\d",sentence) and phase.needs_numeric else 0.;retrieval_bonus=.22*hit_score
-            ranked.append((overlap+bonus+retrieval_bonus,f"{sentence} {marker}"))
+            overlap=len(set(meaningful_tokens(sentence))&query_tokens)/max(1,len(query_tokens));bonus=.15 if re.search(r"\d",sentence) and phase.needs_numeric else 0.;retrieval_bonus=.22*hit_score;ranked.append((overlap+bonus+retrieval_bonus,f"{sentence} {marker}"))
     ranked.sort(key=lambda x:x[0],reverse=True);chosen=[];seen=set()
     for score,sentence in ranked:
         normalized=re.sub(r"\[S\d+\]","",sentence).casefold()
         if normalized in seen:continue
-        # A strong vector retrieval score is sufficient to admit a sentence even
-        # when the question uses a semantic paraphrase rather than shared words.
         if score<=.06:continue
         seen.add(normalized);chosen.append(sentence)
         if len(chosen)>=max_sentences:break
@@ -176,8 +173,7 @@ def synthesize_answer(llm:Any,question:str,draft:str,phase:PhasePlan,temperature
     if llm is None or not draft.strip():return None
     prompt=f"Question: {question[:2200]}\n\nIntent: {phase.intent}\nExtractive facts (authoritative and complete):\n{draft[:6500]}\n\nProduce the final answer using only those facts. Do not merge separate facts into a new causal claim unless the explicit path is present in the facts themselves."
     try:
-        value=str(llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature) or '').strip()[:9000]
-        return value or None
+        value=str(llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature) or '').strip()[:9000];return value or None
     except Exception:return None
 
 def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_filter:dict[str,Any]|None=None)->dict[str,Any]:
@@ -187,23 +183,13 @@ def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_f
         enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":True,"reason":"no_extractable_evidence"};enhanced["generation_path"]="required_two_stage_abstention" if hard_query else "certified_primary_fallback"
         if hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
         return enhanced
-
     if system is None and str(base_result.get("answer","")).strip():
-        base_answer=str(base_result.get("answer","")).strip()
-        evidence_texts=[str(getattr(h,"text","") or "") for h in selected]
-        base_checks=verify_claims(base_answer,evidence_texts,[f"S{i+1}" for i in range(len(selected))]) if evidence_texts else []
-        base_blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in base_checks)
+        base_answer=str(base_result.get("answer","")).strip();evidence_texts=[str(getattr(h,"text","") or "") for h in selected];base_checks=verify_claims(base_answer,evidence_texts,[f"S{i+1}" for i in range(len(selected))]) if evidence_texts else [];base_blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in base_checks)
         if base_checks and not base_blocked:
-            enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":False,"reason":"no_runtime_llm_preserved_verified_base"}
-            enhanced["generation_path"]="verified_base_preserved_no_runtime_llm"
-            enhanced["verification"]={"checked":True,"blocked":False,"claim_count":len(base_checks)}
-            return enhanced
-
-    synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature)
-    verified_synthesis=[]
+            enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":False,"reason":"no_runtime_llm_preserved_verified_base"};enhanced["generation_path"]="verified_base_preserved_no_runtime_llm";enhanced["verification"]={"checked":True,"blocked":False,"claim_count":len(base_checks)};return enhanced
+    synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature);verified_synthesis=[]
     if synthesized:
-        verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))])
-        blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
+        verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))]);blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
         if blocked:synthesized=None
     enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
     if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize"
