@@ -25,7 +25,7 @@ ALIASES={
 'diabetic ketoacidosis':('diabetic ketoacidosis','dka','acidocétose diabétique','acidocetose diabetique','الحماض الكيتوني السكري'),
 'diabetic nephropathy':('diabetic nephropathy','nephropathie diabetique','néphropathie diabétique','diabetic kidney disease','dkd','maladie rénale diabétique','اعتلال الكلية السكري'),
 'albuminuria':('albuminuria','albuminurie','microalbuminuria','urinary albumin','albumin in urine','uacr','بيلة الألبومين','زلال البول'),
-'hypertension':('hypertension','hta','high blood pressure','hypertension artérielle','hypertension arterielle','blood pressure','bp','ارتفاع ضغط الدم'),
+hypertension':('hypertension','hta','high blood pressure','hypertension artérielle','hypertension arterielle','blood pressure','bp','ارتفاع ضغط الدم'),
 'hypotension':('hypotension','low blood pressure','hypotension artérielle','ضغط الدم المنخفض'),
 'hypokalemia':('hypokalemia','hypokaliémie','hypokaliemia','low potassium','نقص بوتاسيوم الدم'),
 'hyperkalemia':('hyperkalemia','hyperkaliémie','high potassium','فرط بوتاسيوم الدم'),
@@ -55,28 +55,31 @@ ALIASES={
 'hepatitis':('hepatitis','hépatite','التهاب الكبد'),'cirrhosis':('cirrhosis','cirrhose','تليف الكبد'),'pancreatitis':('pancreatitis','pancréatite','التهاب البنكرياس'),'gastritis':('gastritis','gastrite','التهاب المعدة'),
 'peptic ulcer disease':('peptic ulcer disease','peptic ulcer','ulcère gastroduodénal','pud','القرحة الهضمية'),'crohn disease':('crohn disease','crohn\'s disease','maladie de crohn','داء كرون'),'ulcerative colitis':('ulcerative colitis','colite ulcéreuse','rectocolite hémorragique','rchu','التهاب القولون التقرحي'),
 'epilepsy':('epilepsy','épilepsie','seizure disorder','الصرع'),'migraine':('migraine','migraine headache','الصداع النصفي'),'parkinson disease':('parkinson disease','parkinson\'s disease','maladie de parkinson','مرض باركنسون'),'alzheimer disease':('alzheimer disease','alzheimer\'s disease','maladie d\'alzheimer','داء ألزهايمر'),
-'multiple sclerosis':('multiple sclerosis','sclérose en plaques','ms','التصلب المتعدد'),'rheumatoid arthritis':('rheumatoid arthritis','polyarthrite rhumatoïde','ra','التهاب المفاصل الروماتويدي'),'systemic lupus erythematosus':('systemic lupus erythematosus','sle','lupus','lupus érythémateux systémique','الذئبة الحمامية الجهازية'),
+'multiple sclerosis':('multiple sclerosis','sclérose en plaques','ms','التصلب المتعدد'),'rheumatoid arthritis':('rheumatoid arthritis','polyarthrite rhumatoïde','ra','التهاب المفاصل الروماتويدي','الالتهاب المفصلي الروماتويدي'),
+'systemic lupus erythematosus':('systemic lupus erythematosus','sle','lupus','lupus érythémateux systémique','الذئبة الحمامية الجهازية'),
 'osteoarthritis':('osteoarthritis','arthrose','oa','الفصال العظمي'),'gout':('gout','gouty arthritis','goutte','داء النقرس'),
 'breast cancer':('breast cancer','cancer du sein','carcinome mammaire','سرطان الثدي'),'lung cancer':('lung cancer','cancer du poumon','carcinome pulmonaire','سرطان الرئة'),'prostate cancer':('prostate cancer','cancer de la prostate','سرطان البروستاتا'),'colorectal cancer':('colorectal cancer','colon cancer','rectal cancer','cancer colorectal','سرطان القولون والمستقيم'),
 'albumin':('albumin','albumine','الألبومين'),'creatinine':('creatinine','créatinine','الكرياتينين'),'egfr':('egfr','estimated glomerular filtration rate','dfg estimé','débit de filtration glomérulaire','معدل الترشيح الكبيبي'),'hba1c':('hba1c','glycated hemoglobin','glycosylated hemoglobin','hémoglobine glyquée','الهيموغلوبين السكري'),
 'potassium':('potassium','kaliémie','k+','البوتاسيوم'),'sodium':('sodium','natremia','natrémie','na+','الصوديوم'),'calcium':('calcium','calcémie','ca2+','الكالسيوم'),'magnesium':('magnesium','magnésémie','mg2+','المغنيسيوم'),'glucose':('glucose','blood glucose','glycemia','glycémie','سكر الدم'),
 'hemoglobin':('hemoglobin','haemoglobin','hgb','hb','hémoglobine','الهيموغلوبين'),'platelets':('platelets','platelet count','thrombocytes','plaquettes','plt','الصفائح'),'white blood cells':('white blood cells','wbc','leukocytes','globules blancs','gb','كريات الدم البيضاء'),
 'c-reactive protein':('c-reactive protein','crp','protéine c-réactive','البروتين المتفاعل c'),'erythrocyte sedimentation rate':('erythrocyte sedimentation rate','esr','vitesse de sédimentation','سرعة الترسيب'),'troponin':('troponin','troponine','hs-troponin','التروبونين'),'inr':('inr','international normalized ratio','ratio normalisé international','النسبة المعيارية الدولية'),
-'ast':('ast','aspartate aminotransferase','tgo','asat','aspartate transaminase','ناقلة أمين الأسبارتات'),'alt':('alt','alanine aminotransferase','tgp','alat','alanine transaminase','ناقلة أمين الألانين'),'bilirubin':('bilirubin','bilirubine','bilirubinemia','البيليروبين'),'insulin':('insulin','insuline','الأنسولين','الإنسولين')}
+'ast':('ast','aspartate aminotransferase','tgo','asat','aspartate transaminase','ناقلة أمين الأسبارتات'),'alt':('alt','alanine aminotransferase','tgp','alat','alanine transaminase','ناقلة أمين الألانين'),'bilirubin':('bilirubin','bilirubine','bilirubinemia','البيليروبين'),'insulin':('insulin','insuline','الأنسولين','الإنسولين'),
+'metformin':('metformin','metformine','الميتفورمين'),'dapagliflozin':('dapagliflozin','dapagliflozine','dapagliflozine'),'lisinopril':('lisinopril',),'enalapril':('enalapril',)}
 
 LABS={'albumin','creatinine','egfr','hba1c','potassium','sodium','calcium','magnesium','glucose','hemoglobin','platelets','white blood cells','c-reactive protein','erythrocyte sedimentation rate','troponin','inr','ast','alt','bilirubin'}
 FINDINGS={'albuminuria','hypokalemia','hyperkalemia','hypotension','fever','neutropenia','thrombocytopenia'}
 COMPLICATIONS={'diabetic nephropathy'}
 HORMONES={'insulin'}
-KIND={k:('lab' if k in LABS else 'finding' if k in FINDINGS else 'complication' if k in COMPLICATIONS else 'hormone' if k in HORMONES else 'disease') for k in ALIASES}
+KINDS={k:('lab' if k in LABS else 'finding' if k in FINDINGS else 'complication' if k in COMPLICATIONS else 'hormone' if k in HORMONES else 'drug' if k in {'metformin','dapagliflozin','lisinopril','enalapril'} else 'disease') for k in ALIASES}
+KIND=KINDS
 
 INTENTS={'definition':('what is','define','definition','meaning',"qu'est-ce",'définition','ما هو','ما هي','تعريف'),'comparison':('compare','comparison','difference','differences','versus','vs','between','différence','مقارنة','فرق','بين'),'diagnosis':('diagnosis','diagnostic','criteria','diagnostic criteria','diagnostiquer','تشخيص'),'management':('treatment','treated','management','therapy','treat','prise en charge','traitement','علاج','التدبير'),'etiology':('cause','causes','etiology','aetiology','why','risk factor','facteur','étiologie','سبب','أسباب'),'mechanism':('mechanism','mechanisms','physiopathology','pathophysiology','how does','mécanisme','آلية'),'prognosis':('prognosis','outcome','survival','prognostic','pronostic','مآل','التكهن'),'numeric':('dose','dosage','mg','ml','mmhg','percentage','how many','how much','range','threshold','value','قيمة','جرعة','نسبة'),'association':('related','relationship','associated','association','linked','lien','relation','علاقة','مرتبط'),'navigation':('which page','page number','section','where','source','citation','quelle page','où','أين','أي صفحة'),'table_lookup':('table','row','column','tableau','جدول','صف','عمود'),'figure_lookup':('figure','diagram','chart','graph','image','schéma','رسم','شكل')}
 RELATIONS=(('causality',r'\b(cause|causes|caused by|due to|leads to|responsible for|provoque|entra[iî]ne|سبب|يؤدي)\b'),('association',r'\b(associated with|associated|related to|linked to|association|lié à|associé à|مرتبط|علاقة)\b'),('comparison',r'\b(compare|versus|vs|difference|différence|مقارنة|فرق)\b'),('sequence',r'\b(then|after|before|subsequently|ensuite|après|avant|ثم|بعد|قبل)\b'))
 NEG=re.compile(r'\b(no|not|without|never|none|cannot|does not|doesn\'t|contraindicated|avoid|aucun|sans|jamais|ne pas|ممنوع|منع|لا|ليس|دون)\b',re.I|re.UNICODE)
-_DRUG_SUFFIX=re.compile(r'^[a-z][a-z0-9-]{4,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin|dipine|xaban|oxetine|triptan|cept|navir|vudine)$',re.I)
+_DRUG_SUFFIX=re.compile(r'^[a-z][a-z0-9-]{4,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin|dipine|xaban|oxetine|triptan|cept|navir|vudine|formin)$',re.I)
 _CONDITION_SUFFIX=re.compile(r'^[a-z][a-z-]{4,}(?:itis|osis|emia|pathy|carcinoma|oma|algia|penia|iasis|megaly|cytosis|trophy|sclerosis|stenosis|ectasia)$',re.I)
-_ABBREVIATION=re.compile(r'\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,8})?\b')
-_MEASUREMENT=re.compile(r'\b\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)\b',re.I)
+_ABBREVIATION=re.compile(r'\b[A-Z](?:[A-Z0-9]){1,7}(?:[-/][A-Z0-9]{1,8})?\b')
+_MEASUREMENT=re.compile(r'(?<!\w)\d+(?:[.,]\d+)?\s*(?:mg|mcg|µg|ug|g|kg|ml|mL|L|mmHg|mmol/L|mol/L|%|IU|units?|bpm|°C|C|mEq/L|mEq|mOsm/L|ng/mL|pg/mL|U/L|kPa)(?=\s|$|[^\w])',re.I)
 
 def _norm(s):return re.sub(r'\s+',' ',str(s or '')).strip().casefold()
 def _match(t,p):return bool(re.search(rf'(?<!\w){re.escape(p.casefold())}(?!\w)',t,re.I|re.UNICODE))
@@ -92,10 +95,12 @@ def _open_set_entities(v:str):
     for m in _ABBREVIATION.finditer(v):
         tok=m.group(0);canonical=normalize_medical_term(tok)
         if tok.casefold() not in {'what','this','that','which','where','when','with','from','and','the'}:found.append((m.start(),ClinicalEntity(tok,canonical,'abbreviation',.82,False)))
-    for m in re.finditer(r'(?<!\w)[a-zà-ÿ][a-zà-ÿ-]{5,}(?!\w)',v,re.I|re.UNICODE):
-        tok=m.group(0)
-        if _DRUG_SUFFIX.fullmatch(tok):found.append((m.start(),ClinicalEntity(tok,tok,'drug',.78,bool(NEG.search(v[max(0,m.start()-90):m.start()])))))
-        elif _CONDITION_SUFFIX.fullmatch(tok):found.append((m.start(),ClinicalEntity(tok,tok,'medical_concept',.78,bool(NEG.search(v[max(0,m.start()-90):m.start()])))))
+    for m in re.finditer(r'(?<!\w)[a-zà-ÿ][a-zà-ÿ0-9-]{3,}(?!\w)',v,re.I|re.UNICODE):
+        tok=m.group(0);canonical=normalize_medical_term(tok)
+        if canonical in {'metformin','dapagliflozin','lisinopril','enalapril'}:
+            found.append((m.start(),ClinicalEntity(tok,canonical,'drug',.90,bool(NEG.search(v[max(0,m.start()-90):m.start()])))))
+        elif _DRUG_SUFFIX.fullmatch(tok):found.append((m.start(),ClinicalEntity(tok,canonical,'drug',.78,bool(NEG.search(v[max(0,m.start()-90):m.start()])))))
+        elif _CONDITION_SUFFIX.fullmatch(tok):found.append((m.start(),ClinicalEntity(tok,canonical,'medical_concept',.78,bool(NEG.search(v[max(0,m.start()-90):m.start()])))))
     return found
 
 def extract_clinical_entities(text):
@@ -110,7 +115,7 @@ def extract_clinical_entities(text):
 
 def _intent_hits(t):return sorted([(k,sum(_match(t,c) for c in cues)) for k,cues in INTENTS.items() if any(_match(t,c) for c in cues)],key=lambda x:(-x[1],x[0]))
 def understand_query(query,*,conversation_context=''):
-    n=_norm(query);ctx=conversation_context[-1600:] if conversation_context else '';current=_intent_hits(n);context_intents=_intent_hits(ctx) if ctx else [];combined=(n+' '+ctx).strip() if ctx else n;names={k for k,_ in current};primary=next((k for k in ('comparison','management','diagnosis','numeric','mechanism','etiology','prognosis','association','navigation','table_lookup','figure_lookup') if k in names),current[0][0] if current else (context_intents[0][0] if context_intents else 'factual'));intents=[k for k,_ in _intent_hits(combined)] or ['factual']
+    n=_norm(query);ctx=conversation_context[-1600:] if conversation_context else '';current=_intent_hits(n);context_intents=_intent_hits(ctx) if ctx else [];combined=(n+' '+ctx).strip() if ctx else n;names={k for k,_ in current};primary=next((k for k in ('comparison','management','diagnosis','numeric','mechanism','etiology','prognosis','association','navigation','table_lookup','figure_lookup','definition') if k in names),current[0][0] if current else (context_intents[0][0] if context_intents else 'factual'));intents=[k for k,_ in _intent_hits(combined)] or ['factual']
     if primary not in intents:intents.insert(0,primary)
     relations=tuple(k for k,p in RELATIONS if re.search(p,combined,re.I|re.UNICODE));constraints=[]
     if re.search(r'\b(exact|precise|exactly|strictly|exacte|précis)\b',combined,re.I):constraints.append('exactness')
