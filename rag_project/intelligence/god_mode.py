@@ -188,9 +188,52 @@ def _sanitize_hits(hits: Sequence[Any]) -> list[Any]:
     return result
 
 
+def _simple_extractive_answer(question: str, selected_hits: Sequence[Any], max_sentences: int = 6) -> str:
+    """Return directly quoted/near-quoted evidence without invoking the generation model."""
+    question_terms = set(re.findall(r"[\wÀ-ÿ-]{3,}", str(question or "").casefold()))
+    stop = {"what", "are", "the", "main", "findings", "is", "this", "that", "what", "does", "document", "report", "explain", "define", "list", "show", "about", "principal", "biais"}
+    question_terms -= stop
+    candidates: list[tuple[float, str]] = []
+    for index, hit in enumerate(selected_hits):
+        marker = f"[S{index + 1}]"
+        for sentence in re.split(r"(?<=[.!?؟])\s+|\n+", str(getattr(hit, "text", "") or "")):
+            sentence = re.sub(r"\s+", " ", sentence).strip()
+            if not sentence:
+                continue
+            metadata_match = re.match(r"^\[Section:[^\]]*\]\s*", sentence, re.I)
+            cleaned = metadata_match.sub("", sentence).strip() if metadata_match else sentence
+            if not cleaned or len(cleaned) < 12:
+                continue
+            tokens = set(re.findall(r"[\wÀ-ÿ-]{3,}", cleaned.casefold()))
+            overlap = len(tokens & question_terms) / max(1, len(question_terms)) if question_terms else 0.0
+            score = 0.60 * float(getattr(hit, "score", 0.0) or 0.0) + 0.40 * overlap
+            candidates.append((score, f"{cleaned} {marker}"))
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    chosen: list[str] = []
+    seen: set[str] = set()
+    for score, sentence in candidates:
+        normalized = re.sub(r"\[S\d+\]", "", sentence).casefold()
+        if normalized in seen or score < 0.18:
+            continue
+        seen.add(normalized)
+        chosen.append(sentence)
+        if len(chosen) >= max_sentences:
+            break
+    return "\n".join(f"- {sentence}" for sentence in chosen)
+
+
 def _answer_with_ladder(system: Any, question: str, context: str, selected_hits: Sequence[Any], conversation_context: str, reasoning_instruction: str = "") -> tuple[str, str]:
     from rag_project.app.rag_system import _generate_with_citations
     prompt_context = context + ("\n\n<reasoning_task>" + reasoning_instruction + "</reasoning_task>" if reasoning_instruction else "")
+    # Simple factual/explanatory requests are served extractively. This prevents a slow
+    # or unavailable Ollama generation call from delaying an answer that can be verified
+    # directly against retrieved evidence. Complex reasoning keeps the full generation ladder.
+    hard_markers = ("why", "how does", "how do", "cause", "causes", "mechanism", "compare", "versus", "difference", "diagnostic criteria", "dose", "dosage", "treatment", "prognosis", "contraindication", "pourquoi", "comment", "سبب", "مقارنة", "علاج", "تشخيص", "جرعة")
+    simple_path = not reasoning_instruction.strip() and not any(marker in str(question or "").casefold() for marker in hard_markers)
+    if simple_path:
+        extractive = _simple_extractive_answer(question, selected_hits)
+        if extractive:
+            return extractive, "fast_extractive"
     try:
         answer, _ = _generate_with_citations(system.llm, question=question, context=prompt_context, selected_hits=selected_hits, conversation_context=conversation_context, temperature=system.settings.temperature)
         return answer, "primary"
