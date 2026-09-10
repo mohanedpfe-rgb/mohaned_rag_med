@@ -6,6 +6,7 @@ from rag_project.configuration.settings import Settings
 from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install
 from rag_project.security import harden_system
+from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 
 _FACTORY_LOCK=threading.RLock()
 ANSWER_PIPELINE_AUTHORITY="rag_project.intelligence.top_level_pipeline.complete_phases"
@@ -25,6 +26,9 @@ def create_rag_system(settings: Settings | None = None):
     """Construct the one canonical production system and validate its persistent indexes."""
     with _FACTORY_LOCK:
         install()
+        # Install query/answer integrity policies before importing/constructing
+        # ProductionRAGSystem so every canonical pipeline call sees the same rules.
+        install_pipeline_integrity()
         from rag_project.app.production_rag import ProductionRAGSystem
         system=ProductionRAGSystem(_normalize_runtime_settings(settings))
         system=harden_system(system)
@@ -55,6 +59,7 @@ def runtime_contract()->dict[str,Any]:
         "answer_pipeline_authority":ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution":ANSWER_PIPELINE_AUTHORITY,
         "answer_monkey_patch":False,
+        "pipeline_integrity":"rag_project.intelligence.pipeline_integrity.install",
         "final_answer_verification":"rag_project.intelligence.final_answer_contract.verify_final_answer",
         "entity_coverage":"rag_project.intelligence.entity_coverage.score_entity_coverage",
         "medical_safety_gate":True,
