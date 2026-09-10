@@ -30,8 +30,8 @@ def test_context_builder_never_exceeds_token_budget_after_first_item():
     giant = hit(2, "word " * 200)
     context, selected = builder.build([first, giant])
     assert selected == [first]
-    assert "<evidence id=\"S1\">" in context
-    assert "<evidence id=\"S2\">" not in context
+    assert "<evidence id=\"S1\" chunk_id=\"c1\">" in context
+    assert "<evidence id=\"S2\"" not in context
 
 
 def test_context_builder_allows_first_large_item_even_when_over_budget():
@@ -266,5 +266,4 @@ def test_production_clear_pdf_data_clears_conversation_and_managed_files(tmp_pat
 
 
 def test_lifecycle_test_does_not_require_real_ollama_or_cross_encoder():
-    # This module deliberately uses fakes everywhere so CI can exercise the complete control flow.
     assert True
