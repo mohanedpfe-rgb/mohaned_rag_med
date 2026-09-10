@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from rag_project.intelligence.semantic_reasoning import understand_query
 
 _COMPARISON = ("compare", "comparison", "difference", "differences", "versus", " vs ", "between", "différence", "comparaison", "مقارنة", "فرق", "بين")
 _NUMERIC = ("dose", "dosage", "mg", "ml", "percent", "percentage", "how many", "how much", "value", "range", "عدد", "جرعة", "ملغ", "نسبة", "قيمة")
@@ -17,7 +18,6 @@ _STOP = {"what", "does", "the", "and", "for", "with", "which", "from", "that", "
 
 
 def _contains_term(text: str, term: str) -> bool:
-    """Match intent keywords as words/phrases, not arbitrary substrings."""
     haystack = (text or "").casefold()
     needle = (term or "").casefold().strip()
     if not needle:
@@ -57,28 +57,30 @@ def normalize_query(query: str) -> str:
 
 
 def extract_query_entities(query: str) -> tuple[str, ...]:
-    raw = normalize_query(query)
-    tokens = re.findall(r"[\wÀ-ÿ'/-]{3,}", raw.casefold())
+    understanding = understand_query(normalize_query(query))
+    structured = [entity.normalized for entity in understanding.entities]
+    tokens = re.findall(r"[\wÀ-ÿ'/-]{3,}", normalize_query(query).casefold())
     out: list[str] = []
-    for quoted in re.findall(r"[\"“]([^\"”]+)[\"”]", raw):
-        q = re.sub(r"\s+", " ", quoted.strip())
-        if q and q.casefold() not in out:
-            out.append(q.casefold())
+    for term in structured:
+        if term and term not in out:
+            out.append(term)
+    for quoted in re.findall(r"[\"“]([^\"”]+)[\"”]", query or ""):
+        q = re.sub(r"\s+", " ", quoted.strip()).casefold()
+        if q and q not in out:
+            out.append(q)
     for token in tokens:
         if token in _STOP or token in out or re.fullmatch(r"\d+", token):
             continue
         if len(token) >= 4 or any(ch.isdigit() for ch in token) or "/" in token:
             out.append(token)
-        if len(out) >= 16:
+        if len(out) >= 20:
             break
-    return tuple(out)
+    return tuple(out[:16])
 
 
 def _split_top_level(query: str) -> list[str]:
-    parts = [p.strip(" ?!;,.") for p in re.split(
-        r"\?|;|\band\b|\bet\b|\bو\b|\balso\b|\bthen\b|\bwhile\b",
-        query,
-        flags=re.I,
+    parts = [p.strip(" ?!;,.\")") for p in re.split(
+        r"\?|;|\band\b|\bet\b|\bو\b|\balso\b|\bthen\b|\bwhile\b|\bmais\b|\bmais\s+", query, flags=re.I
     ) if p.strip()]
     return list(dict.fromkeys(parts))
 
@@ -90,74 +92,83 @@ def decompose_query(query: str) -> tuple[str, ...]:
     pieces = _split_top_level(q)
     if len(pieces) == 1 and re.search(r"\bversus\b|\bbetween\b", q, re.I):
         pieces = re.split(r"\bversus\b|\bbetween\b|\band\b", q, flags=re.I)
-        pieces = [p.strip(" ?!;,.") for p in pieces if p.strip()]
+        pieces = [p.strip(" ?!;,.\")") for p in pieces if p.strip()]
     return tuple(dict.fromkeys(pieces))[:8]
 
 
 def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
-    if _contains_any(normalized, _COMPARISON):
-        return "comparison"
-    if _contains_any(normalized, _NUMERIC):
-        return "numeric"
-    if _contains_any(normalized, _DEFINITION):
-        return "definition"
-    if _contains_any(normalized, _RELATION):
+    semantic = understand_query(normalized)
+    primary = semantic.primary_intent
+    if primary in {"association"}:
         return "relationship"
-    if _contains_any(normalized, _NAV):
-        return "navigation"
-    if _contains_any(normalized, _FIGURE):
-        return "figure_lookup"
-    if _contains_any(normalized, _TABLE):
-        return "table_lookup"
-    if len(subqueries) > 1:
-        return "multi_part"
-    return "factual"
+    if primary == "factual":
+        if _contains_any(normalized, _NUMERIC):
+            return "numeric"
+        if _contains_any(normalized, _TABLE):
+            return "table_lookup"
+        if _contains_any(normalized, _FIGURE):
+            return "figure_lookup"
+    return primary
 
 
 def _make_variants(normalized: str, intent: str, entities: tuple[str, ...], *, numeric: bool, table: bool, figure: bool) -> tuple[str, ...]:
     variants = [normalized]
     if entities:
         variants.append(" ".join(entities[:8]))
-    if numeric:
-        variants.extend([normalized + " exact numeric value units range", normalized + " dosage measurement quantity"])
+    if intent in {"numeric", "diagnosis", "management"} or numeric:
+        variants.extend([normalized + " exact numeric value units range", normalized + " dosage measurement quantity threshold"])
     if intent == "comparison":
         variants.extend([normalized + " differences similarities compare", normalized + " each item evidence"])
     if intent == "relationship":
         variants.extend([normalized + " association relationship linked evidence", normalized + " common mechanism connection"])
+    if intent == "etiology":
+        variants.extend([normalized + " causes risk factors etiology", normalized + " differential causes"])
+    if intent == "mechanism":
+        variants.extend([normalized + " mechanism physiopathology pathway", normalized + " how why biological process"])
+    if intent == "diagnosis":
+        variants.append(normalized + " diagnostic criteria signs tests thresholds")
+    if intent == "management":
+        variants.append(normalized + " treatment management first line contraindications")
+    if intent == "prognosis":
+        variants.append(normalized + " prognosis outcomes risk predictors follow-up")
     if table:
         variants.append(normalized + " table rows columns values")
     if figure:
         variants.append(normalized + " figure diagram chart caption")
-    return tuple(dict.fromkeys(v for v in variants if v))[:8]
+    return tuple(dict.fromkeys(v for v in variants if v))[:10]
 
 
-def plan_query(query: str) -> QueryPlan:
+def plan_query(query: str, conversation_context: str = "") -> QueryPlan:
     original = query or ""
     normalized = normalize_query(original)
+    semantic = understand_query(normalized, conversation_context=conversation_context)
     subqueries = decompose_query(normalized)
     entities = extract_query_entities(normalized)
-    numeric = _contains_any(normalized, _NUMERIC)
-    table = numeric or _contains_any(normalized, _TABLE)
-    figure = _contains_any(normalized, _FIGURE)
-    comparison = _contains_any(normalized, _COMPARISON)
-    relation = _contains_any(normalized, _RELATION)
-    navigation = _contains_any(normalized, _NAV)
+    numeric = "numeric" in semantic.intents or _contains_any(normalized, _NUMERIC)
+    table = numeric or "table_lookup" in semantic.intents or _contains_any(normalized, _TABLE)
+    figure = "figure_lookup" in semantic.intents or _contains_any(normalized, _FIGURE)
+    comparison = "comparison" in semantic.intents or _contains_any(normalized, _COMPARISON)
+    relation = "relationship" in semantic.intents or "association" in semantic.intents or _contains_any(normalized, _RELATION)
+    navigation = "navigation" in semantic.intents or _contains_any(normalized, _NAV)
     intent = classify_intent(normalized, subqueries)
     multi_hop = (
         len(subqueries) > 1
         or relation
         or comparison
-        or _contains_any(normalized, ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب"))
+        or intent in {"etiology", "mechanism", "diagnosis", "management", "prognosis"}
+        or bool(semantic.relations)
+        or _contains_any(normalized, ("why", "because", "lead to", "causes", "then", "result", "نتيجة", "سبب", "pourquoi"))
     )
     variants = _make_variants(normalized, intent, entities, numeric=numeric, table=table, figure=figure)
     boosts = {
         "lexical": 1.20 if numeric or navigation else 1.0,
-        "vector": 1.10 if intent in {"definition", "relationship"} else 1.0,
+        "vector": 1.15 if intent in {"definition", "relationship", "etiology", "mechanism", "diagnosis", "management"} else 1.0,
         "table": 1.45 if table else 1.0,
         "figure": 1.35 if figure else 1.0,
         "section": 1.20 if navigation or intent == "definition" else 1.0,
         "entity": 1.25 if entities else 1.0,
         "parent": 1.15 if multi_hop or navigation else 1.0,
+        "semantic": 1.30 if semantic.confidence >= 0.70 else 1.10,
     }
     return QueryPlan(
         original=original,
