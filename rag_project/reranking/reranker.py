@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Iterable, List
 
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
@@ -63,6 +64,18 @@ class Reranker:
         self._model_attempted = False
 
     @staticmethod
+    def _score_to_probability(score: Any) -> float:
+        """Map a CrossEncoder relevance logit to a finite 0..1 score for downstream gates."""
+        try:
+            value = float(score)
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(value):
+            return 0.0
+        value = max(-60.0, min(60.0, value))
+        return 1.0 / (1.0 + math.exp(-value))
+
+    @staticmethod
     def confidence(hits: List[RetrievalHit]) -> dict[str, float | str]:
         if not hits:
             return {"level": "none", "top_score": 0.0, "margin": 0.0}
@@ -111,7 +124,7 @@ class Reranker:
                     )
                 scores = all_scores
             for hit, score in zip(hits_list, scores, strict=True):
-                hit.score = float(score)
+                hit.score = self._score_to_probability(score)
             return sorted(hits_list, key=lambda item: item.score, reverse=True)
         except Exception as exc:
             self.error = f"Reranker inference failed: {exc}"
