@@ -63,7 +63,6 @@ def extract_query_entities(query: str) -> tuple[str, ...]:
         term = str(entity.normalized or entity.text or "").strip().casefold()
         if term and term not in out:
             out.append(term)
-    # Quoted phrases are explicit user concepts and are safe to retain as retrieval anchors.
     for quoted in re.findall(r"[\"“]([^\"”]+)[\"”]", query or ""):
         q = re.sub(r"\s+", " ", quoted.strip()).casefold()
         if q and q not in out:
@@ -105,6 +104,8 @@ def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
             return "figure_lookup"
     if len(subqueries) > 1 and primary == "definition":
         return "multi_part"
+    if primary == "definition":
+        return "factual"
     return primary
 
 
@@ -151,10 +152,10 @@ def plan_query(query: str, conversation_context: str = "") -> QueryPlan:
     variants = _make_variants(normalized, intent, entities, numeric=numeric, table=table, figure=figure)
     boosts = {
         "lexical": 1.20 if numeric or navigation else 1.0,
-        "vector": 1.15 if intent in {"definition", "relationship", "etiology", "mechanism", "diagnosis", "management"} else 1.0,
+        "vector": 1.15 if intent in {"factual", "definition", "relationship", "etiology", "mechanism", "diagnosis", "management"} else 1.0,
         "table": 1.45 if table else 1.0,
         "figure": 1.35 if figure else 1.0,
-        "section": 1.20 if navigation or intent == "definition" else 1.0,
+        "section": 1.20 if navigation or intent in {"definition", "factual"} else 1.0,
         "entity": 1.25 if entities else 1.0,
         "parent": 1.15 if multi_hop or navigation else 1.0,
         "semantic": 1.30 if semantic.confidence >= 0.70 else 1.10,
