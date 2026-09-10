@@ -137,15 +137,18 @@ def assess_clinical_reasoning(understanding:QueryUnderstanding,hits:Sequence[Any
     elif not relation_needed and has_entities and cov>=.5:mode,depth='DIRECT',1
     elif not relation_needed and not has_entities and hits:mode,depth='DIRECT_SUMMARY',1
     else:mode,depth='INSUFFICIENT',0
+    if mode=='DIRECT' and not relation_needed:
+        direct_support=max(direct_support,.70*cov,retrieval_support*.90)
+        source=max(source,retrieval_support)
+    if mode=='DIRECT_SUMMARY':
+        direct_support=max(direct_support,retrieval_support*.90)
+        source=max(source,retrieval_support)
     blocked=[]
     if has_entities and cov<.5:blocked.append('insufficient_entity_coverage')
     if relation_needed and not has_entities:blocked.append('missing_reasoning_entities')
     if relation_needed and not direct and not paths:blocked.append('no_explicit_reasoning_path')
     if contradiction>=.5:blocked.append('conflicting_evidence')
     if safety>=1.:blocked.append('safety_conflict')
-    if mode=='DIRECT_SUMMARY':
-        direct_support=max(direct_support,retrieval_support*.9)
-        source=max(source,retrieval_support)
     conf=max(0.,min(1.,.35*direct_support+.35*path_support+.15*cov+.15*source-.3*contradiction-.35*safety))
     minimum=.30 if mode in {'DIRECT','DIRECT_SUMMARY'} else .50
     allow=not blocked and conf>=minimum
