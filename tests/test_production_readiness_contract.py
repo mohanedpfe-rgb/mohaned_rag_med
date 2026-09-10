@@ -1,10 +1,17 @@
 from rag_project.application import runtime_contract
 from rag_project.intelligence.production_contract import validate_feature_contract
-from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
+from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION, install as install_production_contract
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 from rag_project.canonical_runtime import ANSWER_AUTHORITY, install as install_canonical_runtime
 from rag_project.intelligence import god_mode_100, top_level_pipeline
+from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.app.production_rag import ProductionRAGSystem
+
+
+def _install_all_runtime_contracts():
+    install_pipeline_integrity()
+    install_production_contract()
+    install_canonical_runtime()
 
 
 def test_feature_contract_resolves_all_advertised_capabilities():
@@ -29,7 +36,7 @@ def test_runtime_contract_declares_single_canonical_authority():
 
 
 def test_live_production_service_is_bound_to_installed_canonical_enhancer():
-    install_canonical_runtime()
+    _install_all_runtime_contracts()
     assert ProductionRAGSystem._certified_god_answer is god_mode_100.enhance_result
     assert ProductionRAGSystem._canonical_answer_authority == ANSWER_AUTHORITY
     assert ProductionRAGSystem._canonical_runtime_contract is True
@@ -37,7 +44,7 @@ def test_live_production_service_is_bound_to_installed_canonical_enhancer():
 
 
 def test_live_rewrite_does_not_pollute_standalone_question():
-    install_canonical_runtime()
+    _install_all_runtime_contracts()
     rewritten = top_level_pipeline.rewrite_follow_up(
         "What are the main findings?",
         (("What are the complications of diabetes?", "The answer discussed diabetic nephropathy."),),
@@ -47,6 +54,6 @@ def test_live_rewrite_does_not_pollute_standalone_question():
     assert "follow-up:" not in rewritten.casefold()
 
 
-def test_health_report_class_binding_is_observable():
-    install_canonical_runtime()
+def test_health_contract_is_marked_installed():
+    _install_all_runtime_contracts()
     assert getattr(ProductionRAGSystem, "_canonical_health_contract", False) is True
