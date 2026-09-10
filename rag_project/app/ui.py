@@ -1,6 +1,11 @@
-"""Compatibility entry point for the single Streamlit interface."""
+"""Canonical Streamlit entry point for the production BookRAG interface.
 
-from rag_project.app.dev_ui import main
+This compatibility module deliberately delegates to the same application root as
+``app.py`` so the production Ask flow (including Phase-5 intelligence visibility)
+remains the only normal user-facing entry point.
+"""
+
+from app import main
 
 __all__ = ["main"]
 
