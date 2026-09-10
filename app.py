@@ -7,6 +7,7 @@ from typing import Any
 import streamlit as st
 
 from rag_project.app import bookrag_ui
+from rag_project.ingestion.responsive_supervisor import start as start_supervisor
 from rag_project.security import (
     register_session_upload,
     validate_ollama_url,
@@ -81,6 +82,8 @@ def _install_ui_guards() -> None:
 def main() -> None:
     _load_local_env()
     _install_ui_guards()
+    system = bookrag_ui.get_system()
+    start_supervisor(system, interval_seconds=1.0)
     bookrag_ui.main()
 
 
