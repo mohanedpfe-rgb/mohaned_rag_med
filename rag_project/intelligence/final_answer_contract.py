@@ -4,12 +4,27 @@ from typing import Any, Sequence
 
 from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix
 from rag_project.intelligence.evidence_guard import verify_claims
+from rag_project.intelligence.pipeline_integrity import is_control_message
 
 _BLOCKED = {"UNSUPPORTED", "WEAK", "NUMERIC_MISMATCH", "CONTRADICTED"}
 
 
 def verify_final_answer(answer: str, hits: Sequence[Any], *, require_entailment: bool = False) -> dict[str, Any]:
-    """Verify the exact answer that will be returned to the user against final evidence."""
+    """Verify a medical answer while keeping operational abstention out of claim analysis."""
+    if is_control_message(answer):
+        return {
+            "checked": False,
+            "allow": False,
+            "reason": "abstention_not_claim",
+            "claim_count": 0,
+            "blocked_claims": 0,
+            "supported_ratio": 0.0,
+            "matrix_claim_count": 0,
+            "matrix_all_entailed": False,
+            "claim_checks": [],
+            "evidence_claim_matrix": [],
+        }
+
     evidence = [str(getattr(hit, "text", "") or "") for hit in hits]
     source_ids = [f"S{i + 1}" for i in range(len(evidence))]
     checks = verify_claims(answer, evidence, source_ids) if answer.strip() and evidence else []
