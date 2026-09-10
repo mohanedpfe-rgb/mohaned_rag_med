@@ -44,3 +44,20 @@ def test_non_finite_reranker_outputs_fail_safe_to_zero():
 
     assert len(hits) == 1
     assert hits[0].score == 0.0
+
+
+def test_reranker_caps_large_candidate_sets_before_cross_encoder_inference():
+    reranker = Reranker(enabled=True, max_rerank_candidates=48)
+    reranker._model_attempted = True
+    seen = {"count": 0}
+
+    class FakeModel:
+        def predict(self, pairs, show_progress_bar=False):
+            seen["count"] += len(pairs)
+            return [0.0] * len(pairs)
+
+    reranker.model = FakeModel()
+    hits = reranker.rerank("dose", [_hit(f"chunk-{index}", score=1.0 - index / 1000.0) for index in range(100)])
+
+    assert len(hits) == 48
+    assert seen["count"] == 48
