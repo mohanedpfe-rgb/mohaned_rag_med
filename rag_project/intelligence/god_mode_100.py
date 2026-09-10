@@ -146,7 +146,7 @@ def enhance_result(
         retrieval=top_score,
         rerank=top_score,
         entailment=entailment,
-        entity_coverage=entity_coverage,
+        entity_coverage=(1.0 if not query_plan.get("entities") else entity_coverage),
         source_agreement=source_agreement,
         contradiction=contradiction,
         safety_conflict=safety_conflict,
@@ -169,9 +169,6 @@ def enhance_result(
     phase_plan = completed.get("phase_plan") or {}
     final_matrix = ()
 
-    # Rebuild the evidence matrix from the exact final answer candidate after all
-    # retrieval, compression and synthesis steps. This prevents stale pre-synthesis
-    # claims from being mistaken for verification of the answer the user will see.
     provisional_answer = str(completed.get("answer") or "").strip()
     final_verification = verify_final_answer(
         provisional_answer,
@@ -205,7 +202,7 @@ def enhance_result(
         reasons = []
         if final_verification.get("reason"):
             reasons.append(str(final_verification["reason"]))
-        if entity_report.get("missing"):
+        if entity_report.get("missing") and entity_report.get("entity_count", 0) > 0:
             reasons.append("missing_query_entities_in_evidence")
         completed["status"] = "REASONING_ABSTAIN"
         completed["abstained"] = True
@@ -221,7 +218,7 @@ def enhance_result(
         retrieval=top_score,
         rerank=top_score,
         entailment=final_entailment,
-        entity_coverage=max(entity_report.get("coverage", 0.0), entity_report.get("partial_coverage", 0.0) * 0.75),
+        entity_coverage=(1.0 if entity_report.get("entity_count", 0) == 0 else max(entity_report.get("coverage", 0.0), entity_report.get("partial_coverage", 0.0) * 0.75)),
         source_agreement=source_agreement,
         contradiction=contradiction,
         safety_conflict=safety_conflict,
@@ -231,7 +228,7 @@ def enhance_result(
             retrieval=top_score,
             rerank=top_score,
             entailment=0.0,
-            entity_coverage=0.0,
+            entity_coverage=(1.0 if entity_report.get("entity_count", 0) == 0 else 0.0),
             source_agreement=source_agreement,
             contradiction=max(contradiction, 1.0),
             safety_conflict=max(safety_conflict, 0.0),
