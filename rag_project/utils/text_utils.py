@@ -25,6 +25,30 @@ ARABIC_NORMALIZATION = str.maketrans({
     "\u06d5": "\u0647",
 })
 
+# Conservative cross-language equivalence groups used only for lexical overlap.
+# Vector retrieval remains the primary semantic mechanism; these aliases prevent
+# the grounding gate from rejecting obvious English/French medical equivalences.
+_MEDICAL_ALIASES = {
+    frozenset({"diabetic", "diabetes", "diabete", "diabète", "diabetique", "diabétique"}),
+    frozenset({"nephropathy", "nephropathie", "néphropathie"}),
+    frozenset({"albuminuria", "albuminurie"}),
+    frozenset({"kidney", "renal", "rein", "reins", "rénal", "rénale"}),
+    frozenset({"hypertension", "hta"}),
+    frozenset({"thyroid", "thyroide", "thyroïde"}),
+    frozenset({"cancer", "cancers"}),
+    frozenset({"potassium", "kaliémie", "kalemie", "hypokalemia", "hypokaliémie", "hyperkalemia", "hyperkaliémie"}),
+    frozenset({"fever", "fièvre", "fievre"}),
+    frozenset({"diagnosis", "diagnostic", "diagnostique"}),
+    frozenset({"cause", "causes", "etiology", "étiologie", "etiologique", "étiologique"}),
+    frozenset({"treatment", "traitement", "thérapie", "therapie"}),
+    frozenset({"complication", "complications"}),
+    frozenset({"chronic", "chronique"}),
+    frozenset({"acute", "aigu", "aiguë", "aigue"}),
+}
+_ALIAS_LOOKUP: dict[str, frozenset[str]] = {
+    token: group for group in _MEDICAL_ALIASES for token in group
+}
+
 
 def normalize_arabic(value: str) -> str:
     """Normalize common Arabic presentation variants without transliteration."""
@@ -67,9 +91,19 @@ def meaningful_tokens(value: str) -> List[str]:
     return [token for token in tokenize(value) if token not in STOPWORDS and len(token) > 1]
 
 
+def _expanded_token_set(value: str) -> set[str]:
+    tokens = set(meaningful_tokens(value))
+    expanded = set(tokens)
+    for token in tokens:
+        aliases = _ALIAS_LOOKUP.get(token)
+        if aliases:
+            expanded.update(aliases)
+    return expanded
+
+
 def keyword_overlap_score(query: str, document: str) -> float:
-    q_tokens = set(meaningful_tokens(query))
-    d_tokens = set(meaningful_tokens(document))
+    q_tokens = _expanded_token_set(query)
+    d_tokens = _expanded_token_set(document)
     if not q_tokens:
         return 0.0
     overlap = q_tokens & d_tokens
@@ -77,12 +111,17 @@ def keyword_overlap_score(query: str, document: str) -> float:
 
 
 def keyword_proximity_score(query: str, document: str) -> float:
-    terms = set(meaningful_tokens(query))
+    terms = _expanded_token_set(query)
     tokens = meaningful_tokens(document)
-    positions = [index for index, token in enumerate(tokens) if token in terms]
+    positions = [index for index, token in enumerate(tokens) if token in terms or (_ALIAS_LOOKUP.get(token, frozenset()) & terms)]
     if not terms or not positions:
         return 0.0
-    coverage = len(set(tokens[index] for index in positions)) / len(terms)
+    matched = set()
+    for index in positions:
+        token = tokens[index]
+        matched.add(token)
+        matched.update(_ALIAS_LOOKUP.get(token, frozenset()))
+    coverage = len(matched & terms) / len(terms)
     span = max(positions) - min(positions) + 1
     return coverage / (1.0 + min(span, 100) / 20.0)
 
