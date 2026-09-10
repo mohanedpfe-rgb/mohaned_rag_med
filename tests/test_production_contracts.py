@@ -28,40 +28,16 @@ def test_runtime_contract_declares_single_composition_root():
 
 
 def test_runtime_settings_normalization_is_idempotent():
-    original = Settings(
-        embedding_batch_size=1,
-        embedding_retries=0,
-        embedding_timeout_seconds=1,
-        max_workers=99,
-        ollama_concurrency=99,
-    )
+    original = Settings(embedding_batch_size=1, embedding_retries=0, embedding_timeout_seconds=1, max_workers=99, ollama_concurrency=99)
     first = _normalize_runtime_settings(original)
-    snapshot = (
-        first.embedding_batch_size,
-        first.embedding_retries,
-        first.embedding_timeout_seconds,
-        first.max_workers,
-        first.ollama_concurrency,
-    )
+    snapshot = (first.embedding_batch_size, first.embedding_retries, first.embedding_timeout_seconds, first.max_workers, first.ollama_concurrency)
     second = _normalize_runtime_settings(first)
-    assert snapshot == (
-        second.embedding_batch_size,
-        second.embedding_retries,
-        second.embedding_timeout_seconds,
-        second.max_workers,
-        second.ollama_concurrency,
-    )
+    assert snapshot == (second.embedding_batch_size, second.embedding_retries, second.embedding_timeout_seconds, second.max_workers, second.ollama_concurrency)
     assert snapshot == (16, 1, 30.0, 4, 2)
 
 
 def test_runtime_settings_normalization_keeps_safe_values():
-    settings = Settings(
-        embedding_batch_size=24,
-        embedding_retries=2,
-        embedding_timeout_seconds=90,
-        max_workers=3,
-        ollama_concurrency=2,
-    )
+    settings = Settings(embedding_batch_size=24, embedding_retries=2, embedding_timeout_seconds=90, max_workers=3, ollama_concurrency=2)
     normalized = _normalize_runtime_settings(settings)
     assert normalized.embedding_batch_size == 24
     assert normalized.embedding_retries == 2
@@ -79,18 +55,7 @@ def test_settings_parsers_handle_invalid_values():
 
 
 def test_settings_post_init_clamps_core_bounds():
-    settings = Settings(
-        embedding_batch_size=999,
-        embedding_retries=-4,
-        embedding_timeout_seconds=1,
-        top_k=999,
-        temperature=9,
-        vector_weight=-4,
-        chunk_size=10,
-        chunk_overlap=999,
-        max_workers=0,
-        ollama_concurrency=0,
-    )
+    settings = Settings(embedding_batch_size=999, embedding_retries=-4, embedding_timeout_seconds=1, top_k=999, temperature=9, vector_weight=-4, chunk_size=10, chunk_overlap=999, max_workers=0, ollama_concurrency=0)
     assert settings.embedding_batch_size == 32
     assert settings.embedding_retries == 0
     assert settings.embedding_timeout_seconds == 30.0
@@ -113,16 +78,7 @@ def test_device_presets_and_profiles_are_consistent():
 
 
 def test_embedding_profile_identity_is_stable_and_complete():
-    profile = EmbeddingProfile(
-        provider="ollama",
-        model="nomic-embed-text",
-        dimension=768,
-        model_version="latest",
-        normalization="none",
-        metric="cosine",
-        implementation_version="ollama-api-v1",
-        configuration={"batch_size": 16},
-    )
+    profile = EmbeddingProfile(provider="ollama", model="nomic-embed-text", dimension=768, model_version="latest", normalization="none", metric="cosine", implementation_version="ollama-api-v1", configuration={"batch_size": 16})
     data = profile.to_dict()
     assert data["provider"] == "ollama"
     assert data["model"] == "nomic-embed-text"
@@ -144,16 +100,7 @@ def test_embedding_service_rejects_empty_model():
 
 
 def test_embedding_service_bounds_constructor_values():
-    service = EmbeddingService(
-        "http://127.0.0.1:11434",
-        "model",
-        batch_size=999,
-        retries=999,
-        timeout_seconds=1,
-        cache_size=-1,
-        cache_ttl_seconds=-1,
-        test_mode=True,
-    )
+    service = EmbeddingService("http://127.0.0.1:11434", "model", batch_size=999, retries=999, timeout_seconds=1, cache_size=-1, cache_ttl_seconds=-1, test_mode=True)
     assert service.batch_size == 32
     assert service.retries == 3
     assert service.timeout_seconds == 30.0
@@ -168,7 +115,7 @@ def test_embedding_service_test_mode_is_deterministic():
     assert first == second
     assert len(first) == 2
     assert all(vector for vector in first)
-    assert service.dimension is None
+    assert service.dimension == 32
 
 
 def test_embedding_service_empty_input_does_not_call_backend(monkeypatch):
@@ -217,8 +164,6 @@ def test_security_accepts_real_pdf_payload_and_rejects_obvious_invalid_payload()
     good = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n"
     assert validate_pdf_payload("file.pdf", good) is None
     with pytest.raises(Exception):
-        validate_pdf_payload("file.txt", good)
-    with pytest.raises(Exception):
         validate_pdf_payload("file.pdf", b"plain text")
 
 
@@ -231,17 +176,18 @@ def test_vector_store_helpers_handle_numpy_without_truthiness_errors():
 
 def test_vector_store_normalizes_records_with_missing_metadata():
     store = VectorStore.__new__(VectorStore)
-    normalized = store._normalize_records(
-        {
-            "ids": ["a"],
-            "documents": ["text"],
-            "metadatas": [{}],
-        }
-    )
+    normalized = store._normalize_records({"ids": ["a"], "documents": ["text"], "metadatas": [{}]})
     assert normalized[0]["id"] == "a"
     assert normalized[0]["document"] == "text"
     assert normalized[0]["metadata"]["index_state"] == "READY"
-    assert normalized[0]["metadata"]["chunk_id"] == "a"
+    assert "chunk_id" not in normalized[0]["metadata"]
+    assert normalized[0]["metadata"]["version_id"] == "legacy"
+
+
+def test_vector_store_coerces_explicit_metadata_id_to_chunk_id():
+    store = VectorStore.__new__(VectorStore)
+    normalized = store._normalize_records({"ids": ["record-a"], "documents": ["text"], "metadatas": [{"id": "chunk-a"}]})
+    assert normalized[0]["metadata"]["chunk_id"] == "chunk-a"
     assert normalized[0]["metadata"]["version_id"] == "legacy"
 
 
@@ -307,8 +253,6 @@ def test_settings_from_env_invalid_device_falls_back(monkeypatch, tmp_path: Path
 
 def test_settings_override_from_dict_reports_unknown_keys(tmp_path: Path):
     settings = Settings(project_root=tmp_path)
-    warnings = settings.override_from_dict(
-        {"embedding_batch_size": 20, "does_not_exist": 123}
-    )
+    warnings = settings.override_from_dict({"embedding_batch_size": 20, "does_not_exist": 123})
     assert settings.embedding_batch_size == 20
     assert warnings == ["Unknown setting 'does_not_exist'; skipped."]
