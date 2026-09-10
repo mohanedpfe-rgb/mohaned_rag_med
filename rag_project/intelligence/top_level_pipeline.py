@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 from rag_project.intelligence.query_intelligence import plan_query
-from rag_project.intelligence.semantic_reasoning import understand_query
+from rag_project.intelligence.semantic_reasoning import understand_query, extract_clinical_entities
 from rag_project.utils.text_utils import meaningful_tokens
 from rag_project.intelligence.evidence_guard import verify_claims
 
@@ -40,8 +40,26 @@ def _parse_json(raw:str)->dict[str,Any]|None:
     except (TypeError,ValueError,json.JSONDecodeError):return None
 
 def _hard_query(plan:Any,understanding:Any,question:str)->bool:
+    """Only force strict multi-stage synthesis for genuinely complex questions.
+
+    Low confidence by itself is not clinical complexity: a short factual question
+    must remain answerable from strong retrieved evidence without an LLM failure
+    becoming an unnecessary abstention.
+    """
     tokens=meaningful_tokens(question)
-    return bool(len(plan.subqueries)>1 or plan.needs_multi_hop or plan.needs_numeric or plan.needs_table or plan.needs_figure or understanding.primary_intent in {"comparison","etiology","mechanism","diagnosis","management","prognosis"} or understanding.confidence<.82 or len(tokens)>=12 or any(term in str(question).casefold() for term in ("why","how does","how do","contraindication","contraindications","dose","dosage","versus","compare","pourquoi","comment","مقارنة","سبب","جرعة","علاج","تشخيص")))
+    return bool(
+        len(plan.subqueries)>1
+        or plan.needs_multi_hop
+        or plan.needs_numeric
+        or plan.needs_table
+        or plan.needs_figure
+        or understanding.primary_intent in {"comparison","etiology","mechanism","diagnosis","management","prognosis"}
+        or len(tokens)>=16
+        or any(term in str(question).casefold() for term in (
+            "why","how does","how do","contraindication","contraindications","dose","dosage",
+            "versus","compare","pourquoi","comment","مقارنة","سبب","جرعة","علاج","تشخيص"
+        ))
+    )
 
 def deterministic_phase1(question:str,conversation_context:str="")->PhasePlan:
     understanding=understand_query(question,conversation_context=conversation_context);plan=plan_query(question,conversation_context=conversation_context);entities=tuple(dict.fromkeys([e.normalized for e in understanding.entities]+list(plan.entities)))[:16];rewritten=tuple(dict.fromkeys([plan.normalized,*plan.variants]))[:8];must=tuple(dict.fromkeys(entities[:8]));ambiguity="high" if understanding.confidence<.60 else "medium" if understanding.confidence<.82 else "low"
@@ -79,7 +97,10 @@ def medical_term_layer(question:str,evidence:Sequence[Any]=())->dict[str,Any]:
     abbreviations=re.findall(r"\b[A-Z]{2,8}(?:[-/][A-Z0-9]{1,6})?\b",question or "")
     drug_like=re.findall(r"\b[a-z]{5,}(?:pril|olol|sartan|statin|azole|cillin|mycin|vir|mab|nib|prazole|tidine|caine|cycline|floxacin|lukast|setron|gliptin|gliflozin|tide|parin|dipine|xaban|oxetine|triptan|caine|cept)\b",question or "",re.I)
     conditions=re.findall(r"\b[a-zà-ÿ][a-zà-ÿ-]{5,}(?:itis|osis|emia|pathy|carcinoma|oma|algia|penia|iasis|megaly|cytosis|trophy|sclerosis|stenosis|ectasia)\b",question or "",re.I)
-    terms=list(dict.fromkeys([*meaningful_tokens(question),*abbreviations,*drug_like,*conditions]))[:48]
+    clinical=[]
+    try:clinical=[e.normalized for e in extract_clinical_entities(question)]
+    except Exception:clinical=[]
+    terms=list(dict.fromkeys([*clinical,*abbreviations,*drug_like,*conditions]))[:48]
     return {"terms":terms,"units":list(dict.fromkeys(units))[:20],"abbreviations":list(dict.fromkeys(abbreviations))[:16],"drug_like":list(dict.fromkeys(drug_like))[:16],"condition_like":list(dict.fromkeys(conditions))[:16]}
 
 def precision_filter(hits:Sequence[Any],phase:PhasePlan,limit:int=16)->list[Any]:
@@ -133,15 +154,19 @@ def extractive_draft(question:str,hits:Sequence[Any],phase:PhasePlan,max_sentenc
     query_tokens=set(meaningful_tokens(" ".join(phase.rewritten_queries)));ranked=[]
     for index,hit in enumerate(hits):
         marker=f"[S{index+1}]"
+        hit_score=max(0.,min(1.,float(getattr(hit,"score",0.) or 0.)))
         for sentence in re.split(r"(?<=[.!?؟])\s+|\n+",str(getattr(hit,"text","") or "")):
             sentence=re.sub(r"\s+"," ",sentence).strip()
             if not sentence:continue
-            overlap=len(set(meaningful_tokens(sentence))&query_tokens)/max(1,len(query_tokens));bonus=.15 if re.search(r"\d",sentence) and phase.needs_numeric else 0.;ranked.append((overlap+bonus,f"{sentence} {marker}"))
+            overlap=len(set(meaningful_tokens(sentence))&query_tokens)/max(1,len(query_tokens));bonus=.15 if re.search(r"\d",sentence) and phase.needs_numeric else 0.;retrieval_bonus=.22*hit_score
+            ranked.append((overlap+bonus+retrieval_bonus,f"{sentence} {marker}"))
     ranked.sort(key=lambda x:x[0],reverse=True);chosen=[];seen=set()
     for score,sentence in ranked:
-        if score<=.03:continue
         normalized=re.sub(r"\[S\d+\]","",sentence).casefold()
         if normalized in seen:continue
+        # A strong vector retrieval score is sufficient to admit a sentence even
+        # when the question uses a semantic paraphrase rather than shared words.
+        if score<=.06:continue
         seen.add(normalized);chosen.append(sentence)
         if len(chosen)>=max_sentences:break
     return "\n".join(f"- {s}" for s in chosen),{"sentence_count":len(chosen),"supported":bool(chosen)}
@@ -163,11 +188,6 @@ def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_f
         if hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
         return enhanced
 
-    # A real production system always has the configured LLM.  This branch exists
-    # for deterministic contract tests and degraded/read-only tooling: when no
-    # runtime LLM exists, preserve an already verified base answer instead of
-    # replacing it with a synthetic abstention. The answer still must pass the
-    # same evidence verifier before it is preserved.
     if system is None and str(base_result.get("answer","")).strip():
         base_answer=str(base_result.get("answer","")).strip()
         evidence_texts=[str(getattr(h,"text","") or "") for h in selected]
@@ -185,7 +205,7 @@ def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_f
         verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))])
         blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
         if blocked:synthesized=None
-    enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
+    enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
     if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize"
     elif hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The evidence was retrieved, but the required synthesis could not be verified without adding unsupported clinical content.";enhanced["generation_path"]="required_two_stage_abstention"
     else:enhanced["generation_path"]="extractive_verified_fallback";enhanced["answer"]=extractive
