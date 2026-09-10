@@ -57,7 +57,6 @@ def _compatible(a,b):
     if not sa or not sb or sa[0]!=sb[0]:return au==bu and math.isclose(af,bf,abs_tol=1e-9)
     return math.isclose(af*sa[1]/sb[1],bf,rel_tol=0,abs_tol=1e-6)
 
-# Backward-compatible public alias used by the evidence-entailment layer.
 def _measurement_compatible(a,b):return _compatible(a,b)
 
 def numeric_consistency(claim,evidence):
@@ -68,7 +67,11 @@ def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
 
 def semantic_support(claim,evidence):
-    claim=_score_text(claim);evidence=str(evidence or '');ct=set(meaningful_tokens(claim));et=set(meaningful_tokens(evidence))
+    claim=_score_text(claim);evidence=str(evidence or '').strip()
+    if not claim or not evidence:return 0.
+    # Exact evidence text (ignoring whitespace/citation markers) is authoritative support.
+    if re.sub(r'\s+',' ',claim).casefold()==re.sub(r'\s+',' ',evidence).casefold():return 1.0
+    ct=set(meaningful_tokens(claim));et=set(meaningful_tokens(evidence))
     if not ct or not et:return 0.
     overlap=len(ct&et)/len(ct);jac=len(ct&et)/max(1,len(ct|et));char=keyword_overlap_score(claim,evidence);polarity_penalty=.35 if _polarity(claim)!=_polarity(evidence) else 0
     return max(0.,min(1.,.50*overlap+.25*jac+.25*char-polarity_penalty))
