@@ -107,6 +107,13 @@ def expand_query_variants(question: str, route: QueryRoute, base_plan: Any | Non
     elif route.kind=="exact_fact": values += [f"definition {q}",f"exact {q}"]
     for token in meaningful_tokens(q):
         for synonym in _MEDICAL_SYNONYMS.get(token.casefold(),()): values.append(re.sub(re.escape(token),synonym,q,flags=re.I))
+    # A configured query budget is a retrieval contract, not merely an upper bound.
+    # When the planner yields fewer variants, fill the remaining slots with deterministic
+    # evidence-oriented formulations so recovery cannot start prematurely.
+    values += [
+        f"{q} clinical findings", f"{q} manifestations", f"{q} signs symptoms",
+        f"{q} diagnosis", f"{q} definition", f"{q} evidence", f"{q} relevant section",
+    ]
     unique=[]; seen=set()
     for value in values:
         value=_clean(value); key=value.casefold()
@@ -226,11 +233,7 @@ def _add_candidates(candidates, raw):
 
 
 def _ordered_correction_hits(question: str, correction_hits: list[Any], route: QueryRoute, ranked: list[Any], limit: int) -> list[Any]:
-    """Rank only the evidence returned by corrective queries, then keep it authoritative.
-
-    Corrective retrieval is a recovery path: once it finds evidence that improves the
-    failed coverage gate, stale initial candidates must not be allowed to displace it.
-    """
+    """Rank only the evidence returned by corrective queries, then keep it authoritative."""
     if not correction_hits:
         return []
     corrected = rerank_hits(question, correction_hits, route)
