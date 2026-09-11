@@ -33,7 +33,16 @@ class TwoPlanCompletionAudit:
         if not conftest.exists():
             return False
         text = conftest.read_text(encoding="utf-8")
-        return "def write_minimal_pdf" in text and "Python standard library" in text
+        required = ("def write_minimal_pdf", "def write_scanned_pdf", "def write_empty_pdf", "def write_large_pdf")
+        return all(x in text for x in required)
+
+    def _evidence_harnesses_ready(self) -> bool:
+        required = (
+            "scripts/run_medevidence_load_test.py",
+            "scripts/run_memory_stability.py",
+            "scripts/validate_backup_restore.py",
+        )
+        return all(self._exists(path) for path in required)
 
     def evaluate(self) -> dict[str, Any]:
         checks: list[CompletionCheck] = []
@@ -43,8 +52,9 @@ class TwoPlanCompletionAudit:
             CompletionCheck("high_level_conftest", self._exists("tests/high_level/conftest.py"), "present" if self._exists("tests/high_level/conftest.py") else "missing"),
             CompletionCheck("high_level_helpers", self._exists("tests/high_level/helpers.py"), "present" if self._exists("tests/high_level/helpers.py") else "missing"),
             CompletionCheck("high_level_gold_set", self._exists("tests/support/gold_sets/core.jsonl"), "present" if self._exists("tests/support/gold_sets/core.jsonl") else "missing"),
-            CompletionCheck("controlled_pdf_generator", self._pdf_fixture_generator_ready(), "stdlib deterministic PDF generator present" if self._pdf_fixture_generator_ready() else "missing deterministic fixture generator"),
+            CompletionCheck("controlled_pdf_generator", self._pdf_fixture_generator_ready(), "text/scanned/empty/large deterministic fixtures present" if self._pdf_fixture_generator_ready() else "controlled fixture generators incomplete"),
             CompletionCheck("test_inventory_checker", self._exists("scripts/validate_test_inventory.py"), "present" if self._exists("scripts/validate_test_inventory.py") else "missing"),
+            CompletionCheck("evidence_harnesses", self._evidence_harnesses_ready(), "load/memory/backup evidence runners present" if self._evidence_harnesses_ready() else "one or more evidence runners missing"),
         ])
 
         semantic = self.root / "rag_project/intelligence/semantic_cache.py"
