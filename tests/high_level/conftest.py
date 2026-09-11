@@ -14,8 +14,22 @@ def _pdf_escape(text: str) -> str:
     return text.replace('\\', '\\\\').replace('(', '\\(').replace(')', '\\)')
 
 
+def _build_pdf(objects: list[bytes], root_object: int = 1) -> bytes:
+    body = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for obj in objects:
+        offsets.append(len(body))
+        body.extend(obj)
+    xref = len(body)
+    body.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        body.extend(f"{offset:010d} 00000 n \n".encode())
+    body.extend(f"trailer\n<< /Size {len(objects) + 1} /Root {root_object} 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    return bytes(body)
+
+
 def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
-    """Create a small valid PDF using only the Python standard library."""
+    """Create a small valid text PDF using only the Python standard library."""
     objects: list[bytes] = []
     page_refs: list[int] = []
     font_obj = 3
@@ -33,18 +47,55 @@ def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
     objects.insert(0, b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
     objects.insert(1, f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {len(page_refs)} >>\nendobj\n".encode())
     objects.insert(2, b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-    body = bytearray(b"%PDF-1.4\n")
-    offsets = [0]
-    for obj in objects:
-        offsets.append(len(body))
-        body.extend(obj)
-    xref = len(body)
-    body.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
-    for offset in offsets[1:]:
-        body.extend(f"{offset:010d} 00000 n \n".encode())
-    body.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
-    path.write_bytes(body)
+    path.write_bytes(_build_pdf(objects))
     return path
+
+
+def write_scanned_pdf(path: Path, pages: int = 1) -> Path:
+    """Create a genuine image-only PDF fixture with no extractable text."""
+    objects: list[bytes] = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    ]
+    page_refs: list[int] = []
+    next_obj = 3
+    for _ in range(max(1, pages)):
+        pages_obj = next_obj
+        image_obj = next_obj + 1
+        content_obj = next_obj + 2
+        next_obj += 3
+        raw = b"\xff"  # 1x1 white grayscale sample; image-only by construction.
+        objects.append(
+            f"{pages_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im{image_obj} {image_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode()
+        )
+        objects.append(
+            f"{image_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {len(raw)} >>\nstream\n".encode()
+            + raw
+            + b"\nendstream\nendobj\n"
+        )
+        stream = f"q 612 0 0 792 0 0 cm /Im{image_obj} Do Q".encode()
+        objects.append(f"{content_obj} 0 obj\n<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream\nendobj\n")
+        page_refs.append(pages_obj)
+    kids = " ".join(f"{ref} 0 R" for ref in page_refs)
+    objects.insert(1, f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {len(page_refs)} >>\nendobj\n".encode())
+    path.write_bytes(_build_pdf(objects))
+    return path
+
+
+def write_empty_pdf(path: Path) -> Path:
+    """Create a valid empty-page PDF for low-content resilience tests."""
+    page_obj = 3
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\n",
+    ]
+    path.write_bytes(_build_pdf(objects))
+    return path
+
+
+def write_large_pdf(path: Path, pages: int = 100) -> Path:
+    """Create a deterministic 100+ page text fixture without external tools."""
+    return write_minimal_pdf(path, [f"Controlled large-document page {i}: clinical evidence marker." for i in range(1, pages + 1)])
 
 
 class LLMSpy:
@@ -99,6 +150,21 @@ def ready_document(tmp_path: Path):
         "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. HbA1c is used to assess glycemic control.",
         "Metformin is commonly used for type 2 diabetes. Dose statements must preserve exact numbers and units from source evidence.",
     ])
+
+
+@pytest.fixture
+def scanned_document(tmp_path: Path):
+    return write_scanned_pdf(tmp_path / "scanned_image_only.pdf", pages=2)
+
+
+@pytest.fixture
+def large_document(tmp_path: Path):
+    return write_large_pdf(tmp_path / "large_100_page.pdf", pages=100)
+
+
+@pytest.fixture
+def empty_document(tmp_path: Path):
+    return write_empty_pdf(tmp_path / "empty_content.pdf")
 
 
 @pytest.fixture
