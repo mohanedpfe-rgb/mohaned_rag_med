@@ -16,7 +16,7 @@ from rag_project.intelligence.production_contract_v2 import install as install_p
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 from rag_project.canonical_runtime import install as install_canonical_runtime
 
-_PIPELINE_RUNTIME_VERSION = "2026-09-11-answer-recovery-v2"
+_PIPELINE_RUNTIME_VERSION = "2026-09-11-evidence-first-v3"
 
 
 def _load_local_env():
@@ -59,10 +59,7 @@ def _install_ui_guards():
     def enhanced_evidence_row(item:Any,index:int):
         if isinstance(item,dict):
             return (item.get('file_name') or item.get('filename') or item.get('document_id') or f'Source {index}', item.get('page_number') or item.get('page') or item.get('page_numbers') or '—', item.get('rerank_score') or item.get('score') or item.get('similarity') or item.get('relevance') or '—', str(item.get('snippet') or item.get('text') or item.get('content') or ''))
-        metadata=getattr(item,'metadata',{}) or {}
-        title=metadata.get('file_name') or metadata.get('filename') or metadata.get('document_id') or getattr(item,'doc_id',None) or f'Source {index}'
-        page=metadata.get('page_numbers') or metadata.get('page_number') or metadata.get('page') or '—'
-        score=getattr(item,'score',None)
+        metadata=getattr(item,'metadata',{}) or {};title=metadata.get('file_name') or metadata.get('filename') or metadata.get('document_id') or getattr(item,'doc_id',None) or f'Source {index}';page=metadata.get('page_numbers') or metadata.get('page_number') or metadata.get('page') or '—';score=getattr(item,'score',None)
         if score is None:score=getattr(item,'rerank_score',None)
         if score is None:score='—'
         return str(title),str(page),score,str(getattr(item,'text','') or '')
@@ -72,16 +69,12 @@ def _install_ui_guards():
 
 
 def _invalidate_stale_runtime_cache() -> None:
-    """Drop a cached RAGSystem built before the current pipeline contract."""
     current = st.session_state.get('_bookrag_pipeline_runtime_version')
-    if current == _PIPELINE_RUNTIME_VERSION:
-        return
+    if current == _PIPELINE_RUNTIME_VERSION:return
     try:
         clear = getattr(bookrag_ui.get_system, 'clear', None)
-        if callable(clear):
-            clear()
-    finally:
-        st.session_state['_bookrag_pipeline_runtime_version'] = _PIPELINE_RUNTIME_VERSION
+        if callable(clear):clear()
+    finally:st.session_state['_bookrag_pipeline_runtime_version'] = _PIPELINE_RUNTIME_VERSION
 
 
 def main():
