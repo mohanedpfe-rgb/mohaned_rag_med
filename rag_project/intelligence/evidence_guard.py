@@ -13,8 +13,7 @@ class ClaimCheck:
         if isinstance(self.support, str) and isinstance(self.status, (int, float)) and isinstance(self.sources, str):
             legacy_source=self.support; legacy_support=float(self.status); legacy_status=self.sources
             object.__setattr__(self,'support',legacy_support); object.__setattr__(self,'status',legacy_status); object.__setattr__(self,'sources',(legacy_source,))
-        elif isinstance(self.sources,str):
-            object.__setattr__(self,'sources',(self.sources,))
+        elif isinstance(self.sources,str): object.__setattr__(self,'sources',(self.sources,))
     def to_dict(self): return asdict(self)
 
 SENT=re.compile(r'(?<=[.!?。！？])\s+|\n+')
@@ -30,7 +29,16 @@ _CONCEPT_SYNONYMS=((r'\bhyperglyc(?:emia|émie)\b|\bhyperglycemia\b','hyperglyce
 def _normalize_semantic_text(text:str)->str:
     value=str(text or '').casefold()
     for pattern,replacement in _CONCEPT_SYNONYMS:value=re.sub(pattern,replacement,value,flags=re.I|re.UNICODE)
-    return value
+    try:
+        from rag_project.intelligence.semantic_reasoning import ALIASES
+        for canonical,aliases in sorted(ALIASES.items(),key=lambda item:max(map(len,item[1])),reverse=True):
+            for alias in sorted(aliases,key=len,reverse=True):
+                escaped=re.escape(str(alias).casefold().strip())
+                if not escaped: continue
+                value=re.sub(rf'(?<!\w){escaped}(?!\w)',canonical.casefold(),value,flags=re.I|re.UNICODE)
+    except Exception:
+        pass
+    return re.sub(r'\s+',' ',value).strip()
 
 def split_claims(answer:str)->list[str]:
     raw=str(answer or '').strip()
@@ -71,13 +79,10 @@ def _compatible(a,b):
     return math.isclose(af*sa[1]/sb[1],bf,rel_tol=0,abs_tol=1e-6)
 
 def _measurement_compatible(a,b):return _compatible(a,b)
-def _numeric_consistency_details(claim,evidence):
+def numeric_consistency(claim,evidence):
     cv,ev=extract_measurements(claim),extract_measurements(evidence)
     bad=[x for x in cv if not any(_compatible(x,y) for y in ev)] if cv else []
     return {'checked':bool(cv),'mismatch':bool(bad),'claim_values':[f'{v} {u}' for v,u in cv],'evidence_values':[f'{v} {u}' for v,u in ev],'unsupported_numeric':[f'{v} {u}' for v,u in bad]}
-
-def numeric_consistency(claim,evidence):
-    return _numeric_consistency_details(claim,evidence)
 
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
@@ -92,12 +97,13 @@ def semantic_support(claim,evidence):
     if not ct or not et:return 0.
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct={t for t in ct if t not in framing} or ct;shared=ct&et
-    overlap=len(shared)/len(ct);jac=len(shared)/max(1,len(ct|et));char=keyword_overlap_score(nclaim,nevidence)
     if len(shared)<min(2,len(ct)):
         cross_lingual=max(SequenceMatcher(None,nclaim,nevidence).ratio(),SequenceMatcher(None,re.sub(r'[^a-z0-9]','',nclaim),re.sub(r'[^a-z0-9]','',nevidence)).ratio())
         if cross_lingual<0.12:return 0.0
-        char=max(char,0.15*cross_lingual)
-    polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
+        char=max(keyword_overlap_score(nclaim,nevidence),0.15*cross_lingual)
+    else:
+        char=keyword_overlap_score(nclaim,nevidence)
+    overlap=len(shared)/len(ct);jac=len(shared)/max(1,len(ct|et));polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
     return max(0.,min(1.,.50*overlap+.25*jac+.25*char-polarity_penalty))
 
 def detect_contradiction(claim,evidence_blocks:Sequence[str])->bool:
@@ -114,7 +120,7 @@ def _best_support(claim,blocks,ids):
 def verify_claims(answer,evidence_blocks:Sequence[str],source_ids:Sequence[str])->list[ClaimCheck]:
     checks=[];joined='\n'.join(evidence_blocks)
     for claim in split_claims(answer):
-        best,sources=_best_support(claim,evidence_blocks,source_ids);num=_numeric_consistency_details(claim,joined);contra=detect_contradiction(claim,evidence_blocks);numeric_bridge=max((semantic_support(_remove_measurements(claim),_remove_measurements(block)) for block in evidence_blocks),default=0.0) if num['checked'] and not num['mismatch'] else 0.0
+        best,sources=_best_support(claim,evidence_blocks,source_ids);num=numeric_consistency(claim,joined);contra=detect_contradiction(claim,evidence_blocks);numeric_bridge=max((semantic_support(_remove_measurements(claim),_remove_measurements(block)) for block in evidence_blocks),default=0.0) if num['checked'] and not num['mismatch'] else 0.0
         if contra:status,reason='CONTRADICTED','A source conflicts with the claim polarity or safety meaning.'
         elif num['mismatch']:status,reason='NUMERIC_MISMATCH','The stated measurement is not supported by a compatible evidence value.'
         elif best>=.62 or numeric_bridge>=.35:status,reason='SUPPORTED','Strong evidence support.'
