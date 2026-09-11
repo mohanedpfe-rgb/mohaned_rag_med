@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -272,7 +273,7 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
                         document,
                         json.dumps(metadata, ensure_ascii=False, sort_keys=True),
                         metadata["index_state"],
-                        json.dumps(__import__("re").findall(r"\\w+", document.casefold()), ensure_ascii=False),
+                        json.dumps(re.findall(r"\w+", document.casefold()), ensure_ascii=False),
                     )
                     for item_id, (document, metadata) in expected.items()
                 ],
