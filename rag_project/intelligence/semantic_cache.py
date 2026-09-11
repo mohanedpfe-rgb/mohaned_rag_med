@@ -51,14 +51,8 @@ class SemanticRetrievalCache:
                     hits INTEGER NOT NULL DEFAULT 0
                 )"""
             )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_semantic_cache_created "
-                "ON semantic_retrieval_cache(created, cache_id)"
-            )
-            db.execute(
-                "CREATE INDEX IF NOT EXISTS idx_semantic_cache_accessed "
-                "ON semantic_retrieval_cache(accessed, cache_id)"
-            )
+            db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_created ON semantic_retrieval_cache(created, cache_id)")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_accessed ON semantic_retrieval_cache(accessed, cache_id)")
             db.commit()
 
     @staticmethod
@@ -100,9 +94,6 @@ class SemanticRetrievalCache:
             return None
         if not vector or any(not math.isfinite(v) for v in vector):
             return None
-        # Explicit test embedders are allowed to use arbitrary dimensions. The
-        # production system enforces its configured dimension through its
-        # embedding identity and retriever compatibility checks.
         if self.embed_query is None and len(vector) != self.expected_dimension:
             return None
         return vector
@@ -115,21 +106,13 @@ class SemanticRetrievalCache:
         with sqlite3.connect(self.db_path) as db:
             stale_before = now - self.ttl_seconds if self.ttl_seconds > 0 else None
             if stale_before is not None:
-                db.execute(
-                    "DELETE FROM semantic_retrieval_cache WHERE created < ?",
-                    (stale_before,),
-                )
-            rows = db.execute(
-                "SELECT cache_id, embedding, dimension, payload, created, accessed, hits "
-                "FROM semantic_retrieval_cache"
-            ).fetchall()
+                db.execute("DELETE FROM semantic_retrieval_cache WHERE created < ?", (stale_before,))
+            rows = db.execute("SELECT cache_id, embedding, dimension, payload, created, accessed, hits FROM semantic_retrieval_cache").fetchall()
             best: tuple[float, tuple[Any, ...]] | None = None
             for row in rows:
                 cached_vector = self._unpack(row[1], int(row[2]))
                 similarity = self.cosine(vector, cached_vector)
-                if similarity >= self.similarity_threshold and (
-                    best is None or similarity > best[0]
-                ):
+                if similarity >= self.similarity_threshold and (best is None or similarity > best[0] or (math.isclose(similarity, best[0]) and int(row[0]) > int(best[1][0]))):
                     best = (similarity, row)
             if best is None:
                 db.commit()
@@ -138,69 +121,31 @@ class SemanticRetrievalCache:
             try:
                 payload = json.loads(row[3])
             except (TypeError, ValueError, json.JSONDecodeError):
-                db.execute(
-                    "DELETE FROM semantic_retrieval_cache WHERE cache_id=?",
-                    (row[0],),
-                )
+                db.execute("DELETE FROM semantic_retrieval_cache WHERE cache_id=?", (row[0],))
                 db.commit()
                 return None
-            db.execute(
-                "UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 "
-                "WHERE cache_id=?",
-                (now, row[0]),
-            )
+            db.execute("UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 WHERE cache_id=?", (now, row[0]))
             db.commit()
-        return self.restore(payload), {
-            "similarity": round(float(similarity), 6),
-            "created": float(row[4]),
-            "age_seconds": max(0.0, now - float(row[4])),
-            "hits": int(row[6]) + 1,
-        }
+        return self.restore(payload), {"similarity": round(float(similarity), 6), "created": float(row[4]), "age_seconds": max(0.0, now - float(row[4])), "hits": int(row[6]) + 1}
 
     def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
         vector = self._query_embedding(query)
         if vector is None:
             return False
-        payload = [
-            {
-                "doc_id": hit.doc_id,
-                "text": hit.text,
-                "metadata": hit.metadata,
-                "score": float(hit.score),
-                "vector_score": float(hit.vector_score),
-                "lexical_score": float(hit.lexical_score),
-            }
-            for hit in list(hits)[:24]
-        ]
+        payload = [{"doc_id": hit.doc_id, "text": hit.text, "metadata": hit.metadata, "score": float(hit.score), "vector_score": float(hit.vector_score), "lexical_score": float(hit.lexical_score)} for hit in list(hits)[:24]]
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
-            db.execute(
-                "INSERT INTO semantic_retrieval_cache "
-                "(query,embedding,dimension,payload,created,accessed,hits) "
-                "VALUES(?,?,?,?,?,?,0)",
-                (
-                    str(query)[:3000],
-                    self._pack(vector),
-                    len(vector),
-                    json.dumps(payload, ensure_ascii=False),
-                    now,
-                    now,
-                ),
-            )
-            # Evict the least-recently-accessed entries deterministically.  The
-            # cache_id tie-breaker guarantees FIFO behavior when multiple writes
-            # happen within the same clock tick, which matters for small-cache
-            # tests and bursty local ingestion.
+            db.execute("INSERT INTO semantic_retrieval_cache (query,embedding,dimension,payload,created,accessed,hits) VALUES(?,?,?,?,?,?,0)", (str(query)[:3000], self._pack(vector), len(vector), json.dumps(payload, ensure_ascii=False), now, now))
+            # Keep the newest max_entries entries.  Ordering DESC before OFFSET is
+            # essential: the previous ASC/OFFSET formulation deleted the newest
+            # record under a small cache, leaving the oldest query alive.
             overflow = db.execute(
                 "SELECT cache_id FROM semantic_retrieval_cache "
-                "ORDER BY accessed ASC, cache_id ASC LIMIT -1 OFFSET ?",
+                "ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?",
                 (self.max_entries,),
             ).fetchall()
             if overflow:
-                db.executemany(
-                    "DELETE FROM semantic_retrieval_cache WHERE cache_id=?",
-                    overflow,
-                )
+                db.executemany("DELETE FROM semantic_retrieval_cache WHERE cache_id=?", overflow)
             db.commit()
         return True
 
@@ -211,49 +156,23 @@ class SemanticRetrievalCache:
 
     def stats(self) -> dict[str, Any]:
         with sqlite3.connect(self.db_path) as db:
-            count = int(
-                db.execute("SELECT COUNT(*) FROM semantic_retrieval_cache").fetchone()[0]
-            )
-            hits = int(
-                db.execute(
-                    "SELECT COALESCE(SUM(hits),0) FROM semantic_retrieval_cache"
-                ).fetchone()[0]
-            )
-        return {
-            "schema_version": self.SCHEMA_VERSION,
-            "entries": count,
-            "max_entries": self.max_entries,
-            "ttl_seconds": self.ttl_seconds,
-            "similarity_threshold": self.similarity_threshold,
-            "expected_dimension": self.expected_dimension,
-            "recorded_hits": hits,
-            "semantic": True,
-        }
+            count = int(db.execute("SELECT COUNT(*) FROM semantic_retrieval_cache").fetchone()[0])
+            hits = int(db.execute("SELECT COALESCE(SUM(hits),0) FROM semantic_retrieval_cache").fetchone()[0])
+        return {"schema_version": self.SCHEMA_VERSION, "entries": count, "max_entries": self.max_entries, "ttl_seconds": self.ttl_seconds, "similarity_threshold": self.similarity_threshold, "expected_dimension": self.expected_dimension, "recorded_hits": hits, "semantic": True}
 
     @staticmethod
     def restore(payload: Sequence[dict[str, Any]]) -> list[RetrievalHit]:
         restored: list[RetrievalHit] = []
         for item in payload or []:
             try:
-                restored.append(
-                    RetrievalHit(
-                        str(item.get("doc_id", "unknown")),
-                        str(item.get("text", "")),
-                        dict(item.get("metadata") or {}),
-                        float(item.get("score", 0.0)),
-                        float(item.get("vector_score", 0.0)),
-                        float(item.get("lexical_score", 0.0)),
-                    )
-                )
+                restored.append(RetrievalHit(str(item.get("doc_id", "unknown")), str(item.get("text", "")), dict(item.get("metadata") or {}), float(item.get("score", 0.0)), float(item.get("vector_score", 0.0)), float(item.get("lexical_score", 0.0))))
             except (TypeError, ValueError):
                 continue
         return restored
 
 
 def install(system: Any) -> None:
-    """Bind the canonical retriever to the live embedding service."""
     global _CURRENT_SYSTEM
     _CURRENT_SYSTEM = system
     from rag_project.intelligence import med_evidence_pro
-
     med_evidence_pro.SemanticCache = SemanticRetrievalCache
