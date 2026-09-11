@@ -45,8 +45,9 @@ def _normalize_semantic_text(text: str) -> str:
 def split_claims(answer: str) -> list[str]:
     raw = str(answer or '').strip()
     if not raw: return []
-    # Remove display-only metadata before sentence segmentation; otherwise a period inside
-    # "[Section: 3. ...]" creates artificial claims such as "3", "85mg", etc.
+    # Source markers belong to the preceding claim. Do not split a factual sentence
+    # from a citation merely because the model inserted a space before [S1].
+    raw = re.sub(r'(?<=[.!?。！？])\s+(?=\[S\d+\])', ' ', raw)
     raw = _METADATA_BLOCK.sub('', raw)
     out = []
     for sentence in SENT.split(raw):
