@@ -31,7 +31,7 @@ jobs:
       - name: Run high-level behavior suite (primary gate)
         env:
           DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "false"
+          OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
         run: python -m pytest -q tests/high_level -m high_level
 
@@ -60,7 +60,7 @@ jobs:
       - name: Run existing regression and contract suite
         env:
           DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "false"
+          OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
         run: python -m pytest -q tests --ignore=tests/high_level
 
