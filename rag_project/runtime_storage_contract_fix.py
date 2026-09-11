@@ -12,6 +12,8 @@ _INSTALLED = False
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(path, timeout=30)
     connection.execute("PRAGMA busy_timeout = 30000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
     return connection
 
 
@@ -60,10 +62,26 @@ def _normalized_rows(documents: Any, metadatas: Any, ids: Any) -> list[tuple[str
     return rows
 
 
+def _remember_authoritative_records(self: Any, rows: list[tuple[str, str, str, str, str]]) -> None:
+    registry = getattr(self, "_storage_contract_authoritative_records", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        self._storage_contract_authoritative_records = registry
+    for item_id, document, metadata_json, index_state, _tokens_json in rows:
+        metadata = json.loads(metadata_json)
+        registry[item_id] = {
+            "id": item_id,
+            "document": document,
+            "metadata": metadata,
+            "index_state": index_state,
+        }
+
+
 def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
     rows = _normalized_rows(documents, metadatas, ids)
     if not rows:
         return
+    _remember_authoritative_records(self, rows)
     database = Path(self.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
@@ -179,28 +197,26 @@ def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, 
     }
 
 
-def _wrap_write_method(name: str, original: Any):
-    def wrapped(self: Any, *args: Any, **kwargs: Any):
-        result = original(self, *args, **kwargs)
-        if name == "add_documents":
-            documents = args[0] if len(args) >= 4 else kwargs.get("documents")
-            metadatas = args[1] if len(args) >= 4 else kwargs.get("metadatas")
-            ids = args[3] if len(args) >= 4 else kwargs.get("ids")
-        else:
-            documents = args[0] if len(args) >= 3 else kwargs.get("documents")
-            metadatas = args[1] if len(args) >= 3 else kwargs.get("metadatas")
-            ids = args[2] if len(args) >= 3 else kwargs.get("ids")
-        rows = _normalized_rows(documents, metadatas, ids)
-        if rows:
-            self._authoritative_vector_records = {
-                row[0]: (row[1], json.loads(row[2])) for row in rows
-            }
-        _upsert(self, documents, metadatas, ids)
-        return result
-    wrapped.__name__ = getattr(original, "__name__", name)
-    wrapped.__qualname__ = getattr(original, "__qualname__", name)
-    wrapped._storage_contract_fix = True
-    return wrapped
+def _wrap_write_method(name: str):
+    def decorator(original: Any):
+        def wrapped(self: Any, *args: Any, **kwargs: Any):
+            result = original(self, *args, **kwargs)
+            if name == "add_documents":
+                if len(args) >= 4:
+                    _upsert(self, args[0], args[1], args[3])
+                else:
+                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
+            elif name == "add_lexical_documents":
+                if len(args) >= 3:
+                    _upsert(self, args[0], args[1], args[2])
+                else:
+                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
+            return result
+        wrapped.__name__ = getattr(original, "__name__", name)
+        wrapped.__qualname__ = getattr(original, "__qualname__", name)
+        wrapped._storage_contract_fix = True
+        return wrapped
+    return decorator
 
 
 def _retire(system: Any, document_id: str, current_version: str) -> None:
@@ -219,14 +235,13 @@ def _retire(system: Any, document_id: str, current_version: str) -> None:
     if collection is None:
         return
     try:
-        records = collection.get(where={"document_id": document_id}, include=["ids", "metadatas"])
+        records = collection.get(where={"document_id": document_id}, include=["metadatas"])
     except Exception:
         return
-    stale_ids = [
-        str(item_id)
-        for item_id, metadata in zip(records.get("ids") or [], records.get("metadatas") or [], strict=False)
-        if str((metadata or {}).get("version_id") or "") != current_version
-    ]
+    stale_ids = []
+    for item_id, metadata in zip(records.get("ids") or [], records.get("metadatas") or [], strict=False):
+        if str((metadata or {}).get("version_id") or "") != current_version:
+            stale_ids.append(str(item_id))
     if stale_ids:
         collection.delete(ids=stale_ids)
 
@@ -241,11 +256,10 @@ def _prepare_explicit_test_embedding_mode(system: Any) -> None:
     service.test_mode = True
     service.provider = "deterministic-test"
     service.last_error = None
-    # Do not call discover_dimension here: older runtime layers intentionally
-    # route that method through an Ollama health probe. Test mode is deterministic
-    # and requires no network dependency at all.
-    if getattr(service, "dimension", None) is None:
-        service.dimension = len(service._test_embedding("__rag_dimension_probe__"))
+    # Do not call discover_dimension here: runtime_stability_v3 deliberately
+    # guards that method behind an Ollama health probe. Deterministic test
+    # embeddings are local and their dimension is known from the test generator.
+    service.dimension = len(service._test_embedding("__rag_dimension_probe__"))
     system.embedding_startup_error = None
 
 
@@ -267,7 +281,7 @@ def install() -> None:
     for method_name in ("add_documents", "add_lexical_documents"):
         current_method = getattr(VectorStore, method_name, None)
         if callable(current_method) and not getattr(current_method, "_storage_contract_fix", False):
-            setattr(VectorStore, method_name, _wrap_write_method(method_name, current_method))
+            setattr(VectorStore, method_name, _wrap_write_method(method_name)(current_method))
 
     current_ingest = getattr(RAGSystem, "ingest_file", None)
     if callable(current_ingest) and not getattr(current_ingest, "_storage_contract_fix", False):
