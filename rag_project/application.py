@@ -15,6 +15,7 @@ from rag_project.ingestion.ingestion_contract import install as install_ingestio
 from rag_project.canonical_runtime import install as install_canonical_runtime
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
 from rag_project.intelligence.production_ops import OperationsStore
+from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
 
 _FACTORY_LOCK = threading.RLock()
 ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
@@ -45,12 +46,9 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     result.setdefault("rewritten_question", str(question or "").strip())
     result.setdefault("answer_plan", {"selected_path": result.get("generation_path", "")})
     result.setdefault("retrieval_quality", {
-        "tier": retrieval.get("tier"),
-        "candidate_count": retrieval.get("candidate_count", len(result.get("hits") or [])),
-        "final_hits": len(result.get("hits") or []),
-        "early_exit": retrieval.get("early_exit", False),
-        "cache_hit": retrieval.get("cache_hit", False),
-        "evidence_coverage": verification.get("supported_ratio", 0.0),
+        "tier": retrieval.get("tier"), "candidate_count": retrieval.get("candidate_count", len(result.get("hits") or [])),
+        "final_hits": len(result.get("hits") or []), "early_exit": retrieval.get("early_exit", False),
+        "cache_hit": retrieval.get("cache_hit", False), "evidence_coverage": verification.get("supported_ratio", 0.0),
         "self_corrections": 0,
     })
     result.setdefault("grounding", verification.get("grounding", {}))
@@ -85,37 +83,26 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
             store = OperationsStore(root / "data" / "med_evidence_ops.sqlite3")
             store.record_result(str(result.get("query_id") or f"q-{time.time_ns()}"), str(question), result, (time.perf_counter() - started) * 1000.0)
     except Exception:
-        # Telemetry must never break the medical answer path.
         pass
     return result
 
 
 class MedEvidenceProductionRAGSystem(__import__("rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]).ProductionRAGSystem):
     """Production service shell with MedEvidence Pro as its sole answer authority."""
-
     _certified_god_answer = _med_evidence_answer
 
     def health_report(self):
         report = dict(super().health_report() or {})
         pipeline = dict(report.get("pipeline") or {})
         pipeline.update({
-            "explicit_composition": True,
-            "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
-            "answer_pipeline": "med_evidence_pro",
-            "med_evidence_pro": True,
-            "phase_count": 8,
-            "safety_gate": True,
-            "multi_tier_retrieval": True,
-            "structured_knowledge": True,
-            "semantic_cache": True,
-            "answer_cascade": True,
-            "active_verification": True,
-            "feedback_logging": True,
-            "operations_store": True,
-            "ab_testing": True,
-            "retraining_manifest": True,
-            "backup_rotation": True,
-            "circuit_breaker": True,
+            "explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+            "answer_pipeline": "med_evidence_pro", "med_evidence_pro": True, "phase_count": 8,
+            "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True,
+            "semantic_cache": True, "answer_cascade": True, "active_verification": True,
+            "feedback_logging": True, "operations_store": True, "ab_testing": True,
+            "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True,
+            "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True,
+            "enterprise_roles": True,
         })
         report["pipeline"] = pipeline
         return report
@@ -124,79 +111,46 @@ class MedEvidenceProductionRAGSystem(__import__("rag_project.app.production_rag"
 def create_rag_system(settings: Settings | None = None):
     """Construct the one canonical production system and validate persistent indexes."""
     with _FACTORY_LOCK:
-        install()
-        install_pipeline_integrity()
-        install_production_contract()
-        install_ingestion_contract()
-        install_canonical_runtime()
-        system = MedEvidenceProductionRAGSystem(_normalize_runtime_settings(settings))
-        system = harden_system(system)
+        install(); install_pipeline_integrity(); install_production_contract(); install_ingestion_contract(); install_canonical_runtime()
+        system = MedEvidenceProductionRAGSystem(_normalize_runtime_settings(settings)); system = harden_system(system)
+        try:
+            system.cloud_hybrid = create_hybrid_router(CloudConfig.from_env(), getattr(system.settings, "project_root", Path.cwd()))
+        except Exception:
+            system.cloud_hybrid = None
         try:
             system.startup_quality = run_quality_gate(system, repair_drift=True)
-            if not system.startup_quality.get("ready", False):
-                system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
+            if not system.startup_quality.get("ready", False): system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
         except Exception as exc:
-            system.startup_quality = {"ready": False, "error": type(exc).__name__}
-            system.logger.exception("Runtime quality gate failed")
+            system.startup_quality = {"ready": False, "error": type(exc).__name__}; system.logger.exception("Runtime quality gate failed")
         return system
 
 
-def create_default_rag_system():
-    return create_rag_system()
+def create_default_rag_system(): return create_rag_system()
 
 
 def runtime_contract() -> dict[str, Any]:
     return {
-        "composition_root": "rag_project.application.create_rag_system",
-        "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
-        "service": "MedEvidenceProductionRAGSystem",
-        "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
-        "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
-        "runtime_policy": "rag_project.runtime.install",
-        "storage_policy": "rag_project.storage.vector_store_runtime.install",
-        "security_policy": "rag_project.security.harden_system",
-        "quality_policy": "bounded_startup_check_with_optional_deep_audit",
-        "configuration": "Settings.from_env",
-        "answer_pipeline": "med_evidence_pro",
-        "answer_pipeline_authority": ANSWER_PIPELINE_AUTHORITY,
-        "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY,
-        "active_answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
-        "answer_monkey_patch": False,
-        "canonical_runtime_binding": "rag_project.canonical_runtime.install",
-        "production_contract": "rag_project.intelligence.production_contract_v2.install",
-        "production_contract_version": PRODUCTION_CONTRACT_VERSION,
-        "ingestion_contract": "rag_project.ingestion.ingestion_contract.install",
-        "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
-        "final_answer_verification": "rag_project.intelligence.final_answer_contract.verify_final_answer",
-        "entity_coverage": "rag_project.intelligence.entity_coverage.score_entity_coverage",
-        "document_aware_routing": True,
-        "hierarchical_retrieval": True,
-        "query_self_correction": True,
-        "table_aware_retrieval": True,
-        "numeric_aware_retrieval": True,
-        "medical_synonym_expansion": True,
-        "contradiction_detection": True,
-        "medical_safety_gate": True,
-        "structured_request_context": True,
-        "structured_evidence_bundle": True,
-        "structured_answer_envelope": True,
-        "confidence_breakdown": True,
-        "request_traceability": True,
-        "ingestion_traceability": True,
-        "atomic_ingestion_publication": True,
-        "post_write_index_validation": True,
-        "med_evidence_pro": True,
-        "phase_count": 8,
-        "answer_cascade": True,
-        "semantic_retrieval_cache": True,
-        "structured_knowledge_layer": True,
-        "feedback_loop": True,
-        "production_operations_store": True,
-        "ab_testing": True,
-        "retraining_pipeline": True,
-        "backup_rotation": True,
-        "load_benchmarking": True,
-        "resilience_controls": True,
+        "composition_root": "rag_project.application.create_rag_system", "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
+        "service": "MedEvidenceProductionRAGSystem", "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
+        "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "runtime_policy": "rag_project.runtime.install",
+        "storage_policy": "rag_project.storage.vector_store_runtime.install", "security_policy": "rag_project.security.harden_system",
+        "quality_policy": "bounded_startup_check_with_optional_deep_audit", "configuration": "Settings.from_env",
+        "answer_pipeline": "med_evidence_pro", "answer_pipeline_authority": ANSWER_PIPELINE_AUTHORITY,
+        "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY, "active_answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "answer_monkey_patch": False, "canonical_runtime_binding": "rag_project.canonical_runtime.install",
+        "production_contract": "rag_project.intelligence.production_contract_v2.install", "production_contract_version": PRODUCTION_CONTRACT_VERSION,
+        "ingestion_contract": "rag_project.ingestion.ingestion_contract.install", "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+        "final_answer_verification": "rag_project.intelligence.final_answer_contract.verify_final_answer", "entity_coverage": "rag_project.intelligence.entity_coverage.score_entity_coverage",
+        "document_aware_routing": True, "hierarchical_retrieval": True, "query_self_correction": True, "table_aware_retrieval": True,
+        "numeric_aware_retrieval": True, "medical_synonym_expansion": True, "contradiction_detection": True, "medical_safety_gate": True,
+        "structured_request_context": True, "structured_evidence_bundle": True, "structured_answer_envelope": True, "confidence_breakdown": True,
+        "request_traceability": True, "ingestion_traceability": True, "atomic_ingestion_publication": True, "post_write_index_validation": True,
+        "med_evidence_pro": True, "phase_count": 8, "answer_cascade": True, "semantic_retrieval_cache": True,
+        "structured_knowledge_layer": True, "feedback_loop": True, "production_operations_store": True, "ab_testing": True,
+        "retraining_pipeline": True, "backup_rotation": True, "load_benchmarking": True, "resilience_controls": True,
+        "cloud_hybrid": True, "cloud_opt_in": True, "cloud_api_key_env": "ANTHROPIC_API_KEY", "cloud_rate_limit": True,
+        "cloud_cost_tracking": True, "cloud_audit_log": True, "cloud_pii_redaction": True, "cloud_smart_escalation": True,
+        "enterprise_roles": True, "ehr_integration_contract": "provider-neutral optional adapter",
     }
 
 
