@@ -1,8 +1,8 @@
 """Bounded parallel full-suite runner for local development.
 
-Collects pytest node IDs once, partitions them across a small number of worker
-processes, and enforces a hard wall-clock budget so a single slow test cannot
-make the full gate run indefinitely.
+Collects the test suite once, partitions it by test file instead of individual
+node IDs (avoiding Windows command-line limits), and enforces a hard wall-clock
+budget so a slow test cannot make the full gate run indefinitely.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def collect_nodeids() -> list[str]:
+def collect_test_files() -> tuple[list[str], int]:
     command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "--disable-warnings"]
     proc = subprocess.run(
         command,
@@ -29,20 +29,28 @@ def collect_nodeids() -> list[str]:
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     if proc.returncode != 0:
         raise RuntimeError(f"pytest collection failed:\n{output[-12000:]}")
-    nodeids: list[str] = []
+
+    total_tests = 0
+    import re
+
+    match = re.search(r"(\d+) tests collected", output)
+    if match:
+        total_tests = int(match.group(1))
+
+    files: list[str] = []
+    seen: set[str] = set()
     for raw in output.splitlines():
         line = raw.strip()
-        if not line or line.endswith("tests collected"):
+        if not line or "::" not in line or line.startswith("="):
             continue
-        if line.startswith("=") or line.startswith("warning"):
-            continue
-        if line.startswith("<"):
-            continue
-        if "::" in line and not line.startswith("collected"):
-            nodeids.append(line)
-    if not nodeids:
-        raise RuntimeError("pytest collection produced no test node IDs")
-    return nodeids
+        path = line.split("::", 1)[0].strip()
+        if path and path.endswith(".py") and path not in seen:
+            seen.add(path)
+            files.append(path)
+
+    if not files:
+        raise RuntimeError("pytest collection produced no test files")
+    return files, total_tests
 
 
 def main() -> int:
@@ -62,15 +70,16 @@ def main() -> int:
     print(f"Budget: {budget:.0f}s")
 
     try:
-        nodeids = collect_nodeids()
+        test_files, total_tests = collect_test_files()
     except Exception as exc:
         print(f"COLLECTION FAILURE: {type(exc).__name__}: {exc}")
         return 2
 
-    print(f"Collected: {len(nodeids)} tests")
+    print(f"Collected: {total_tests or '?'} tests across {len(test_files)} files")
+
     buckets: list[list[str]] = [[] for _ in range(workers)]
-    for index, nodeid in enumerate(nodeids):
-        buckets[index % workers].append(nodeid)
+    for index, test_file in enumerate(test_files):
+        buckets[index % workers].append(test_file)
 
     processes: dict[int, subprocess.Popen[str]] = {}
     for index, bucket in enumerate(buckets):
@@ -110,7 +119,7 @@ def main() -> int:
             output = proc.stdout.read() if proc.stdout else ""
             results[index] = (int(return_code), output, now - started)
             processes.pop(index, None)
-            print(f"worker {index}: code={return_code}, {len(buckets[index])} tests, {now - started:.1f}s")
+            print(f"worker {index}: code={return_code}, {len(buckets[index])} files, {now - started:.1f}s")
             if return_code != 0:
                 print(output[-12000:])
         if processes:
@@ -128,7 +137,7 @@ def main() -> int:
 
     print("=== BOUNDED FULL RESULT ===")
     print(f"Elapsed: {elapsed:.2f}s")
-    print(f"Collected: {len(nodeids)}")
+    print(f"Collected: {total_tests or '?'}")
     print(f"Workers completed: {len(results)}/{len(buckets)}")
     print(f"Failed/timeout workers: {failed}")
 
