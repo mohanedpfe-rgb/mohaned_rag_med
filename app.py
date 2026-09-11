@@ -16,7 +16,7 @@ from rag_project.intelligence.production_contract_v2 import install as install_p
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 from rag_project.canonical_runtime import install as install_canonical_runtime
 
-_PIPELINE_RUNTIME_VERSION = "2026-09-11-contract-v2"
+_PIPELINE_RUNTIME_VERSION = "2026-09-11-answer-recovery-v1"
 
 
 def _load_local_env():
