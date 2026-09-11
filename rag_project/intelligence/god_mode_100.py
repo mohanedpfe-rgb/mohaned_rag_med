@@ -11,11 +11,7 @@ import re
 import time
 from typing import Any
 
-from rag_project.intelligence.advanced_rag_engine import (
-    build_answer_plan,
-    retrieve_document_aware,
-    route_query,
-)
+from rag_project.intelligence.advanced_rag_engine import build_answer_plan, retrieve_document_aware
 from rag_project.intelligence.adaptive_retrieval import choose_retrieval_budget
 from rag_project.intelligence.confidence_calibration import calibrate_confidence
 from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix
@@ -43,12 +39,7 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
 
 
 def _sentence_units(answer: str) -> list[str]:
-    rows: list[str] = []
-    for raw in re.split(r"\n+|(?<=[.!?؟])\s+", str(answer or "")):
-        text = re.sub(r"\s+", " ", raw).strip()
-        if text:
-            rows.append(re.sub(r"^[-*•\s]+", "", text).strip())
-    return rows
+    return [re.sub(r"^[-*•\s]+", "", re.sub(r"\s+", " ", raw).strip()).strip() for raw in re.split(r"\n+|(?<=[.!?؟])\s+", str(answer or "")) if re.sub(r"\s+", " ", raw).strip()]
 
 
 def _exact_provenance(answer: str, hits: list[Any]) -> dict[str, Any]:
@@ -165,37 +156,32 @@ def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_
 
 
 def _runtime_phase_implementation(result: dict[str, Any], hits: list[Any], final_verification: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility projection used by the inspector/tests while the authority moved forward.
-
-    This is telemetry only. It does not execute or select a pipeline.
-    """
+    """Compatibility projection for the existing inspector/tests; telemetry only."""
     raw = result if isinstance(result, dict) else {}
     phases = raw.get("phases") if isinstance(raw.get("phases"), dict) else {}
     return {
-        "phase_1_query_understanding": {
-            "status": phases.get("phase_1_query_understanding", "complete"),
-            "authority": LEGACY_TELEMETRY_AUTHORITY,
-        },
-        "phase_2_retrieval_precision": {
-            "status": phases.get("phase_2_retrieval_precision", "complete"),
-            "hits": len(hits or []),
-            "authority": LEGACY_TELEMETRY_AUTHORITY,
-        },
-        "phase_3_two_stage_generation": {
-            "status": phases.get("phase_3_two_stage_generation", "complete"),
-            "generation_path": raw.get("generation_path", "deterministic_extractive"),
-            "authority": LEGACY_TELEMETRY_AUTHORITY,
-        },
-        "phase_4_verification": {
-            "status": phases.get("phase_4_verification", "complete"),
-            "checked": bool((final_verification or {}).get("checked", True)),
-            "authority": LEGACY_TELEMETRY_AUTHORITY,
-        },
-        "phase_5_intelligence_visibility": {
-            "status": phases.get("phase_5_intelligence_visibility", "complete"),
-            "authority": LEGACY_TELEMETRY_AUTHORITY,
-            "canonical_answer_authority": PIPELINE_AUTHORITY,
-        },
+        "phase_1_query_understanding": {"status": phases.get("phase_1_query_understanding", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_2_retrieval_precision": {"status": phases.get("phase_2_retrieval_precision", "complete"), "hits": len(hits or []), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_3_two_stage_generation": {"status": phases.get("phase_3_two_stage_generation", "complete"), "generation_path": raw.get("generation_path", "deterministic_extractive"), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_4_verification": {"status": phases.get("phase_4_verification", "complete"), "checked": bool((final_verification or {}).get("checked", True)), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_5_intelligence_visibility": {"status": phases.get("phase_5_intelligence_visibility", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY, "canonical_answer_authority": PIPELINE_AUTHORITY},
+    }
+
+
+def _final_verification(grounding: dict[str, Any], claims: list[dict[str, Any]], citations: list[Any]) -> dict[str, Any]:
+    ratio = float(grounding.get("supported_ratio", 0.0) or 0.0)
+    allow = bool(grounding.get("allow"))
+    return {
+        "checked": True,
+        "allow": allow,
+        "reason": grounding.get("method", "grounding_gate"),
+        "claim_count": len(claims),
+        "blocked_claims": 0 if allow else len(claims),
+        "supported_ratio": ratio,
+        "matrix_all_entailed": allow,
+        "citation_count": len(citations),
+        "claim_checks": claims,
+        "evidence_claim_matrix": [],
     }
 
 
@@ -261,8 +247,10 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
         except Exception:
             grounding = {"allow": False, "supported_ratio": 0.0, "method": "verification_error"}
 
+    final_verification = _final_verification(grounding, provenance_claims, citations)
     if not grounding.get("allow"):
-        return {"status": "ANSWER_UNAVAILABLE", "answer": "The evidence was retrieved, but the answer could not be certified as sufficiently grounded.", "citations": [], "hits": selected, "confidence": {"level": "low", "evidence_confidence": float(grounding.get("supported_ratio", 0.0) or 0.0)}, "grounding": grounding, "claims": provenance_claims, "retrieval_quality": {"evidence_coverage": float(coverage.get("overall", 0.0) or 0.0), "entity_coverage": float(coverage.get("entity_coverage", 0.0) or 0.0)}, "answer_plan": answer_plan, "query_trace": {"mode": "document_aware", "question": clean_question, "routing": route, "retrieval": retrieval_state, "generation": {"status": "completed", "path": generation_path}, "verification": {"status": "failed", "method": grounding.get("method"), "supported_ratio": grounding.get("supported_ratio", 0.0)}, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}}, "pipeline_authority": PIPELINE_AUTHORITY}
+        final_verification["blocked_claims"] = len(provenance_claims)
+        return {"status": "ANSWER_UNAVAILABLE", "answer": "The evidence was retrieved, but the answer could not be certified as sufficiently grounded.", "citations": [], "hits": selected, "confidence": {"level": "low", "evidence_confidence": float(grounding.get("supported_ratio", 0.0) or 0.0)}, "grounding": grounding, "claims": provenance_claims, "final_verification": final_verification, "retrieval_quality": {"evidence_coverage": float(coverage.get("overall", 0.0) or 0.0), "entity_coverage": float(coverage.get("entity_coverage", 0.0) or 0.0)}, "answer_plan": answer_plan, "query_trace": {"mode": "document_aware", "question": clean_question, "routing": route, "retrieval": retrieval_state, "generation": {"status": "completed", "path": generation_path}, "verification": {"status": "failed", "method": grounding.get("method"), "supported_ratio": grounding.get("supported_ratio", 0.0)}, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}}, "pipeline_authority": PIPELINE_AUTHORITY}
 
     try:
         deterministic = __import__("rag_project.intelligence.top_level_pipeline", fromlist=["deterministic_phase1"]).deterministic_phase1(clean_question, conversation_context="")
@@ -276,6 +264,7 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
 
     contradiction_report = retrieval_state.get("contradiction") or {"has_contradiction": False, "conflicts": []}
     status = "SUCCESS_WITH_WARNINGS" if contradiction_report.get("has_contradiction") or not citations else "SUCCESS"
+    final_verification["evidence_claim_matrix"] = []
     result = {
         "query_id": f"bookrag-{int(time.time() * 1000)}",
         "status": status,
@@ -285,6 +274,7 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
         "confidence": {"level": "high" if grounding.get("supported_ratio", 0.0) >= 0.85 else "medium", "evidence_confidence": float(grounding.get("supported_ratio", 0.0) or 0.0)},
         "grounding": grounding,
         "claims": provenance_claims,
+        "final_verification": final_verification,
         "query_analysis": phase_plan,
         "rewritten_question": clean_question,
         "phase_plan": phase_plan,
@@ -305,18 +295,7 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
 def route_query_from_state(state: dict[str, Any]):
     class _Route:
         def __init__(self, value: dict[str, Any]):
-            self.kind = str(value.get("kind", "factual"))
-            self.scope = str(value.get("scope", "question"))
-            self.needs_table = bool(value.get("needs_table", False))
-            self.needs_numeric = bool(value.get("needs_numeric", False))
-            self.needs_figure = bool(value.get("needs_figure", False))
-            self.multi_hop = bool(value.get("multi_hop", False))
-            self.summary = bool(value.get("summary", False))
-            self.comparison = bool(value.get("comparison", False))
-            self.exact_lookup = bool(value.get("exact_lookup", False))
-            self.expected_slots = tuple(value.get("expected_slots", ()))
-            self.entities = tuple(value.get("entities", ()))
-            self.confidence = float(value.get("confidence", 0.8))
+            self.kind = str(value.get("kind", "factual")); self.scope = str(value.get("scope", "question")); self.needs_table = bool(value.get("needs_table", False)); self.needs_numeric = bool(value.get("needs_numeric", False)); self.needs_figure = bool(value.get("needs_figure", False)); self.multi_hop = bool(value.get("multi_hop", False)); self.summary = bool(value.get("summary", False)); self.comparison = bool(value.get("comparison", False)); self.exact_lookup = bool(value.get("exact_lookup", False)); self.expected_slots = tuple(value.get("expected_slots", ())); self.entities = tuple(value.get("entities", ())); self.confidence = float(value.get("confidence", 0.8))
     return _Route(state)
 
 
