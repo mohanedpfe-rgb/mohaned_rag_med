@@ -1,10 +1,4 @@
-"""Fail-closed completion audit for the two requested project plans.
-
-Implementation alone is not completion. This audit requires the high-level suite,
-its deterministic fixture generator, semantic-cache contract, requested data
-assets, measured benchmark artifacts, and clinical sign-off artifacts before
-reporting release readiness.
-"""
+"""Fail-closed completion audit for the two requested project plans."""
 from __future__ import annotations
 
 import json
@@ -25,10 +19,6 @@ HIGH_LEVEL_DIRS = [f"tests/high_level/{i:02d}_{name}" for i, name in [
     (5, "grounding_safety"), (6, "latency_performance"), (7, "multilingual"), (8, "storage_index"),
     (9, "conversation"), (10, "security_privacy"), (11, "resilience"), (12, "production_contracts"), (13, "end_to_end"),
 ]]
-CONTROLLED_FIXTURES = [
-    "clean_diabetes_en.pdf", "clean_diabetes_fr.pdf", "clean_diabetes_ar.pdf", "numeric_doses.pdf",
-    "scanned_mixed.pdf", "adversarial_injection.pdf", "large_100pages.pdf", "empty_or_low_content.pdf",
-]
 
 
 class TwoPlanCompletionAudit:
@@ -43,30 +33,31 @@ class TwoPlanCompletionAudit:
         if not conftest.exists():
             return False
         text = conftest.read_text(encoding="utf-8")
-        # The high-level suite must be able to create controlled PDFs without an
-        # external download during the test run. The fixture writer is stdlib-only.
         return "def write_minimal_pdf" in text and "Python standard library" in text
 
     def evaluate(self) -> dict[str, Any]:
         checks: list[CompletionCheck] = []
         for path in HIGH_LEVEL_DIRS:
             checks.append(CompletionCheck(f"high_level_dir:{path}", self._exists(path), "present" if self._exists(path) else "missing"))
-        checks.append(CompletionCheck("high_level_conftest", self._exists("tests/high_level/conftest.py"), "present" if self._exists("tests/high_level/conftest.py") else "missing"))
-        checks.append(CompletionCheck("high_level_helpers", self._exists("tests/high_level/helpers.py"), "present" if self._exists("tests/high_level/helpers.py") else "missing"))
-        checks.append(CompletionCheck("high_level_gold_set", self._exists("tests/support/gold_sets/core.jsonl"), "present" if self._exists("tests/support/gold_sets/core.jsonl") else "missing"))
-        checks.append(CompletionCheck("controlled_pdf_generator", self._pdf_fixture_generator_ready(), "stdlib deterministic PDF generator present" if self._pdf_fixture_generator_ready() else "missing deterministic fixture generator"))
+        checks.extend([
+            CompletionCheck("high_level_conftest", self._exists("tests/high_level/conftest.py"), "present" if self._exists("tests/high_level/conftest.py") else "missing"),
+            CompletionCheck("high_level_helpers", self._exists("tests/high_level/helpers.py"), "present" if self._exists("tests/high_level/helpers.py") else "missing"),
+            CompletionCheck("high_level_gold_set", self._exists("tests/support/gold_sets/core.jsonl"), "present" if self._exists("tests/support/gold_sets/core.jsonl") else "missing"),
+            CompletionCheck("controlled_pdf_generator", self._pdf_fixture_generator_ready(), "stdlib deterministic PDF generator present" if self._pdf_fixture_generator_ready() else "missing deterministic fixture generator"),
+            CompletionCheck("test_inventory_checker", self._exists("scripts/validate_test_inventory.py"), "present" if self._exists("scripts/validate_test_inventory.py") else "missing"),
+        ])
 
         semantic = self.root / "rag_project/intelligence/semantic_cache.py"
         semantic_text = semantic.read_text(encoding="utf-8") if semantic.exists() else ""
         semantic_contract = all(x in semantic_text for x in (
-            "similarity_threshold: float = 0.95",
-            "7 * 24 * 60 * 60",
-            "max_entries: int = 10_000",
-            "expected_dimension: int = 768",
-            "embed_query",
+            "similarity_threshold: float = 0.95", "7 * 24 * 60 * 60", "max_entries: int = 10_000", "expected_dimension: int = 768", "embed_query",
         ))
-        checks.append(CompletionCheck("semantic_cache_implementation", semantic_contract, "embedding cosine cache contract present" if semantic_contract else "semantic cache contract incomplete"))
-        checks.append(CompletionCheck("semantic_cache_tests", self._exists("tests/test_semantic_retrieval_cache.py"), "present" if self._exists("tests/test_semantic_retrieval_cache.py") else "missing"))
+        checks.extend([
+            CompletionCheck("semantic_cache_implementation", semantic_contract, "embedding cosine cache contract present" if semantic_contract else "semantic cache contract incomplete"),
+            CompletionCheck("semantic_cache_tests", self._exists("tests/test_semantic_retrieval_cache.py"), "present" if self._exists("tests/test_semantic_retrieval_cache.py") else "missing"),
+            CompletionCheck("retraining_implementation", self._exists("rag_project/intelligence/retraining_pipeline.py"), "present" if self._exists("rag_project/intelligence/retraining_pipeline.py") else "missing"),
+            CompletionCheck("retraining_executable_manager", self._exists("tests/test_retraining_pipeline.py"), "present" if self._exists("tests/test_retraining_pipeline.py") else "missing"),
+        ])
 
         required_data = {
             "medical_kb": "data/medical_knowledge.sqlite3",
@@ -97,7 +88,6 @@ class TwoPlanCompletionAudit:
 
 def main() -> int:
     import argparse
-
     parser = argparse.ArgumentParser(description="Fail-closed audit for the MedEvidence Pro and High-Level Test Suite plans")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parents[2]))
     args = parser.parse_args()
