@@ -29,6 +29,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.intelligence.deep_pdf_finalizer import install as deep_pdf_finalizer
     from rag_project.intelligence.structure_anchor_runtime import install as structure_anchor_runtime
     from rag_project.intelligence.deep_pdf_finalizer_v2 import install as deep_pdf_finalizer_v2
+    from rag_project.intelligence.deep_pdf_finalizer_v3 import install as deep_pdf_finalizer_v3
 
     return (
         vector_store,
@@ -50,6 +51,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         deep_pdf_finalizer,
         structure_anchor_runtime,
         deep_pdf_finalizer_v2,
+        deep_pdf_finalizer_v3,
     )
 
 
