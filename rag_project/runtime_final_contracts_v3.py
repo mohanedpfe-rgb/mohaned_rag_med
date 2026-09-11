@@ -62,11 +62,10 @@ def _is_heading_only(text: str) -> bool:
     return False
 
 
-def _compact_chunk_text(chunk: Any) -> None:
+def _compact_chunk_text(chunk: Any, chunk_size: int) -> None:
     metadata = dict(getattr(chunk, "metadata", {}) or {})
     text = str(getattr(chunk, "text", "") or "")
     body = text
-    # Strip oversized legacy structure headers emitted by older PDF runtime layers.
     if body.startswith("[RAG-STRUCTURE ") and "]\n" in body:
         body = body.split("]\n", 1)[1]
     if body.startswith("[RAG-STRUCTURE schema=3]\n"):
@@ -84,10 +83,7 @@ def _compact_chunk_text(chunk: Any) -> None:
     if prefix:
         rebuilt += f"[{prefix}]\n"
     rebuilt += body
-    chunk_size = int(getattr(getattr(chunk, "_chunker", None), "chunk_size", 700) or 700)
-    # Public SemanticChunker instances do not attach themselves to chunks; 230 is
-    # the established compatibility ceiling for the smallest contract tests.
-    limit = max(64, chunk_size + 30)
+    limit = max(64, int(chunk_size) + 30)
     if len(rebuilt) > limit:
         available = max(1, limit - len(rebuilt) + len(body))
         body = body[:available].rstrip()
@@ -160,7 +156,7 @@ def _patch_chunk_contract() -> None:
                     ) if present
                 ]
                 chunk.metadata = metadata
-                _compact_chunk_text(chunk)
+                _compact_chunk_text(chunk, int(getattr(self, "chunk_size", 700) or 700))
 
         for index, chunk in enumerate(chunks):
             chunk.chunk_index = index
@@ -253,7 +249,6 @@ def _capture_ingestion_state(system: Any, path: Path) -> dict[str, Any] | None:
         store = system.vector_store
         collection = store.collection
         records = collection.get(where={"document_id": document_id}, include=["documents", "metadatas", "embeddings"])
-        lexical = []
         with sqlite3.connect(store.lexical_database) as db:
             lexical = db.execute(
                 "SELECT id, document, metadata, index_state, tokens FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
