@@ -42,8 +42,9 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
 def _sentence_units(answer: str) -> list[str]:
     raw = str(answer or "").strip()
     if not raw: return []
-    # Keep a trailing [S#] citation attached to the preceding factual sentence.
-    raw = re.sub(r"(?<=[.!?؟])\s+(?=\[S\d+\]\s*$)", " ", raw, flags=re.I|re.MULTILINE)
+    # The citation belongs to the factual sentence. Remove only the separator before
+    # a trailing source marker so sentence splitting cannot turn [S1] into a new unit.
+    raw = re.sub(r"(?<=[.!?؟])\s+(?=\[S\d+\]\s*$)", "", raw, flags=re.I|re.MULTILINE)
     units = []
     for part in re.split(r"\n+|(?<=[.!?؟])\s+", raw):
         part = re.sub(r"^[-*•\s]+", "", part.strip())
