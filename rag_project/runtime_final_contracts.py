@@ -4,8 +4,11 @@ import json
 import re
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
+
+import requests
 
 _LOCK = threading.RLock()
 _INSTALLED = False
@@ -25,10 +28,7 @@ def _snapshot_versions(system: Any, path: Path) -> dict[str, Any] | None:
         collection = getattr(store, "collection", None)
         if collection is None:
             return None
-        records = collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas", "embeddings"],
-        )
+        records = collection.get(where={"document_id": document_id}, include=["documents", "metadatas", "embeddings"])
         ids = list(records.get("ids") or [])
         docs = list(records.get("documents") or [])
         metas = list(records.get("metadatas") or [])
@@ -38,20 +38,10 @@ def _snapshot_versions(system: Any, path: Path) -> dict[str, Any] | None:
         if database is not None and Path(database).exists():
             with sqlite3.connect(database) as db:
                 lexical_rows = db.execute(
-                    "SELECT id, document, metadata, index_state, tokens "
-                    "FROM lexical_documents "
-                    "WHERE json_extract(metadata, '$.document_id') = ?",
+                    "SELECT id, document, metadata, index_state, tokens FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
                     (document_id,),
                 ).fetchall()
-        return {
-            "document_id": document_id,
-            "row": dict(row or {}),
-            "ids": ids,
-            "documents": docs,
-            "metadatas": metas,
-            "embeddings": embeddings,
-            "lexical_rows": lexical_rows,
-        }
+        return {"document_id": document_id, "row": dict(row or {}), "ids": ids, "documents": docs, "metadatas": metas, "embeddings": embeddings, "lexical_rows": lexical_rows}
     except Exception:
         return None
 
@@ -73,7 +63,7 @@ def _restore_versions(system: Any, snapshot: dict[str, Any] | None) -> bool:
             current_ids = {str(x) for x in current.get("ids") or []}
             missing = [i for i, item_id in enumerate(ids) if item_id not in current_ids]
             if missing:
-                add_kwargs = {"ids": [ids[i] for i in missing], "documents": [docs[i] for i in missing], "metadatas": [metas[i] for i in missing]}
+                add_kwargs: dict[str, Any] = {"ids": [ids[i] for i in missing], "documents": [docs[i] for i in missing], "metadatas": [metas[i] for i in missing]}
                 if embeddings and len(embeddings) == len(ids):
                     add_kwargs["embeddings"] = [embeddings[i] for i in missing]
                 collection.add(**add_kwargs)
@@ -91,13 +81,7 @@ def _restore_versions(system: Any, snapshot: dict[str, Any] | None) -> bool:
                 db.executemany(
                     "INSERT OR REPLACE INTO lexical_documents(id, document, metadata, index_state, tokens) VALUES(?,?,?,?,?)",
                     [
-                        (
-                            row[0],
-                            row[1],
-                            json.dumps({**json.loads(row[2] or "{}"), "index_state": "READY"}, ensure_ascii=False, sort_keys=True),
-                            "READY",
-                            row[4],
-                        )
+                        (row[0], row[1], json.dumps({**json.loads(row[2] or "{}"), "index_state": "READY"}, ensure_ascii=False, sort_keys=True), "READY", row[4])
                         for row in lexical_rows
                     ],
                 )
@@ -136,7 +120,9 @@ def _wrap_ingest_class(cls: Any) -> None:
 
     def wrapped(self: Any, pdf_path: str | Path):
         path = Path(pdf_path)
-        snapshot = _snapshot_versions(self, path) if path.suffix.casefold() == ".pdf" else None
+        if path.suffix.casefold() != ".pdf" or not path.is_file():
+            raise ValueError(f"Unsupported or missing PDF: {path}")
+        snapshot = _snapshot_versions(self, path)
         try:
             result = original(self, pdf_path)
         except Exception:
@@ -153,19 +139,74 @@ def _wrap_ingest_class(cls: Any) -> None:
     cls.ingest_file = wrapped
 
 
+def _final_ollama_embed_batch(self: Any, texts: list[str]) -> list[list[float]]:
+    """Final embedding contract: bounded retries, 413/timeout splitting, no gratuitous sleep."""
+    attempt_texts = list(texts)
+    if not attempt_texts:
+        return []
+    attempts = max(1, int(self.retries) + 1)
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        active = max(1, int(getattr(self, "_active_batch_size", len(attempt_texts))))
+        if len(attempt_texts) > active:
+            return self._split_and_embed(attempt_texts)
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/embed",
+                json={"model": self.model, "input": attempt_texts},
+                timeout=(5, self.timeout_seconds),
+                allow_redirects=False,
+            )
+            status_code = int(getattr(response, "status_code", 200))
+            if 300 <= status_code < 400:
+                raise RuntimeError("Ollama redirect rejected")
+            if status_code == 413 and len(attempt_texts) > 1:
+                self._active_batch_size = max(1, len(attempt_texts) // 2)
+                return self._split_and_embed(attempt_texts)
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Embedding response was not an object.")
+            if "embeddings" in payload:
+                result = payload["embeddings"]
+            elif isinstance(payload.get("embedding"), list):
+                result = [payload["embedding"]]
+            elif isinstance(payload.get("data"), list):
+                result = [item["embedding"] for item in payload["data"]]
+            else:
+                raise ValueError("Embedding response did not contain embeddings.")
+            result = list(result)
+            self._validate(result, len(attempt_texts))
+            self.provider = "ollama"
+            self.last_error = None
+            self._consecutive_timeouts = 0
+            self._ollama_available = True
+            self._active_batch_size = min(int(self.batch_size), active + 1)
+            return [list(vector) for vector in result]
+        except requests.exceptions.Timeout as exc:
+            last_error = exc
+            self.last_error = "Embedding request timed out"
+            self._consecutive_timeouts += 1
+            self._active_batch_size = max(1, min(active // 2, max(1, len(attempt_texts) // 2)))
+            if len(attempt_texts) > self._active_batch_size:
+                return self._split_and_embed(attempt_texts)
+        except (requests.RequestException, ConnectionError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            last_error = exc
+            self.last_error = type(exc).__name__
+            self._ollama_available = False
+            if attempt + 1 < attempts:
+                continue
+    raise RuntimeError(f"Ollama embedding service failed after {attempts} attempts for model {self.model!r}: {last_error}") from last_error
+
+
 def _patch_embedding_service() -> None:
     from rag_project.embeddings.embedding_service import EmbeddingService
 
-    original = getattr(EmbeddingService, "_embed_batch", None)
-    if not callable(original) or getattr(original, "_final_contract_wrapper", False):
+    if getattr(EmbeddingService._ollama_embed_batch, "_final_contract_wrapper", False):
         return
+    _final_ollama_embed_batch._final_contract_wrapper = True
+    EmbeddingService._ollama_embed_batch = _final_ollama_embed_batch
 
-    def wrapped(self: Any, texts: list[str]):
-        return original(self, texts)
-
-    # The runtime_stability wrapper calls _check_ollama_available(force=True),
-    # while tests and small integrations legitimately provide a no-argument
-    # callback. Rebind the stable batch implementation to tolerate both forms.
     stable = getattr(__import__("rag_project.runtime_stability", fromlist=["_stable_embed_batch"]), "_stable_embed_batch", None)
     if callable(stable):
         def stable_compatible(self: Any, values: list[str]):
@@ -188,35 +229,27 @@ def _patch_embedding_service() -> None:
 
 def _patch_stale_writer_fence() -> None:
     from rag_project.ingestion.state_store import IngestionStateStore
-
     original = getattr(IngestionStateStore, "update_document", None)
     if not callable(original) or getattr(original, "_final_contract_wrapper", False):
         return
-
     def wrapped(self: Any, document_id: str, **values: Any):
-        # A stale worker is forbidden from changing document content/state, but
-        # explicit lease-expiry repair is the recovery operation itself.
         if set(values).issubset({"lease_expires_at"}):
             return getattr(self, "_runtime_v4_original_update_document", original)(document_id, **values)
         return original(self, document_id, **values)
-
     wrapped._final_contract_wrapper = True
     IngestionStateStore.update_document = wrapped
 
 
 def _patch_query_quality() -> None:
     from rag_project.app.rag_system import RAGSystem, QueryQualityClassifier
-
     RAGSystem.assess_query_quality = staticmethod(QueryQualityClassifier.assess)
 
 
 def _patch_lexical_ids() -> None:
     from rag_project.storage.vector_store import VectorStore
-
     original = getattr(VectorStore, "search_lexical", None)
     if not callable(original) or getattr(original, "_final_contract_wrapper", False):
         return
-
     def wrapped(self: Any, query: str, n_results: int = 5, where=None):
         result = original(self, query, n_results=n_results, where=where)
         try:
@@ -227,18 +260,15 @@ def _patch_lexical_ids() -> None:
         except Exception:
             pass
         return result
-
     wrapped._final_contract_wrapper = True
     VectorStore.search_lexical = wrapped
 
 
 def _patch_chunk_hierarchy() -> None:
     from rag_project.chunking.semantic_chunker import SemanticChunker
-
     original = getattr(SemanticChunker, "chunk_pages", None)
     if not callable(original) or getattr(original, "_final_contract_wrapper", False):
         return
-
     def wrapped(self: Any, pages):
         page_list = list(pages or [])
         chunks = list(original(self, page_list) or [])
@@ -261,35 +291,29 @@ def _patch_chunk_hierarchy() -> None:
         for index, chunk in enumerate(chunks):
             chunk.chunk_index = index
         return chunks
-
     wrapped._final_contract_wrapper = True
     SemanticChunker.chunk_pages = wrapped
 
 
 def _patch_pdf_ocr_status() -> None:
     from rag_project.parsing.pdf_extractor import PDFExtractor
-
     original = getattr(PDFExtractor, "extract_iter", None)
     if not callable(original) or getattr(original, "_final_contract_wrapper", False):
         return
-
     def wrapped(self: Any, *args, **kwargs):
         for page in original(self, *args, **kwargs):
             if bool(getattr(self, "ocr_enabled", True)) and getattr(page, "ocr_status", None) == "skipped_disabled":
                 page.ocr_status = "failed"
             yield page
-
     wrapped._final_contract_wrapper = True
     PDFExtractor.extract_iter = wrapped
 
 
 def _patch_duplicate_archival() -> None:
     from rag_project.app.production_rag import ProductionRAGSystem
-
     original = getattr(ProductionRAGSystem, "ingest_file", None)
     if not callable(original) or getattr(original, "_final_duplicate_wrapper", False):
         return
-
     def wrapped(self: Any, pdf_path: str | Path):
         result = dict(original(self, pdf_path) or {})
         if str(result.get("status") or "").casefold() != "skipped":
@@ -315,7 +339,6 @@ def _patch_duplicate_archival() -> None:
         except OSError as exc:
             result["archive_warning"] = f"Duplicate was skipped but could not be archived: {type(exc).__name__}"
         return result
-
     wrapped._final_duplicate_wrapper = True
     ProductionRAGSystem.ingest_file = wrapped
 
@@ -335,13 +358,10 @@ def _patch_god_mode_compat() -> None:
 
 def _patch_query_rewriter() -> None:
     from rag_project.retrieval.query_rewriter import QueryRewriter
-
     def rewrite(question: str, history=None, llm=None) -> str:
         cleaned = re.sub(r"\s+", " ", str(question or "")).strip()
         if not cleaned:
             return ""
-        # Only contextual follow-ups should be rewritten. Independent questions
-        # must never inherit previous conversation state.
         followup = bool(re.search(r"\b(what about|how about|and the|and this|and that|this|that|it|they|them)\b", cleaned, re.I)) or bool(re.match(r"^(et|and|also|then|و|ثم)\b", cleaned, re.I | re.UNICODE))
         if not followup or not history:
             return cleaned
@@ -356,7 +376,6 @@ def _patch_query_rewriter() -> None:
                 break
         context = " ".join(terms)
         return " ".join(part for part in (anchor_q, context, cleaned) if part).strip()[:3500]
-
     QueryRewriter.rewrite = staticmethod(rewrite)
 
 
