@@ -15,7 +15,7 @@ I5_16GB_PRESET: dict[str, Any] = {
     "max_workers": 2,
     "ollama_concurrency": 1,
     "context_token_budget": 3200,
-    "ocr_enabled": False,
+    "ocr_enabled": True,
     "chunk_size": 600,
     "chunk_overlap": 100,
     "generation_max_output_tokens": 512,
