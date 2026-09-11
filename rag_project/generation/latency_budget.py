@@ -63,3 +63,29 @@ def request_budget(settings: object | None = None) -> Iterator[float]:
         _budget.reset(budget_token)
         _started.reset(started_token)
         _deadline.reset(deadline_token)
+
+
+@contextmanager
+def budget_scope(seconds: float) -> Iterator[float]:
+    """Create a latency deadline, preserving an existing outer answer deadline.
+
+    Nested scopes are observationally shared with the outer scope rather than
+    resetting the deadline. This prevents a helper operation from extending the
+    total answer budget.
+    """
+    value = max(0.0, float(seconds))
+    outer_deadline = _deadline.get()
+    if outer_deadline is not None:
+        yield max(0.0, outer_deadline - time.monotonic())
+        return
+
+    now = time.monotonic()
+    deadline_token = _deadline.set(now + value)
+    started_token = _started.set(now)
+    budget_token = _budget.set(value)
+    try:
+        yield value
+    finally:
+        _budget.reset(budget_token)
+        _started.reset(started_token)
+        _deadline.reset(deadline_token)
