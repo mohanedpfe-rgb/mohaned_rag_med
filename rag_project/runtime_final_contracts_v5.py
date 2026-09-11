@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ _INSTALLED = False
 
 
 def _patch_chroma_hierarchy_modify() -> None:
-    """Preserve the immutable Chroma distance metric during metadata updates."""
+    """Never pass immutable HNSW settings back to Chroma.modify()."""
     try:
         from chromadb.api.models.Collection import Collection
     except Exception:
@@ -20,9 +21,14 @@ def _patch_chroma_hierarchy_modify() -> None:
 
     def modify(self, metadata=None, *args, **kwargs):
         if metadata is not None and str(getattr(self, "name", "")).endswith("_hierarchy"):
-            merged = dict(metadata)
-            existing = dict(getattr(self, "metadata", None) or {})
-            merged.setdefault("hnsw:space", existing.get("hnsw:space", "cosine"))
+            # Chroma treats hnsw:space as immutable after collection creation.
+            # Collection metadata may not expose the original metric consistently,
+            # so the safest update is to omit all immutable HNSW keys entirely.
+            merged = {
+                key: value
+                for key, value in dict(metadata).items()
+                if not str(key).startswith("hnsw:")
+            }
             metadata = merged
         return current(self, metadata=metadata, *args, **kwargs)
 
@@ -59,9 +65,11 @@ def _patch_ocr_status_compat() -> None:
 
     def extract_iter(self, *args, **kwargs):
         for page in current(self, *args, **kwargs):
-            if (not bool(getattr(self, "ocr_enabled", True))
-                    and bool(getattr(page, "ocr_required", False))
-                    and getattr(page, "ocr_status", None) == "failed"):
+            if (
+                not bool(getattr(self, "ocr_enabled", True))
+                and bool(getattr(page, "ocr_required", False))
+                and getattr(page, "ocr_status", None) == "failed"
+            ):
                 page.ocr_status = "skipped_disabled"
             yield page
 
@@ -85,7 +93,11 @@ def _patch_section_identity() -> None:
             doc = str(getattr(chunk, "doc_id", "document"))
             section_id = str(metadata.get("section_id") or "")
             if not section_id.startswith(f"{doc}:p{page}:section:"):
-                basis = str(metadata.get("section") or metadata.get("parent_id") or getattr(chunk, "chunk_index", 0))
+                basis = str(
+                    metadata.get("section")
+                    or metadata.get("parent_id")
+                    or getattr(chunk, "chunk_index", 0)
+                )
                 section_id = f"{doc}:p{page}:section:{hashlib.sha1(basis.encode('utf-8')).hexdigest()[:16]}"
                 metadata["section_id"] = section_id
                 metadata["global_section_id"] = section_id
@@ -97,25 +109,35 @@ def _patch_section_identity() -> None:
     SemanticChunker.chunk_pages = chunk_pages
 
 
+def _original_public_safe_rewrite(module: Any):
+    """Recover the original imported safe_rewrite function when compat wrapped it."""
+    safe = getattr(module, "safe_rewrite_follow_up", None)
+    visited: set[int] = set()
+    while callable(safe) and id(safe) not in visited:
+        visited.add(id(safe))
+        wrapped = getattr(safe, "__wrapped__", None)
+        if not callable(wrapped):
+            break
+        safe = wrapped
+    return safe
+
+
 def _patch_followup_public_contract() -> None:
     from rag_project.intelligence import pipeline_integrity, top_level_pipeline
 
-    safe = pipeline_integrity.safe_rewrite_follow_up
+    original_safe = _original_public_safe_rewrite(pipeline_integrity)
+    canonical_safe = original_safe or pipeline_integrity.safe_rewrite_follow_up
 
-    def public_rewrite(question: str, history=None) -> str:
-        value = safe(question, history)
-        cleaned = str(value or "").strip()
-        if not cleaned:
-            return cleaned
-        return cleaned if cleaned.lower().startswith("follow-up:") else f"Follow-up: {cleaned}"
-
-    top_level_pipeline.rewrite_follow_up = public_rewrite
+    # The standalone public helper has a deliberate clean contract.
+    pipeline_integrity.safe_rewrite_follow_up = canonical_safe
+    top_level_pipeline.rewrite_follow_up = canonical_safe
 
     original_install = getattr(pipeline_integrity, "install", None)
     if callable(original_install) and not getattr(original_install, "_runtime_v5", False):
         def install():
             original_install()
-            top_level_pipeline.rewrite_follow_up = pipeline_integrity.safe_rewrite_follow_up
+            pipeline_integrity.safe_rewrite_follow_up = canonical_safe
+            top_level_pipeline.rewrite_follow_up = canonical_safe
         install._runtime_v5 = True
         pipeline_integrity.install = install
 
@@ -124,7 +146,9 @@ def _patch_numeric_boolean_contract() -> None:
     from rag_project.intelligence import evidence_guard
 
     def numeric_consistency(claim, evidence):
-        return not bool(evidence_guard.numeric_consistency_details(claim, evidence).get("mismatch", False))
+        return not bool(
+            evidence_guard.numeric_consistency_details(claim, evidence).get("mismatch", False)
+        )
 
     numeric_consistency._runtime_v5 = True
     evidence_guard.numeric_consistency = numeric_consistency
@@ -145,12 +169,12 @@ def _patch_query_rewriter_legacy_contract() -> None:
             except Exception:
                 pass
         explicit = bool(
-            __import__("re").search(
+            re.search(
                 r"\b(what about|how about|it|this|that|they|them|those|these)\b",
                 cleaned,
-                __import__("re").I,
+                re.I,
             )
-            or __import__("re").match(r"^(and|also|then|et|puis|و|ثم)\b", cleaned, __import__("re").I | __import__("re").UNICODE)
+            or re.match(r"^(and|also|then|et|puis|و|ثم)\b", cleaned, re.I | re.UNICODE)
         )
         if history and explicit:
             return f"{str(history[-1][0]).strip()} Follow-up question: {cleaned}"
@@ -195,7 +219,12 @@ def _patch_production_history() -> None:
             answer_text = str(result.get("answer") or "").strip()
             if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"} and answer_text:
                 new_items = history[before:] if before is not None else []
-                if not any(isinstance(item, (tuple, list)) and item and str(item[0]) == str(question or "").strip() for item in new_items):
+                if not any(
+                    isinstance(item, (tuple, list))
+                    and item
+                    and str(item[0]) == str(question or "").strip()
+                    for item in new_items
+                ):
                     history.append((str(question or "").strip(), answer_text))
         return result
 
@@ -226,12 +255,22 @@ def _snapshot_ready_state(system: Any, path: Path) -> dict[str, Any] | None:
     if not document_id:
         return None
     try:
-        records = store.collection.get(where={"document_id": document_id}, include=["documents", "metadatas", "embeddings"])
+        records = store.collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas", "embeddings"],
+        )
         with sqlite3.connect(store.lexical_database) as db:
             lexical = db.execute(
                 "SELECT id, document, metadata, index_state, tokens FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
                 (document_id,),
             ).fetchall()
+        hierarchy = None
+        hierarchy_collection = getattr(store, "hierarchy_collection", None)
+        if hierarchy_collection is not None:
+            hierarchy = hierarchy_collection.get(
+                where={"document_id": document_id},
+                include=["documents", "metadatas", "embeddings"],
+            )
         return {
             "document_id": document_id,
             "ids": list(records.get("ids") or []),
@@ -239,6 +278,7 @@ def _snapshot_ready_state(system: Any, path: Path) -> dict[str, Any] | None:
             "metadatas": list(records.get("metadatas") or []),
             "embeddings": list(records.get("embeddings") or []),
             "lexical": lexical,
+            "hierarchy": hierarchy,
         }
     except Exception:
         return None
@@ -251,7 +291,11 @@ def _restore_ready_state(system: Any, snapshot: dict[str, Any] | None) -> None:
         store = system.vector_store
         collection = store.collection
         ids = [str(x) for x in snapshot.get("ids") or []]
-        existing = set(str(x) for x in (collection.get(ids=ids, include=["metadatas"]).get("ids") or [])) if ids else set()
+        existing = (
+            set(str(x) for x in (collection.get(ids=ids, include=["metadatas"]).get("ids") or []))
+            if ids
+            else set()
+        )
         missing = [i for i, item_id in enumerate(ids) if item_id not in existing]
         if missing:
             collection.add(
@@ -262,6 +306,7 @@ def _restore_ready_state(system: Any, snapshot: dict[str, Any] | None) -> None:
             )
         if ids:
             collection.update(ids=ids, metadatas=[dict(meta) for meta in snapshot.get("metadatas", [])])
+
         lexical = snapshot.get("lexical") or []
         if lexical:
             with sqlite3.connect(store.lexical_database) as db:
@@ -270,6 +315,21 @@ def _restore_ready_state(system: Any, snapshot: dict[str, Any] | None) -> None:
                     lexical,
                 )
                 db.commit()
+
+        hierarchy_snapshot = snapshot.get("hierarchy")
+        hierarchy_collection = getattr(store, "hierarchy_collection", None)
+        if hierarchy_collection is not None and hierarchy_snapshot:
+            hierarchy_ids = [str(x) for x in hierarchy_snapshot.get("ids") or []]
+            if hierarchy_ids:
+                current_ids = set(str(x) for x in hierarchy_collection.get(ids=hierarchy_ids).get("ids") or [])
+                missing_hierarchy = [i for i, item_id in enumerate(hierarchy_ids) if item_id not in current_ids]
+                if missing_hierarchy:
+                    hierarchy_collection.add(
+                        ids=[hierarchy_ids[i] for i in missing_hierarchy],
+                        documents=[hierarchy_snapshot.get("documents", [""])[i] for i in missing_hierarchy],
+                        metadatas=[dict(hierarchy_snapshot.get("metadatas", [{}])[i]) for i in missing_hierarchy],
+                        embeddings=[list(hierarchy_snapshot.get("embeddings", [])[i]) for i in missing_hierarchy],
+                    )
     except Exception:
         pass
 
@@ -308,7 +368,9 @@ def _patch_building_lexical_ids() -> None:
             resolved = []
             for item_id, meta in zip(ids, metas, strict=False):
                 chunk_id = str((meta or {}).get("chunk_id") or item_id)
-                resolved.append(chunk_id if "-build-" in str(item_id) else str(item_id))
+                # Runtime-generated staging IDs are an internal artifact. The
+                # public lexical contract exposes the canonical chunk identifier.
+                resolved.append(chunk_id if re.search(r"-build-[0-9a-f]+-\d+$", str(item_id)) else str(item_id))
             result["ids"] = [resolved]
         return result
 
