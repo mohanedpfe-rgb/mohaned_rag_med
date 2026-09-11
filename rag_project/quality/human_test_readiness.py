@@ -1,8 +1,8 @@
 """Strict pre-human-test certification gate for MedEvidence Pro.
 
-The gate is intentionally fail-closed. A human test run must not start until the
-software architecture, safety controls, medical KB minimums, evaluation suite,
-observability, backup/recovery and deployment contracts are all present.
+The gate is fail-closed. Human testing cannot be certified from architecture
+alone: the runtime contracts, safety layer, production operations, medical KB,
+evaluation assets, and CI/deployment contracts must all be present.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import importlib
 import json
 import os
 import sqlite3
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from typing import Any
 REQUIRED_MODULES = (
     "rag_project.intelligence.med_evidence_pro",
     "rag_project.intelligence.production_ops",
+    "rag_project.intelligence.production_ops_strict",
     "rag_project.intelligence.cloud_hybrid",
     "rag_project.knowledge.medical_kb",
     "rag_project.api.med_evidence_api",
@@ -39,9 +40,14 @@ REQUIRED_PATHS = (
     "ARCHITECTURE.md",
     "SECURITY.md",
     "docs/MEDEVIDENCE_PRO_IMPLEMENTATION_MAP.md",
+    "docs/PRE_HUMAN_TEST_CERTIFICATION.md",
     "scripts/run_medevidence_benchmarks.py",
+    "scripts/run_medevidence_load_test.py",
     "scripts/run_medevidence_ops.py",
+    "scripts/run_medevidence_maintenance.py",
     "scripts/setup_medevidence_db.py",
+    "scripts/validate_medevidence_kb.py",
+    "scripts/run_medevidence_api.py",
 )
 
 
@@ -79,10 +85,11 @@ class HumanTestReadinessGate:
         return checks
 
     def _path_check(self) -> list[GateCheck]:
-        return [
-            GateCheck(f"path:{path}", (self.root / path).exists(), "present" if (self.root / path).exists() else "missing")
-            for path in REQUIRED_PATHS
-        ]
+        checks: list[GateCheck] = []
+        for path in REQUIRED_PATHS:
+            target = self.root / path
+            checks.append(GateCheck(f"path:{path}", target.exists(), "present" if target.exists() else "missing"))
+        return checks
 
     def _kb_check(self) -> GateCheck:
         db_path = Path(os.getenv("MEDEVIDENCE_KB_PATH", str(self.root / "data" / "medical_knowledge.sqlite3")))
@@ -93,7 +100,11 @@ class HumanTestReadinessGate:
             values = counts(db_path)
         except Exception as exc:
             return GateCheck("medical_kb", False, f"cannot inspect DB: {type(exc).__name__}: {exc}")
-        missing = {name: (values.get(name, 0), minimum) for name, minimum in KB_THRESHOLDS.items() if values.get(name, 0) < minimum}
+        missing = {
+            name: (values.get(name, 0), minimum)
+            for name, minimum in KB_THRESHOLDS.items()
+            if values.get(name, 0) < minimum
+        }
         if missing:
             return GateCheck("medical_kb", False, json.dumps({"counts": values, "below_minimum": missing}, sort_keys=True))
         return GateCheck("medical_kb", True, json.dumps(values, sort_keys=True))
@@ -103,7 +114,7 @@ class HumanTestReadinessGate:
             self.root / "data" / "medical_knowledge.sqlite3",
             self.root / "data" / "med_evidence_ops.sqlite3",
         ]
-        failures = []
+        failures: list[str] = []
         checked = 0
         for db_path in candidates:
             if not db_path.exists():
@@ -122,19 +133,22 @@ class HumanTestReadinessGate:
 
     def _test_inventory_check(self) -> GateCheck:
         tests_dir = self.root / "tests"
-        files = list(tests_dir.glob("test_medevidence*.py")) + list(tests_dir.glob("test_*evidence*.py"))
-        line_count = 0
+        if not tests_dir.exists():
+            return GateCheck("test_inventory", False, "tests directory missing")
+        files = list(tests_dir.glob("test_*.py"))
+        test_functions = 0
         for path in files:
             try:
-                line_count += len(path.read_text(encoding="utf-8").splitlines())
+                text = path.read_text(encoding="utf-8")
             except OSError:
-                pass
-        # This is a structural floor, not a claim of semantic coverage. CI remains authoritative.
-        passed = len(files) >= 4 and line_count >= 500
-        return GateCheck("test_inventory", passed, f"files={len(files)}, lines={line_count}, floor=4 files/500 lines")
+                continue
+            test_functions += sum(1 for line in text.splitlines() if line.lstrip().startswith("def test_"))
+        # Structural gate only: actual pytest execution/coverage remains authoritative.
+        passed = len(files) >= 40 and test_functions >= 150
+        return GateCheck("test_inventory", passed, f"files={len(files)}, test_functions={test_functions}, structural_floor=40 files/150 functions")
 
     def evaluate(self) -> ReadinessReport:
-        checks = []
+        checks: list[GateCheck] = []
         checks.extend(self._module_check())
         checks.extend(self._path_check())
         checks.append(self._kb_check())
@@ -168,8 +182,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     report = HumanTestReadinessGate(args.root).evaluate()
-    payload = json.dumps(report.as_dict(), ensure_ascii=False, indent=2)
-    print(payload)
+    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
     return 0 if report.ready else 2
 
 
