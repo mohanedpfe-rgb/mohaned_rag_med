@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any
 
 from rag_project.configuration.settings import Settings
@@ -13,10 +14,9 @@ from rag_project.intelligence.production_contract_v2 import install as install_p
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract, INGESTION_CONTRACT_VERSION
 from rag_project.canonical_runtime import install as install_canonical_runtime
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
+from rag_project.intelligence.production_ops import OperationsStore
 
 _FACTORY_LOCK = threading.RLock()
-# Legacy compatibility name retained for existing telemetry/contracts.  The active
-# production answer authority is the MedEvidence Pro engine below.
 ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 ACTIVE_ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer"
 
@@ -32,9 +32,9 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
 
 
 def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Execute the replacement MedEvidence Pro stack through the legacy service shell."""
-    result = enhanced_med_evidence_answer(system, question, metadata_filter)
-    result = dict(result or {})
+    """Execute the canonical MedEvidence Pro stack and persist production telemetry."""
+    started = time.perf_counter()
+    result = dict(enhanced_med_evidence_answer(system, question, metadata_filter) or {})
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
     retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
     route = result.get("route") if isinstance(result.get("route"), dict) else {}
@@ -63,7 +63,7 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     result.setdefault("canonical_pipeline_executed", True)
     result.setdefault("evidence_first", True)
     result.setdefault("document_aware", True)
-    result.setdefault("god_mode_100", True)  # compatibility flag; implementation has been replaced.
+    result.setdefault("god_mode_100", True)
     result["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
     result["implementation_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
     phases = result.get("phases") if isinstance(result.get("phases"), dict) else {}
@@ -77,8 +77,16 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     }
     if "query_trace" in result and isinstance(result["query_trace"], dict):
         result["query_trace"]["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
-    # Keep useful context visible without leaking raw retrieval internals into the answer.
     result.setdefault("evidence_summary", {"claim_count": evidence.get("claim_count", 0)})
+    try:
+        settings = getattr(system, "settings", None)
+        root = getattr(settings, "project_root", None)
+        if root is not None:
+            store = OperationsStore(root / "data" / "med_evidence_ops.sqlite3")
+            store.record_result(str(result.get("query_id") or f"q-{time.time_ns()}"), str(question), result, (time.perf_counter() - started) * 1000.0)
+    except Exception:
+        # Telemetry must never break the medical answer path.
+        pass
     return result
 
 
@@ -103,13 +111,18 @@ class MedEvidenceProductionRAGSystem(__import__("rag_project.app.production_rag"
             "answer_cascade": True,
             "active_verification": True,
             "feedback_logging": True,
+            "operations_store": True,
+            "ab_testing": True,
+            "retraining_manifest": True,
+            "backup_rotation": True,
+            "circuit_breaker": True,
         })
         report["pipeline"] = pipeline
         return report
 
 
 def create_rag_system(settings: Settings | None = None):
-    """Construct the one canonical production system and validate its persistent indexes."""
+    """Construct the one canonical production system and validate persistent indexes."""
     with _FACTORY_LOCK:
         install()
         install_pipeline_integrity()
@@ -178,6 +191,12 @@ def runtime_contract() -> dict[str, Any]:
         "semantic_retrieval_cache": True,
         "structured_knowledge_layer": True,
         "feedback_loop": True,
+        "production_operations_store": True,
+        "ab_testing": True,
+        "retraining_pipeline": True,
+        "backup_rotation": True,
+        "load_benchmarking": True,
+        "resilience_controls": True,
     }
 
 
