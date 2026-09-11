@@ -75,8 +75,11 @@ def create_app(engine: Any, store: Any | None = None):
     def prometheus_metrics():
         if store is None:
             return "# MedEvidence Pro operations store unavailable\n"
-        from rag_project.observability.prometheus_exporter import render_prometheus
-        return render_prometheus(store)
+        from rag_project.intelligence.production_ops_strict import MetricsService
+        from rag_project.observability.prometheus_exporter import export_metrics
+        service = MetricsService(store)
+        snapshot = service.snapshot()
+        return export_metrics(snapshot, service.alerts())
 
     @app.get("/human-test-readiness")
     def human_test_readiness():
