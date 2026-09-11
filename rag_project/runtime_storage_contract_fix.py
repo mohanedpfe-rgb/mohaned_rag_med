@@ -230,6 +230,21 @@ def _retire(system: Any, document_id: str, current_version: str) -> None:
         collection.delete(ids=stale_ids)
 
 
+def _prepare_explicit_test_embedding_mode(system: Any) -> None:
+    settings = getattr(system, "settings", None)
+    service = getattr(system, "embedding_service", None)
+    explicit = bool(getattr(settings, "embedding_test_mode", False))
+    model_marker = str(getattr(settings, "embedding_model", "") or "").strip().casefold() == "test"
+    if not service or not (explicit or model_marker):
+        return
+    service.test_mode = True
+    service.provider = "deterministic-test"
+    service.last_error = None
+    if getattr(service, "dimension", None) is None:
+        service.discover_dimension()
+    system.embedding_startup_error = None
+
+
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -253,6 +268,7 @@ def install() -> None:
     current_ingest = getattr(RAGSystem, "ingest_file", None)
     if callable(current_ingest) and not getattr(current_ingest, "_storage_contract_fix", False):
         def ingest_file(self: Any, pdf_path: Any):
+            _prepare_explicit_test_embedding_mode(self)
             result = current_ingest(self, pdf_path)
             if str((result or {}).get("status") or "").casefold() == "success":
                 document_id = str((result or {}).get("document_id") or "")
