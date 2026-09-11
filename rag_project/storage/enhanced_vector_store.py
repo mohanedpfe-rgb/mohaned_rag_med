@@ -34,6 +34,10 @@ def _unit_mean(vectors: Sequence[Sequence[float]]) -> list[float]:
     return [value / norm for value in result] if norm > 1e-12 else []
 
 
+def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
 class EnhancedVectorStore(VectorStore):
     """VectorStore with durable structure metadata and a separate hierarchy index."""
 
@@ -50,19 +54,14 @@ class EnhancedVectorStore(VectorStore):
         match = _STRUCTURE_RE.search(document or "")
         if match:
             values = match.groupdict()
-            enriched["chapter_id"] = values.get("chapter_id") or None
-            enriched["chapter"] = values.get("chapter") or None
-            enriched["section_id"] = values.get("section_id") or None
-            enriched["section"] = values.get("section") or None
-            enriched["parent_id"] = values.get("parent_id") or None
+            for field in ("chapter_id", "chapter", "section_id", "section", "parent_id", "table_id", "figure_id", "page_type", "ocr_status"):
+                value = values.get(field)
+                if value:
+                    enriched[field] = value
             try:
                 enriched["quality_score"] = float(values.get("quality") or 0.0)
             except (TypeError, ValueError):
                 pass
-            enriched["page_type"] = values.get("page_type") or enriched.get("page_type")
-            enriched["ocr_status"] = values.get("ocr_status") or enriched.get("ocr_status")
-            enriched["table_id"] = values.get("table_id") or None
-            enriched["figure_id"] = values.get("figure_id") or None
         if "[TABLE]" in (document or "") and not enriched.get("table_id"):
             enriched["table_id"] = f"{enriched.get('document_id', 'document')}:table:{item_id}"
             enriched["representation_type"] = "table"
@@ -73,15 +72,9 @@ class EnhancedVectorStore(VectorStore):
             enriched["evidence_types"] = ["figure"]
         enriched.setdefault("record_type", "chunk")
         enriched.setdefault("hierarchy_level", "chunk")
-        return enriched
+        return _clean_metadata(enriched)
 
-    def add_documents(
-        self,
-        documents: Sequence[str],
-        metadatas: Sequence[Dict[str, Any]],
-        embeddings: Sequence[Sequence[float]],
-        ids: Sequence[str],
-    ) -> None:
+    def add_documents(self, documents: Sequence[str], metadatas: Sequence[Dict[str, Any]], embeddings: Sequence[Sequence[float]], ids: Sequence[str]) -> None:
         normalized = [
             self._enrich_metadata(dict(meta or {}), str(document), str(item_id))
             for meta, document, item_id in zip(metadatas, documents, ids, strict=True)
@@ -108,7 +101,7 @@ class EnhancedVectorStore(VectorStore):
         if document_vector:
             first_meta = rows[0]["metadata"]
             pages = [p for row in rows for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id))}-book", "document": f"Book overview: {first_meta.get('file_name', document_id)}", "embedding": document_vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "book", "hierarchy_level": "book", "file_name": first_meta.get("file_name"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id))}-book", "document": f"Book overview: {first_meta.get('file_name', document_id)}", "embedding": document_vector, "metadata": _clean_metadata({"document_id": document_id, "version_id": version_id, "record_type": "book", "hierarchy_level": "book", "file_name": first_meta.get("file_name"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"})})
 
         chapter_groups: dict[str, list[dict[str, Any]]] = {}
         section_groups: dict[str, list[dict[str, Any]]] = {}
@@ -127,7 +120,7 @@ class EnhancedVectorStore(VectorStore):
                 continue
             meta = group[0]["metadata"]
             pages = [p for row in group for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':chapter:' + chapter_id)}", "document": f"Chapter: {meta.get('chapter') or chapter_id}", "embedding": vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "chapter", "hierarchy_level": "chapter", "chapter": meta.get("chapter"), "chapter_id": chapter_id, "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':chapter:' + chapter_id)}", "document": f"Chapter: {meta.get('chapter') or chapter_id}", "embedding": vector, "metadata": _clean_metadata({"document_id": document_id, "version_id": version_id, "record_type": "chapter", "hierarchy_level": "chapter", "chapter": meta.get("chapter"), "chapter_id": chapter_id, "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"})})
 
         for section_id, group in section_groups.items():
             vector = _unit_mean([row["embedding"] for row in group])
@@ -135,7 +128,7 @@ class EnhancedVectorStore(VectorStore):
                 continue
             meta = group[0]["metadata"]
             pages = [p for row in group for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':section:' + section_id)}", "document": f"Section: {meta.get('section') or section_id}", "embedding": vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "section", "hierarchy_level": "section", "chapter": meta.get("chapter"), "chapter_id": meta.get("chapter_id"), "section": meta.get("section"), "section_id": section_id, "parent_id": meta.get("parent_id"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':section:' + section_id)}", "document": f"Section: {meta.get('section') or section_id}", "embedding": vector, "metadata": _clean_metadata({"document_id": document_id, "version_id": version_id, "record_type": "section", "hierarchy_level": "section", "chapter": meta.get("chapter"), "chapter_id": meta.get("chapter_id"), "section": meta.get("section"), "section_id": section_id, "parent_id": meta.get("parent_id"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"})})
 
         if aggregate_rows:
             self.hierarchy_collection.upsert(ids=[row["id"] for row in aggregate_rows], documents=[row["document"] for row in aggregate_rows], metadatas=[row["metadata"] for row in aggregate_rows], embeddings=[row["embedding"] for row in aggregate_rows])
