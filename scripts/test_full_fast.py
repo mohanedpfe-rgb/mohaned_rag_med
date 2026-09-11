@@ -2,9 +2,9 @@
 
 The project has an intentionally layered test architecture. This command is
 for the deterministic local gate only: it excludes tests that are explicitly
-marked slow, integration, or requires_ollama. The complete release suite is
-still available through pytest directly/CI and is never misreported as a
-120-second local gate.
+marked slow, integration, requires_ollama, or high_level. The complete release
+suite is still available through pytest directly/CI and is never misreported
+as a 120-second local gate.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MARK = "not slow and not integration and not requires_ollama"
+DEFAULT_MARK = "not slow and not integration and not requires_ollama and not high_level"
 
 
 def _environment() -> dict[str, str]:
@@ -31,33 +31,14 @@ def _environment() -> dict[str, str]:
 
 
 def collect_test_files(marker: str) -> tuple[list[str], int]:
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "--collect-only",
-        "-q",
-        "--disable-warnings",
-        "-m",
-        marker,
-    ]
-    proc = subprocess.run(
-        command,
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        env=_environment(),
-        timeout=30,
-    )
+    command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "--disable-warnings", "-m", marker]
+    proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, env=_environment(), timeout=30)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
     if proc.returncode != 0:
         raise RuntimeError(f"pytest collection failed:\n{output[-12000:]}")
 
-    total_tests = 0
     match = re.search(r"(\d+) tests? collected", output)
-    if match:
-        total_tests = int(match.group(1))
-
+    total_tests = int(match.group(1)) if match else 0
     files: list[str] = []
     seen: set[str] = set()
     for raw in output.splitlines():
@@ -68,7 +49,6 @@ def collect_test_files(marker: str) -> tuple[list[str], int]:
         if path and path.endswith(".py") and path not in seen:
             seen.add(path)
             files.append(path)
-
     if not files:
         raise RuntimeError("pytest collection produced no selected test files")
     return files, total_tests
@@ -79,13 +59,7 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
         return
     if os.name == "nt":
         try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                cwd=ROOT,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=1.5,
-            )
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5)
             return
         except (OSError, subprocess.TimeoutExpired):
             pass
@@ -99,8 +73,6 @@ def _kill_all(processes: dict[int, subprocess.Popen[str]]) -> None:
     live = [(index, proc) for index, proc in processes.items() if proc.poll() is None]
     if not live:
         return
-    # Kill process trees concurrently so cleanup time is bounded by the slowest
-    # single taskkill rather than N * taskkill timeout.
     with ThreadPoolExecutor(max_workers=len(live)) as executor:
         futures = [executor.submit(_terminate_process_tree, proc) for _, proc in live]
         for future in futures:
@@ -168,29 +140,12 @@ def main() -> int:
             continue
         output_path = temp_dir / f"worker_{index}.log"
         output_handle = output_path.open("w", encoding="utf-8", buffering=1)
-        command = [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "--tb=short",
-            "--disable-warnings",
-            "-m",
-            args.marker,
-            *bucket,
-        ]
-        processes[index] = subprocess.Popen(
-            command,
-            cwd=ROOT,
-            text=True,
-            stdout=output_handle,
-            stderr=subprocess.STDOUT,
-            env=_environment(),
-        )
+        command = [sys.executable, "-m", "pytest", "-q", "--tb=short", "--disable-warnings", "-m", args.marker, *bucket]
+        processes[index] = subprocess.Popen(command, cwd=ROOT, text=True, stdout=output_handle, stderr=subprocess.STDOUT, env=_environment())
         paths[index] = output_path
         output_handle.close()
 
-    results: dict[int, tuple[str, int | None, float]] = {}
+    results: dict[int, tuple[str, int, float]] = {}
     while processes:
         now = time.perf_counter()
         if now >= deadline:
@@ -247,10 +202,7 @@ def main() -> int:
         print("FAIL: hard wall-clock budget exceeded")
         return 124
     if failures:
-        if timeouts:
-            print("FAIL: fast local gate exceeded its worker time budget")
-        else:
-            print("FAIL: one or more fast-gate workers reported pytest failures")
+        print("FAIL: fast local gate did not complete cleanly")
         return 1
 
     print("PASS: deterministic fast gate completed within budget")
