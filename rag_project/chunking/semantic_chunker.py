@@ -44,41 +44,76 @@ class SemanticChunker:
             separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""],
         )
 
+    @staticmethod
+    def _remove_table_blocks(text: str, table_texts: list[str]) -> str:
+        prose = text or ""
+        for table_text in table_texts:
+            table_text = str(table_text or "").strip()
+            if not table_text:
+                continue
+            prose = prose.replace(f"[TABLE]\n{table_text}", "")
+        return prose
+
     def chunk_pages(self, pages: List[PageExtraction]) -> List[Chunk]:
         if not pages:
             return []
+
         child_splitter = self._child_splitter()
         chunks: List[Chunk] = []
+
         for page in pages:
             section_index = 0
+            table_texts = list(getattr(page, "table_texts", []) or [])
+            table_ids = list(getattr(page, "table_ids", []) or [])
+            figure_ids = list(getattr(page, "figure_ids", []) or [])
+            captions = list(getattr(page, "figure_captions", []) or [])
+
             evidence: set[str] = {"text"}
-            if page.has_images or page.figure_ids:
+            if page.has_images or figure_ids:
                 evidence.add("figure")
-            if page.table_count or page.table_ids:
+            if page.table_count or table_ids or table_texts:
                 evidence.add("table")
-            page_enriched = enrich_text(page.text or "")
+
+            # The complete page remains persisted in SQLite. Tables are removed
+            # from prose chunking so they are represented by dedicated retrieval
+            # units instead of being split arbitrarily across ordinary prose chunks.
+            prose_text = self._remove_table_blocks(page.text or "", table_texts)
+            page_enriched = enrich_text(prose_text)
             headings = page_enriched.get("headings") or []
-            fallback_heading = headings[0] if headings else None
-            for parent_text, parent_meta in self._parent_sections(page.text or ""):
-                section_title = parent_meta.get("section") or parent_meta.get("subsection") or fallback_heading
+            fallback_heading = headings[0] if headings else self._section_fallback(prose_text)
+
+            for parent_text, parent_meta in self._parent_sections(prose_text):
+                section_title = (
+                    parent_meta.get("section")
+                    or parent_meta.get("subsection")
+                    or fallback_heading
+                )
                 chapter_title = parent_meta.get("chapter")
-                parent_id = f"{page.document_id}:p{page.page_number}:parent:{section_index}"
-                section_id = f"{page.document_id}:p{page.page_number}:section:{section_index}"
+
+                parent_id = (
+                    f"{page.document_id}:p{page.page_number}:parent:{section_index}"
+                )
+                section_id = (
+                    f"{page.document_id}:p{page.page_number}:section:{section_index}"
+                )
+
                 children = child_splitter.split_text(parent_text) or [parent_text]
                 for child_index, child_text in enumerate(children):
                     child_text = child_text.strip()
                     if not child_text:
                         continue
+
                     enriched = enrich_text(child_text)
-                    table_id = page.table_ids[section_index % len(page.table_ids)] if page.table_ids and "table" in evidence else None
-                    figure_id = page.figure_ids[section_index % len(page.figure_ids)] if page.figure_ids and "figure" in evidence else None
-                    prefix_parts = []
+                    prefix_parts: list[str] = []
                     if chapter_title:
                         prefix_parts.append(f"Chapter: {chapter_title}")
                     if section_title:
                         prefix_parts.append(f"Section: {section_title}")
                     prefix = " - ".join(prefix_parts)
-                    search_text = f"[{prefix}]\n{child_text}" if prefix else child_text
+                    search_text = (
+                        f"[{prefix}]\n{child_text}" if prefix else child_text
+                    )
+
                     metadata = {
                         "source_pages": [page.page_number or 1],
                         "page_numbers": [page.page_number or 1],
@@ -93,29 +128,152 @@ class SemanticChunker:
                         "entities": enriched["entities"],
                         "headings": enriched["headings"],
                         "number_forms": enriched["number_forms"],
-                        "table_id": table_id,
-                        "figure_id": figure_id,
+                        "table_id": None,
+                        "figure_id": None,
                         "document_id": page.document_id,
                         "file_name": page.file_name,
                         "page_type": page.page_type,
                         "quality_score": page.quality_score,
                         "ocr_status": page.ocr_status,
+                        "routing_decision": page.routing_decision,
                     }
-                    chunks.append(Chunk(
+
+                    chunks.append(
+                        Chunk(
+                            doc_id=page.document_id,
+                            file_name=page.file_name,
+                            chunk_index=len(chunks),
+                            text=search_text,
+                            page_numbers=[page.page_number or 1],
+                            metadata=metadata,
+                            representation_type="canonical",
+                            parent_id=parent_id,
+                            section_id=section_id,
+                            table_id=None,
+                            figure_id=None,
+                            normalized_text=enriched["normalized_text"],
+                        )
+                    )
+
+                section_index += 1
+
+            # Dedicated table retrieval units. These are embedded independently
+            # from prose, preserving the full extracted row structure.
+            for table_index, table_text in enumerate(table_texts):
+                table_text = str(table_text or "").strip()
+                if not table_text:
+                    continue
+
+                table_id = (
+                    table_ids[table_index]
+                    if table_index < len(table_ids)
+                    else f"{page.document_id}:p{page.page_number}:table:{table_index + 1}"
+                )
+                table_enriched = enrich_text(table_text)
+                parent_id = f"{table_id}:parent"
+                section_id = f"{table_id}:section"
+                prefix = f"Section: {fallback_heading}\n" if fallback_heading else ""
+                searchable = f"[TABLE]\n{prefix}{table_text}".strip()
+
+                metadata = {
+                    "source_pages": [page.page_number or 1],
+                    "page_numbers": [page.page_number or 1],
+                    "evidence_types": ["table"],
+                    "chapter": None,
+                    "section": fallback_heading,
+                    "section_id": section_id,
+                    "parent_id": parent_id,
+                    "parent_text": table_text,
+                    "child_index": table_index,
+                    "normalized_text": table_enriched["normalized_text"],
+                    "entities": table_enriched["entities"],
+                    "headings": table_enriched["headings"],
+                    "number_forms": table_enriched["number_forms"],
+                    "table_id": table_id,
+                    "figure_id": None,
+                    "document_id": page.document_id,
+                    "file_name": page.file_name,
+                    "page_type": page.page_type,
+                    "quality_score": page.quality_score,
+                    "ocr_status": page.ocr_status,
+                    "routing_decision": page.routing_decision,
+                }
+
+                chunks.append(
+                    Chunk(
                         doc_id=page.document_id,
                         file_name=page.file_name,
                         chunk_index=len(chunks),
-                        text=search_text,
+                        text=searchable,
                         page_numbers=[page.page_number or 1],
                         metadata=metadata,
-                        representation_type="canonical",
+                        representation_type="table",
                         parent_id=parent_id,
                         section_id=section_id,
                         table_id=table_id,
+                        figure_id=None,
+                        normalized_text=table_enriched["normalized_text"],
+                    )
+                )
+
+            # Dedicated figure-caption retrieval units. The current laptop profile
+            # deliberately stays text/OCR based; actual vision embeddings remain an
+            # optional future layer, while captions are still fully searchable now.
+            for figure_index, caption in enumerate(captions):
+                caption = str(caption or "").strip()
+                if not caption:
+                    continue
+
+                figure_id = (
+                    figure_ids[figure_index]
+                    if figure_index < len(figure_ids)
+                    else f"{page.document_id}:p{page.page_number}:figure:{figure_index + 1}"
+                )
+                figure_enriched = enrich_text(caption)
+                parent_id = f"{figure_id}:parent"
+                section_id = f"{figure_id}:section"
+
+                metadata = {
+                    "source_pages": [page.page_number or 1],
+                    "page_numbers": [page.page_number or 1],
+                    "evidence_types": ["figure"],
+                    "chapter": None,
+                    "section": fallback_heading,
+                    "section_id": section_id,
+                    "parent_id": parent_id,
+                    "parent_text": caption,
+                    "child_index": figure_index,
+                    "normalized_text": figure_enriched["normalized_text"],
+                    "entities": figure_enriched["entities"],
+                    "headings": figure_enriched["headings"],
+                    "number_forms": figure_enriched["number_forms"],
+                    "table_id": None,
+                    "figure_id": figure_id,
+                    "document_id": page.document_id,
+                    "file_name": page.file_name,
+                    "page_type": page.page_type,
+                    "quality_score": page.quality_score,
+                    "ocr_status": page.ocr_status,
+                    "routing_decision": page.routing_decision,
+                }
+
+                chunks.append(
+                    Chunk(
+                        doc_id=page.document_id,
+                        file_name=page.file_name,
+                        chunk_index=len(chunks),
+                        text=f"[FIGURE CAPTION]\n{caption}",
+                        page_numbers=[page.page_number or 1],
+                        metadata=metadata,
+                        representation_type="figure_caption",
+                        parent_id=parent_id,
+                        section_id=section_id,
+                        table_id=None,
                         figure_id=figure_id,
-                        normalized_text=enriched["normalized_text"],
-                    ))
-                section_index += 1
+                        normalized_text=figure_enriched["normalized_text"],
+                    )
+                )
+
         return chunks
 
     def chunk_page_batches(self, pages: Iterable[PageExtraction], batch_size: int = 16) -> Iterator[List[Chunk]]:
