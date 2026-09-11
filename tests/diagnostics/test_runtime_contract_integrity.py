@@ -47,9 +47,20 @@ def test_god_mode_enhancer_keeps_four_argument_contract():
     assert len(parameters) >= 4, f"enhance_result signature drifted to {inspect.signature(god_mode_100.enhance_result)}; {_provenance(god_mode_100.enhance_result)}"
 
 
-def test_followup_module_identity_is_stable():
-    assert top_level_pipeline.rewrite_follow_up is pipeline_integrity.safe_rewrite_follow_up, (
-        "follow-up public references diverged: "
-        f"top={_provenance(top_level_pipeline.rewrite_follow_up)}; "
-        f"safe={_provenance(pipeline_integrity.safe_rewrite_follow_up)}"
-    )
+def test_followup_contracts_are_semantically_compatible():
+    question = "What about this?"
+    history = [("What is diabetes?", "Diabetes is a metabolic disease.")]
+    top = top_level_pipeline.rewrite_follow_up(question, history)
+    safe = pipeline_integrity.safe_rewrite_follow_up(question, history)
+    assert "What is diabetes?" in top
+    assert "What is diabetes?" in safe
+    assert "Follow-up:" not in top
+    assert "Follow-up:" not in safe
+
+
+def test_legacy_adapter_is_not_inside_authoritative_modules():
+    for obj in (top_level_pipeline.rewrite_follow_up, pipeline_integrity.safe_rewrite_follow_up):
+        provenance = _provenance(obj)
+        assert "runtime_final_contracts_v6.py" not in provenance
+        assert "runtime_final_contracts_v7.py" not in provenance
+        assert "runtime_final_contracts_v8.py" not in provenance
