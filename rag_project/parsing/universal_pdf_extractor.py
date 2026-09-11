@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Iterator
 
@@ -67,8 +68,6 @@ class UniversalPDFExtractor(PDFExtractor):
                 captions = [f"Figure/image on physical page {page.page_number}; no textual caption was available in the PDF."]
             page.metadata["table_texts"] = table_texts
             page.metadata["figure_captions"] = captions
-            # Runtime code uses getattr so these fields remain backward compatible,
-            # while the dataclass update makes them explicit for new documents.
             page.table_texts = table_texts
             page.figure_captions = captions
 
@@ -83,6 +82,6 @@ class UniversalPDFExtractor(PDFExtractor):
                     extraction_method=page.extraction_method,
                     text=page.text,
                     processing_error=page.metadata.get("ocr_error"),
-                    checksum=None,
+                    checksum=hashlib.sha256((page.text or "").encode("utf-8")).hexdigest(),
                 )
             yield page
