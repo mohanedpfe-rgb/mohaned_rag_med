@@ -72,7 +72,7 @@ def runtime_contract() -> dict[str, Any]:
         "production_contract_version": PRODUCTION_CONTRACT_VERSION,
         "ingestion_contract": "rag_project.ingestion.ingestion_contract.install",
         "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
-        "final_answer_verification": "rag_project.intelligence.evidence_guard.verify_claims",
+        "final_answer_verification": "rag_project.intelligence.final_answer_contract.verify_final_answer",
         "entity_coverage": "rag_project.intelligence.entity_coverage.score_entity_coverage",
         "document_aware_routing": True,
         "hierarchical_retrieval": True,
