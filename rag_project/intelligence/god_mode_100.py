@@ -42,7 +42,6 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
 def _sentence_units(answer: str) -> list[str]:
     raw = str(answer or "").strip()
     if not raw: return []
-    # Keep a trailing [S#] citation attached to the preceding factual sentence.
     raw = re.sub(r"(?<=[.!?؟])\s+(?=\[S\d+\]\s*$)", " ", raw, flags=re.I|re.MULTILINE)
     units = []
     for part in re.split(r"\n+|(?<=[.!?؟])\s+", raw):
@@ -123,6 +122,14 @@ def _runtime_phase_implementation(result: dict[str,Any], hits:list[Any], final_m
     return {"phase_1_query_understanding":{"status":phases.get("phase_1_query_understanding","complete"),"authority":LEGACY_TELEMETRY_AUTHORITY},"phase_2_retrieval_precision":{"status":phases.get("phase_2_retrieval_precision","complete"),"hits":len(hits or []),"authority":LEGACY_TELEMETRY_AUTHORITY},"phase_3_two_stage_generation":{"status":phases.get("phase_3_two_stage_generation","complete"),"generation_path":raw.get("generation_path","deterministic_extractive"),"authority":LEGACY_TELEMETRY_AUTHORITY},"phase_4_verification":{"status":phases.get("phase_4_verification","complete"),"checked":checked,"final_answer_checked":checked,"claim_count":claim_count,"blocked_claims":blocked,"authority":LEGACY_TELEMETRY_AUTHORITY},"phase_5_intelligence_visibility":{"status":phases.get("phase_5_intelligence_visibility","complete"),"authority":LEGACY_TELEMETRY_AUTHORITY,"canonical_answer_authority":LEGACY_TELEMETRY_AUTHORITY,"implementation":IMPLEMENTATION_AUTHORITY,"signals_present":bool(raw.get("ui_signals_present",raw.get("signals_present",False))),"canonical_executed":bool(raw.get("canonical_pipeline_executed",False))}}
 
 
+def _normalize_grounding_text(value: str) -> str:
+    """Normalize citation claims for quote-level matching without changing meaning."""
+    value=re.sub(r"\[S\d+\]"," ",str(value or ""),flags=re.I)
+    value=value.casefold().replace("’","'")
+    value=re.sub(r"[^\w\s]"," ",value,flags=re.UNICODE)
+    return re.sub(r"\s+"," ",value).strip()
+
+
 def _exact_llm_citation_grounding(answer: str, hits:list[Any])->bool:
     rows=[]
     for raw in re.split(r"\n+",str(answer or "")):
@@ -132,8 +139,10 @@ def _exact_llm_citation_grounding(answer: str, hits:list[Any])->bool:
         idx=source_no-1
         if idx<0 or idx>=len(hits): return False
         claim=re.sub(r"\s*\[S\d+\]","",raw,flags=re.I).strip(); claim=re.sub(r"^[-*•\s]+","",claim)
-        source=re.sub(r"\s+"," ",str(getattr(hits[idx],"text","") or "")).strip().casefold(); needle=re.sub(r"\s+"," ",claim).strip().casefold()
-        if len(needle)<12 or needle not in source: return False
+        source=str(getattr(hits[idx],"text","") or "")
+        normalized_claim=_normalize_grounding_text(claim); normalized_source=_normalize_grounding_text(source)
+        if len(normalized_claim.split())<3 or not normalized_claim: return False
+        if normalized_claim not in normalized_source: return False
     return True
 
 
@@ -176,7 +185,7 @@ def enhanced_god_answer(self:Any, question:str, metadata_filter:dict[str,Any]|No
     try: entity_report=score_entity_coverage(clean_question,selected,planned_entities=phase_plan.get("entities") or ())
     except Exception: entity_report={"coverage":1.0,"covered":[],"missing":[],"query_entities":[]}
     contradiction_report=retrieval_state.get("contradiction") or {"has_contradiction":False,"conflicts":[]}; status="SUCCESS_WITH_WARNINGS" if contradiction_report.get("has_contradiction") or not citations else "SUCCESS"
-    result={"query_id":f"bookrag-{int(time.time()*1000)}","status":status,"answer":answer,"citations":citations,"hits":selected,"confidence":{"level":"high" if grounding.get("supported_ratio",0.)>=.85 else "medium","evidence_confidence":float(grounding.get("supported_ratio",0.) or 0.)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"query_analysis":phase_plan,"rewritten_question":clean_question,"phase_plan":phase_plan,"answer_plan":answer_plan,"entity_coverage":entity_report,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.) or 0.),"entity_coverage":float(coverage.get("entity_coverage",0.) or 0.),"candidate_count":int(retrieval_state.get("candidates",0) or 0),"final_hits":int(retrieval_state.get("final_hits",len(selected)) or len(selected)),"self_corrections":int(retrieval_state.get("self_corrections",0) or 0)},"contradiction_report":contradiction_report,"generation_path":generation_path,"god_mode":True,"god_mode_100":True,"evidence_first":True,"document_aware":True,"canonical_pipeline_executed":True,"pipeline_authority":PIPELINE_AUTHORITY,"implementation_authority":IMPLEMENTATION_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"completed","path":generation_path},"verification":{"status":"completed","method":grounding.get("method"),"supported_ratio":grounding.get("supported_ratio",0.)},"timings_ms":{"total":round((time.perf_counter()-started)*1000,2)}}}
+    result={"query_id":f"bookrag-{int(time.time()*1000)}","status":status,"answer":answer,"citations":citations,"hits":selected,"confidence":{"level":"high" if grounding.get("supported_ratio",0.)>=.85 else "medium","evidence_confidence":float(grounding.get("supported_ratio",0.) or 0.)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"query_analysis":phase_plan,"rewritten_question":clean_question,"phase_plan":phase_plan,"answer_plan":answer_plan,"entity_coverage":entity_report,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.) or 0.),"entity_coverage":float(coverage.get("entity_coverage",0.) or 0.),"candidate_count":int(retrieval_state.get("candidates",0) or 0),"final_hits":int(retrieval_state.get("final_hits",len(selected)) or len(selected)),"self_corrections":int(retrieval_state.get("self_corrections",0) or 0)},"contradiction_report":contradiction_report,"generation_path":generation_path,"god_mode":True,"god_mode_100":True,"evidence_first":True,"document_aware":True,"canonical_pipeline_executed":True,"pipeline_authority":PIPELINE_AUTHORITY,"implementation_authority":IMPLEMENTATION_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"completed","path":generation_path},"verification":{"status":"completed","method":grounding.get("method"),"supported_ratio":grounding.get("supported_ratio",0.)},"timings_ms":{"total":round((time.perf_counter()-started)*1000,2)}}
     result["phase_implementation"]=_runtime_phase_implementation(result,selected,final_verification); result=_diagnostic_enhance(self,clean_question,result,metadata_filter); result["phase_implementation"]=_runtime_phase_implementation(result,selected,result.get("final_verification") or final_verification); return result
 
 
