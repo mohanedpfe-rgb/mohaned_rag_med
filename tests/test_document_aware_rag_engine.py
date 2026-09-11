@@ -35,14 +35,16 @@ def test_document_aware_retrieval_self_corrects_weak_coverage() -> None:
 
     def retrieve(query: str, top_k: int, where=None):
         calls.append(query)
-        if len(calls) == 1:
-            return [Hit("d1", "Background unrelated passage about medicine.", {"document_id": "d1", "page_number": 2}, 0.15)]
+        if len(calls) <= 32:
+            return [Hit("d1", "Background unrelated passage about medicine.", {"document_id": "d1", "page_number": 2}, 0.03, vector_score=0.03, lexical_score=0.02)]
         return [
             Hit(
                 "d1",
                 "Hyperthyroidism is associated with increased thyroid hormone production and clinical manifestations.",
                 {"document_id": "d1", "page_number": 18, "section": "Clinical manifestations", "parent_id": "p18"},
                 0.72,
+                vector_score=0.72,
+                lexical_score=0.80,
             )
         ]
 
