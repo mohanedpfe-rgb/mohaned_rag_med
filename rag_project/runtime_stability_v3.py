@@ -223,10 +223,21 @@ def install() -> None:
         if not hasattr(ProductionRAGSystem, "_runtime_v3_original_answer"):
             ProductionRAGSystem._runtime_v3_original_answer = ProductionRAGSystem.answer
             ProductionRAGSystem.answer = _locked_answer
+
+        # Older revisions exposed a heavier health_report() method.  The
+        # current production base class no longer guarantees that method, so
+        # the runtime installer must not dereference it unconditionally.
+        # Always expose the lightweight non-blocking health contract, and keep
+        # a legacy alias when an original implementation actually exists.
         if not hasattr(ProductionRAGSystem, "_runtime_v3_detailed_health_report"):
-            ProductionRAGSystem._runtime_v3_detailed_health_report = ProductionRAGSystem.health_report
+            original_health_report = getattr(ProductionRAGSystem, "health_report", None)
+            if callable(original_health_report):
+                ProductionRAGSystem._runtime_v3_detailed_health_report = original_health_report
             ProductionRAGSystem.health_report_fast = _health_report_fast
             ProductionRAGSystem.health_report = _health_report_fast
+        elif not hasattr(ProductionRAGSystem, "health_report_fast"):
+            ProductionRAGSystem.health_report_fast = _health_report_fast
+
         if not hasattr(IngestionStateStore, "_runtime_v3_original_transition"):
             IngestionStateStore._runtime_v3_original_transition = IngestionStateStore.transition_document_state
             IngestionStateStore.transition_document_state = _guard_transition
