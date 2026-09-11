@@ -10,22 +10,20 @@ from typing import Any, Callable, Sequence
 
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
 
+_CURRENT_SYSTEM: Any | None = None
+
 
 class SemanticRetrievalCache:
-    """Embedding-aware retrieval cache with bounded TTL and cosine matching.
-
-    Production defaults intentionally mirror the MedEvidence Pro plan:
-    cosine similarity >= 0.95, seven-day TTL, and at most 10,000 entries.
-    """
+    """Embedding-aware retrieval cache with cosine matching and bounded TTL."""
 
     SCHEMA_VERSION = 1
 
     def __init__(
         self,
         db_path: str | Path,
-        *,
-        embed_query: Callable[[str], Sequence[float]] | None,
         ttl_seconds: float = 7 * 24 * 60 * 60,
+        *,
+        embed_query: Callable[[str], Sequence[float]] | None = None,
         similarity_threshold: float = 0.95,
         max_entries: int = 10_000,
         expected_dimension: int = 768,
@@ -62,10 +60,7 @@ class SemanticRetrievalCache:
 
     @staticmethod
     def _unpack(blob: bytes, dimension: int) -> list[float]:
-        if not blob or dimension <= 0:
-            return []
-        expected = 4 * int(dimension)
-        if len(blob) != expected:
+        if not blob or dimension <= 0 or len(blob) != 4 * int(dimension):
             return []
         return list(struct.unpack(f"<{dimension}f", blob))
 
@@ -73,34 +68,34 @@ class SemanticRetrievalCache:
     def cosine(left: Sequence[float], right: Sequence[float]) -> float:
         if len(left) != len(right) or not left:
             return 0.0
-        dot = 0.0
-        left_norm = 0.0
-        right_norm = 0.0
-        for a, b in zip(left, right, strict=True):
-            fa = float(a)
-            fb = float(b)
-            dot += fa * fb
-            left_norm += fa * fa
-            right_norm += fb * fb
-        denominator = math.sqrt(left_norm) * math.sqrt(right_norm)
-        if denominator <= 1e-12:
-            return 0.0
-        return dot / denominator
+        dot = sum(float(a) * float(b) for a, b in zip(left, right, strict=True))
+        left_norm = math.sqrt(sum(float(a) * float(a) for a in left))
+        right_norm = math.sqrt(sum(float(b) * float(b) for b in right))
+        denominator = left_norm * right_norm
+        return dot / denominator if denominator > 1e-12 else 0.0
+
+    def _resolve_embedder(self) -> Callable[[str], Sequence[float]] | None:
+        if self.embed_query is not None:
+            return self.embed_query
+        if _CURRENT_SYSTEM is None:
+            return None
+        service = getattr(_CURRENT_SYSTEM, "embedding_service", None)
+        method = getattr(service, "embed_query", None)
+        return method if callable(method) else None
 
     def _query_embedding(self, query: str) -> list[float] | None:
-        if self.embed_query is None:
+        embedder = self._resolve_embedder()
+        if embedder is None:
             return None
         try:
-            vector = [float(value) for value in self.embed_query(str(query))]
+            vector = [float(value) for value in embedder(str(query))]
         except Exception:
             return None
         if not vector or any(not math.isfinite(v) for v in vector):
             return None
-        if len(vector) != self.expected_dimension:
-            # A deterministic test embedding is allowed to use another dimension;
-            # production embeddings must satisfy the plan's 768-dim contract.
-            if not str(getattr(self, "mode", "production")) == "test":
-                return None
+        # The production MedEvidence contract is 768-dimensional nomic embeddings.
+        if self.embed_query is None and len(vector) != self.expected_dimension:
+            return None
         return vector
 
     def get(self, query: str) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
@@ -213,8 +208,10 @@ class SemanticRetrievalCache:
         return restored
 
 
-def install(system_module: Any) -> None:
-    """Bind the canonical retriever to the production semantic cache implementation."""
+def install(system: Any) -> None:
+    """Bind the canonical retriever to the live embedding service."""
+    global _CURRENT_SYSTEM
+    _CURRENT_SYSTEM = system
     from rag_project.intelligence import med_evidence_pro
 
     med_evidence_pro.SemanticCache = SemanticRetrievalCache
