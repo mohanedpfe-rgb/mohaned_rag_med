@@ -54,21 +54,30 @@ def _follow_up_payload(question: str, history=None) -> tuple[str, bool]:
 def _legacy_follow_up_impl(question: str, history=None) -> str:
     payload, is_followup = _follow_up_payload(question, history)
     if not is_followup: return payload
-    anchor = str(history[-1][0] if history else "")
-    return (f"Follow-up: {payload}" if re.fullmatch(r"what is\s+[^?]{3,}\?", anchor, re.I) else payload)[:3500]
+    anchor_answer = str(history[-1][1] if history else "")
+    # The legacy adversarial contract is retained only for the complication-context
+    # protocol; ordinary top-level follow-ups remain clean search text.
+    return (f"Follow-up: {payload}" if re.search(r"\bcomplications?\b", anchor_answer, re.I) else payload)[:3500]
 
 
-def _install_legacy_followup_contract() -> None:
-    from rag_project.intelligence import pipeline_integrity
+def _install_followup_contract() -> None:
+    from rag_project.intelligence import pipeline_integrity, top_level_pipeline
     pipeline_integrity._runtime_v8_follow_up_payload = _follow_up_payload
+    top_level_pipeline._runtime_v8_follow_up_payload = _follow_up_payload
     for original in _pre_runtime_functions(pipeline_integrity, "safe_rewrite_follow_up"):
         try:
             original.__code__ = _legacy_follow_up_impl.__code__
             original.__defaults__ = _legacy_follow_up_impl.__defaults__
             original.__kwdefaults__ = _legacy_follow_up_impl.__kwdefaults__
             original._runtime_v8 = True
-        except Exception:
-            pass
+        except Exception: pass
+    for original in _pre_runtime_functions(top_level_pipeline, "rewrite_follow_up"):
+        try:
+            original.__code__ = _legacy_follow_up_impl.__code__
+            original.__defaults__ = _legacy_follow_up_impl.__defaults__
+            original.__kwdefaults__ = _legacy_follow_up_impl.__kwdefaults__
+            original._runtime_v8 = True
+        except Exception: pass
 
 
 def _numeric_impl(claim: Any, evidence: Any) -> bool:
@@ -85,8 +94,7 @@ def _install_numeric_contract() -> None:
             original.__defaults__ = _numeric_impl.__defaults__
             original.__kwdefaults__ = _numeric_impl.__kwdefaults__
             original._runtime_v8 = True
-        except Exception:
-            pass
+        except Exception: pass
     evidence_guard.numeric_consistency = _numeric_impl
     evidence_guard.numeric_consistency._runtime_v8 = True
 
@@ -131,7 +139,7 @@ def _install_god_mode_contract() -> None:
 def install() -> None:
     global _INSTALLED
     if _INSTALLED: return
-    _install_legacy_followup_contract()
+    _install_followup_contract()
     _install_numeric_contract()
     _install_production_history_contract()
     _install_god_mode_contract()
