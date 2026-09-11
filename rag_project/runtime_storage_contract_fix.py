@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import re
 import sqlite3
 from pathlib import Path
@@ -19,7 +18,7 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _tokens(text: str) -> list[str]:
-    return re.findall(r"\\w+", str(text or "").casefold(), flags=re.UNICODE)
+    return re.findall(r"\w+", str(text or "").casefold(), flags=re.UNICODE)
 
 
 def _ensure_schema(path: Path) -> None:
@@ -103,7 +102,6 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
             "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
         ).fetchall()
     scored = []
-    ready_count = 0
     for row_id, document, metadata_json, state, tokens_json in rows:
         try:
             metadata = dict(json.loads(metadata_json or "{}"))
@@ -114,7 +112,6 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
             effective_state = "READY"
         if effective_state != "READY" or not _matches(metadata, where):
             continue
-        ready_count += 1
         try:
             row_tokens = list(json.loads(tokens_json or "[]"))
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -131,7 +128,7 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
         "ids": [[item[1] for item in selected]],
         "documents": [[item[2] for item in selected]],
         "metadatas": [[item[3] for item in selected]],
-        "distances": [[1.0 / (1.0 + item[0]) for item in selected],],
+        "distances": [[1.0 / (1.0 + item[0]) for item in selected] for _ in [0]],
     }
 
 
