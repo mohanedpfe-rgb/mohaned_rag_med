@@ -14,7 +14,7 @@ from rag_project.ingestion.ingestion_contract import install as install_ingestio
 from rag_project.canonical_runtime import install as install_canonical_runtime
 
 _FACTORY_LOCK = threading.RLock()
-ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.god_mode_100.enhanced_god_answer"
+ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
@@ -63,7 +63,7 @@ def runtime_contract() -> dict[str, Any]:
         "security_policy": "rag_project.security.harden_system",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "answer_pipeline": "document_aware_evidence_first",
+        "answer_pipeline": "explicit_delegation",
         "answer_pipeline_authority": ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY,
         "answer_monkey_patch": False,
@@ -93,7 +93,4 @@ def runtime_contract() -> dict[str, Any]:
     }
 
 
-__all__ = [
-    "create_rag_system", "create_default_rag_system", "runtime_contract",
-    "ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION",
-]
+__all__ = ["create_rag_system", "create_default_rag_system", "runtime_contract", "ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION"]
