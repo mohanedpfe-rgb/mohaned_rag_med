@@ -93,10 +93,14 @@ def semantic_support(claim,evidence):
     ct=set(meaningful_tokens(nclaim));et=set(meaningful_tokens(nevidence))
     if not ct or not et:return 0.
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
-    ct={t for t in ct if t not in framing} or ct;shared=ct&et
-    coverage=len(shared)/len(ct)
-    if coverage < .50:
+    ct={t for t in ct if t not in framing} or ct
+    shared=ct&et
+    if len(shared)==1 and (ct-shared) and (et-shared):
+        # A single shared concept is not enough to prove two distinct medical predicates.
+        # Example: “Diabetes causes pneumonia” must not be supported by “Diabetes is chronic”.
         return 0.0
+    coverage=len(shared)/len(ct)
+    if coverage < .50:return 0.0
     char=keyword_overlap_score(nclaim,nevidence)
     jac=len(shared)/max(1,len(ct|et));polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
     return max(0.,min(1.,.50*coverage+.25*jac+.25*char-polarity_penalty))
