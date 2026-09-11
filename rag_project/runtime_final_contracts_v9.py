@@ -10,7 +10,9 @@ def install() -> None:
         return
     from rag_project.runtime_canonical_contract_guard import install as canonical_guard
     from rag_project.runtime_storage_contract_fix import install as storage_guard
+    from rag_project.runtime_test_embedding_guard import install as test_embedding_guard
 
     canonical_guard()
     storage_guard()
+    test_embedding_guard()
     _INSTALLED = True
