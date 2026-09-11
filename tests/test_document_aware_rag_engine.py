@@ -9,6 +9,7 @@ from rag_project.intelligence.advanced_rag_engine import (
     retrieve_document_aware,
     route_query,
 )
+from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 
 
 @dataclass
@@ -37,16 +38,7 @@ def test_document_aware_retrieval_self_corrects_weak_coverage() -> None:
         calls.append(query)
         if len(calls) <= 8:
             return [Hit("d1", "Background unrelated passage about medicine.", {"document_id": "d1", "page_number": 2}, 0.03, vector_score=0.03, lexical_score=0.02)]
-        return [
-            Hit(
-                "d1",
-                "Hyperthyroidism is associated with increased thyroid hormone production and clinical manifestations.",
-                {"document_id": "d1", "page_number": 18, "section": "Clinical manifestations", "parent_id": "p18"},
-                0.72,
-                vector_score=0.72,
-                lexical_score=0.80,
-            )
-        ]
+        return [Hit("d1", "Hyperthyroidism is associated with increased thyroid hormone production and clinical manifestations.", {"document_id": "d1", "page_number": 18, "section": "Clinical manifestations", "parent_id": "p18"}, 0.72, vector_score=0.72, lexical_score=0.80)]
 
     system = SimpleNamespace(retriever=SimpleNamespace(retrieve=retrieve), settings=SimpleNamespace(max_query_variants=8))
     hits, trace = retrieve_document_aware(system, "What are the clinical manifestations of hyperthyroidism?", top_k=4)
@@ -97,6 +89,34 @@ def test_numeric_contradiction_detector_surfaces_disagreement() -> None:
     ]
     report = detect_contradictions(hits)
     assert report["has_contradiction"] is True
+
+
+def test_authoritative_production_path_returns_a_certified_book_answer_without_llm() -> None:
+    source = Hit(
+        "endocrino",
+        "Hyperthyroidism is associated with increased thyroid hormone production and can cause tachycardia.",
+        {"document_id": "endocrino", "file_name": "endocrino.pdf", "page_number": 18, "page_numbers": [18], "section": "Clinical manifestations", "section_id": "s18", "chunk_id": "c18"},
+        0.91,
+        vector_score=0.91,
+        lexical_score=0.95,
+    )
+
+    def retrieve(query: str, top_k: int, where=None):
+        return [source]
+
+    system = SimpleNamespace(
+        retriever=SimpleNamespace(retrieve=retrieve),
+        settings=SimpleNamespace(top_k=4),
+        llm=None,
+        citation_manager=SimpleNamespace(build=lambda hits: [], validate=lambda built, hits: []),
+    )
+    result = enhanced_god_answer(system, "What are the clinical manifestations of hyperthyroidism?")
+    assert result["status"] in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+    assert "Hyperthyroidism is associated with increased thyroid hormone production" in result["answer"]
+    assert result["grounding"]["allow"] is True
+    assert result["final_verification"]["allow"] is True
+    assert result["generation_path"] == "deterministic_extractive"
+    assert result["document_aware"] is True
 
 
 def test_canonical_runtime_binds_authoritative_answer_function() -> None:
