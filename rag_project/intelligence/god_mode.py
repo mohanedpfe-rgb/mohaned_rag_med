@@ -133,11 +133,13 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
     for index, variant in enumerate(variants):
         variant_budget = min(candidate_count, max(1, base_share + (1 if index < remainder else 0)))
         try:
-            hits = system.retriever.retrieve(_clean(variant), top_k=variant_budget, where=where)
+            hits = _as_list(system.retriever.retrieve(_clean(variant), top_k=variant_budget, where=where))
         except Exception as exc:
             logger.warning("Retrieval branch failed: %s", exc)
             continue
         for hit in hits:
+            if hit is None:
+                continue
             meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
             if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                 all_hits[key] = hit
@@ -147,11 +149,13 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
         for index, variant in enumerate(bridge_variants):
             budget = max(1, share + (1 if index < remainder else 0))
             try:
-                hits = system.retriever.retrieve(_clean(variant), top_k=min(candidate_count, budget), where=where)
+                hits = _as_list(system.retriever.retrieve(_clean(variant), top_k=min(candidate_count, budget), where=where))
             except Exception as exc:
                 logger.warning("Second-hop retrieval branch failed: %s", exc)
                 continue
             for hit in hits:
+                if hit is None:
+                    continue
                 meta = hit.metadata or {}; key = str(meta.get("chunk_id") or hit.doc_id or str(hit.text)[:80])
                 if key not in all_hits or float(hit.score) > float(all_hits[key].score):
                     all_hits[key] = hit
@@ -160,7 +164,9 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
         return []
     base_scores = {str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80]): max(0.0, min(1.0, float(getattr(hit, "score", 0.0)))) for hit in candidates}
     try:
-        reranked = system.reranker.rerank(plan.normalized, candidates)
+        reranked = _as_list(system.reranker.rerank(plan.normalized, candidates))
+        if not reranked:
+            raise ValueError("reranker_returned_no_candidates")
         for hit in reranked:
             key = str((hit.metadata or {}).get("chunk_id") or hit.doc_id or str(hit.text)[:80])
             rerank_score = max(0.0, min(1.0, float(getattr(hit, "score", 0.0))))
@@ -178,7 +184,9 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
 def _sanitize_hits(hits: Sequence[Any]) -> list[Any]:
     from rag_project.app.rag_system import RetrievalHit, sanitize_evidence
     result: list[Any] = []
-    for hit in hits:
+    for hit in _as_list(hits):
+        if hit is None:
+            continue
         text = sanitize_evidence(str(hit.text or ""))
         if text == hit.text:
             result.append(hit)
@@ -189,12 +197,13 @@ def _sanitize_hits(hits: Sequence[Any]) -> list[Any]:
 
 
 def _simple_extractive_answer(question: str, selected_hits: Sequence[Any], max_sentences: int = 6) -> str:
-    """Return directly quoted/near-quoted evidence without invoking the generation model."""
     question_terms = set(re.findall(r"[\wÀ-ÿ-]{3,}", str(question or "").casefold()))
     stop = {"what", "are", "the", "main", "findings", "is", "this", "that", "what", "does", "document", "report", "explain", "define", "list", "show", "about", "principal", "biais"}
     question_terms -= stop
     candidates: list[tuple[float, str]] = []
-    for index, hit in enumerate(selected_hits):
+    for index, hit in enumerate(_as_list(selected_hits)):
+        if hit is None:
+            continue
         marker = f"[S{index + 1}]"
         for sentence in re.split(r"(?<=[.!?؟])\s+|\n+", str(getattr(hit, "text", "") or "")):
             sentence = re.sub(r"\s+", " ", sentence).strip()
@@ -225,9 +234,6 @@ def _simple_extractive_answer(question: str, selected_hits: Sequence[Any], max_s
 def _answer_with_ladder(system: Any, question: str, context: str, selected_hits: Sequence[Any], conversation_context: str, reasoning_instruction: str = "") -> tuple[str, str]:
     from rag_project.app.rag_system import _generate_with_citations
     prompt_context = context + ("\n\n<reasoning_task>" + reasoning_instruction + "</reasoning_task>" if reasoning_instruction else "")
-    # Simple factual/explanatory requests are served extractively. This prevents a slow
-    # or unavailable Ollama generation call from delaying an answer that can be verified
-    # directly against retrieved evidence. Complex reasoning keeps the full generation ladder.
     hard_markers = ("why", "how does", "how do", "cause", "causes", "mechanism", "compare", "versus", "difference", "diagnostic criteria", "dose", "dosage", "treatment", "prognosis", "contraindication", "pourquoi", "comment", "سبب", "مقارنة", "علاج", "تشخيص", "جرعة")
     simple_path = not reasoning_instruction.strip() and not any(marker in str(question or "").casefold() for marker in hard_markers)
     if simple_path:
