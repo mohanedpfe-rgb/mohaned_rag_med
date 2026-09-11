@@ -56,10 +56,31 @@ class SemanticChunker:
             table_text = str(table_text or "").strip()
             if not table_text:
                 continue
-            prose = prose.replace(f"[TABLE]\n{table_text}", "")
+            exact = f"[TABLE]\n{table_text}"
+            prose = prose.replace(exact, "")
+            # Be tolerant of normalised whitespace introduced by PDF extraction.
+            compact = re.sub(r"\s+", " ", table_text)
+            if compact and compact != table_text:
+                prose = prose.replace(f"[TABLE]\n{compact}", "")
         return prose
 
+    @staticmethod
+    def _page_hierarchy(page: PageExtraction, fallback_heading: str | None) -> tuple[str | None, str | None, str, str]:
+        headings = enrich_text(page.text or "").get("headings") or []
+        title = headings[0] if headings else fallback_heading
+        chapter_title = None
+        section_title = title
+        chapter_match = re.match(r"^\s*(?:chapter|chapitre)\b\s*(.*)$", str(title or ""), re.I)
+        if chapter_match:
+            chapter_title = chapter_match.group(1).strip() or str(title).strip()
+        section_key = f"{chapter_title or ''}|{section_title or '__page__'}"
+        parent_id = f"{page.document_id}:parent:{SemanticChunker._stable_id(section_key)}"
+        section_id = f"{page.document_id}:section:{SemanticChunker._stable_id(section_key)}"
+        chapter_id = f"{page.document_id}:chapter:{SemanticChunker._stable_id(chapter_title or '__document__')}"
+        return chapter_title, section_title, parent_id, section_id
+
     def chunk_pages(self, pages: List[PageExtraction]) -> List[Chunk]:
+        pages = list(pages or [])
         if not pages:
             return []
 
@@ -67,30 +88,33 @@ class SemanticChunker:
         chunks: List[Chunk] = []
 
         for page in pages:
-            section_index = 0
-            table_texts = list(getattr(page, "table_texts", []) or [])
+            table_texts = [str(x or "").strip() for x in list(getattr(page, "table_texts", []) or []) if str(x or "").strip()]
             table_ids = list(getattr(page, "table_ids", []) or [])
             figure_ids = list(getattr(page, "figure_ids", []) or [])
-            captions = list(getattr(page, "figure_captions", []) or [])
+            captions = [str(x or "").strip() for x in list(getattr(page, "figure_captions", []) or []) if str(x or "").strip()]
 
             evidence: set[str] = {"text"}
-            if page.has_images or figure_ids:
+            if bool(getattr(page, "has_images", False)) or figure_ids or captions:
                 evidence.add("figure")
-            if page.table_count or table_ids or table_texts:
+            if int(getattr(page, "table_count", 0) or 0) or table_ids or table_texts:
                 evidence.add("table")
+            evidence_types = [name for name in ("figure", "table", "text") if name in evidence]
 
             prose_text = self._remove_table_blocks(page.text or "", table_texts)
             page_enriched = enrich_text(prose_text)
             headings = page_enriched.get("headings") or []
             fallback_heading = headings[0] if headings else self._section_fallback(prose_text)
 
+            canonical_hierarchy: tuple[str | None, str | None, str, str] | None = None
             for parent_text, parent_meta in self._parent_sections(prose_text):
                 section_title = parent_meta.get("section") or parent_meta.get("subsection") or fallback_heading
                 chapter_title = parent_meta.get("chapter")
-                chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter_title or '__document__')}"
                 global_section_key = f"{chapter_title or ''}|{section_title or '__page__'}"
                 parent_id = f"{page.document_id}:parent:{self._stable_id(global_section_key)}"
                 section_id = f"{page.document_id}:section:{self._stable_id(global_section_key)}"
+                chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter_title or '__document__')}"
+                if canonical_hierarchy is None:
+                    canonical_hierarchy = (chapter_title, section_title, parent_id, section_id)
 
                 children = child_splitter.split_text(parent_text) or [parent_text]
                 for child_index, child_text in enumerate(children):
@@ -114,11 +138,10 @@ class SemanticChunker:
                     if prefix:
                         search_text += f"[{prefix}]\n"
                     search_text += child_text
-
                     metadata = {
                         "source_pages": [page.page_number or 1],
                         "page_numbers": [page.page_number or 1],
-                        "evidence_types": sorted(evidence),
+                        "evidence_types": evidence_types,
                         "chapter": chapter_title,
                         "chapter_id": chapter_id,
                         "section": section_title,
@@ -158,25 +181,28 @@ class SemanticChunker:
                         )
                     )
 
-                section_index += 1
+            # Specialized units inherit the same document-global hierarchy anchor as
+            # the canonical prose from this page. They must never become detached
+            # mini-trees because that breaks parent/section retrieval joins.
+            if canonical_hierarchy is None:
+                chapter_title, section_title, parent_id, section_id = self._page_hierarchy(page, fallback_heading)
+                chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter_title or '__document__')}"
+            else:
+                chapter_title, section_title, parent_id, section_id = canonical_hierarchy
+                chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter_title or '__document__')}"
 
             for table_index, table_text in enumerate(table_texts):
-                table_text = str(table_text or "").strip()
-                if not table_text:
-                    continue
                 table_id = table_ids[table_index] if table_index < len(table_ids) else f"{page.document_id}:p{page.page_number}:table:{table_index + 1}"
                 table_enriched = enrich_text(table_text)
-                parent_id = f"{table_id}:parent"
-                section_id = f"{table_id}:section"
-                prefix = f"Section: {fallback_heading}\n" if fallback_heading else ""
-                searchable = f"[TABLE]\n{prefix}{table_text}".strip()
                 metadata = {
                     "source_pages": [page.page_number or 1],
                     "page_numbers": [page.page_number or 1],
-                    "evidence_types": ["table"],
-                    "chapter": None,
-                    "section": fallback_heading,
+                    "evidence_types": ["figure", "table", "text"],
+                    "chapter": chapter_title,
+                    "chapter_id": chapter_id,
+                    "section": section_title,
                     "section_id": section_id,
+                    "global_section_id": section_id,
                     "parent_id": parent_id,
                     "parent_text": table_text,
                     "child_index": table_index,
@@ -192,24 +218,37 @@ class SemanticChunker:
                     "quality_score": page.quality_score,
                     "ocr_status": page.ocr_status,
                     "routing_decision": page.routing_decision,
+                    "representation_type": "table",
                 }
-                chunks.append(Chunk(doc_id=page.document_id, file_name=page.file_name, chunk_index=len(chunks), text=searchable, page_numbers=[page.page_number or 1], metadata=metadata, representation_type="table", parent_id=parent_id, section_id=section_id, table_id=table_id, figure_id=None, normalized_text=table_enriched["normalized_text"]))
+                chunks.append(
+                    Chunk(
+                        doc_id=page.document_id,
+                        file_name=page.file_name,
+                        chunk_index=len(chunks),
+                        text=f"[TABLE]\nSection: {section_title}\n{table_text}" if section_title else f"[TABLE]\n{table_text}",
+                        page_numbers=[page.page_number or 1],
+                        metadata=metadata,
+                        representation_type="table",
+                        parent_id=parent_id,
+                        section_id=section_id,
+                        table_id=table_id,
+                        figure_id=None,
+                        normalized_text=table_enriched["normalized_text"],
+                    )
+                )
 
             for figure_index, caption in enumerate(captions):
-                caption = str(caption or "").strip()
-                if not caption:
-                    continue
                 figure_id = figure_ids[figure_index] if figure_index < len(figure_ids) else f"{page.document_id}:p{page.page_number}:figure:{figure_index + 1}"
                 figure_enriched = enrich_text(caption)
-                parent_id = f"{figure_id}:parent"
-                section_id = f"{figure_id}:section"
                 metadata = {
                     "source_pages": [page.page_number or 1],
                     "page_numbers": [page.page_number or 1],
-                    "evidence_types": ["figure"],
-                    "chapter": None,
-                    "section": fallback_heading,
+                    "evidence_types": ["figure", "table", "text"],
+                    "chapter": chapter_title,
+                    "chapter_id": chapter_id,
+                    "section": section_title,
                     "section_id": section_id,
+                    "global_section_id": section_id,
                     "parent_id": parent_id,
                     "parent_text": caption,
                     "child_index": figure_index,
@@ -225,13 +264,29 @@ class SemanticChunker:
                     "quality_score": page.quality_score,
                     "ocr_status": page.ocr_status,
                     "routing_decision": page.routing_decision,
+                    "representation_type": "figure_caption",
                 }
-                chunks.append(Chunk(doc_id=page.document_id, file_name=page.file_name, chunk_index=len(chunks), text=f"[FIGURE CAPTION]\n{caption}", page_numbers=[page.page_number or 1], metadata=metadata, representation_type="figure_caption", parent_id=parent_id, section_id=section_id, table_id=None, figure_id=figure_id, normalized_text=figure_enriched["normalized_text"]))
+                chunks.append(
+                    Chunk(
+                        doc_id=page.document_id,
+                        file_name=page.file_name,
+                        chunk_index=len(chunks),
+                        text=f"[FIGURE CAPTION]\n{caption}",
+                        page_numbers=[page.page_number or 1],
+                        metadata=metadata,
+                        representation_type="figure_caption",
+                        parent_id=parent_id,
+                        section_id=section_id,
+                        table_id=None,
+                        figure_id=figure_id,
+                        normalized_text=figure_enriched["normalized_text"],
+                    )
+                )
 
         return chunks
 
     def chunk_page_batches(self, pages: Iterable[PageExtraction], batch_size: int = 16) -> Iterator[List[Chunk]]:
-        """Yield true bounded page batches with globally sequential chunk indices."""
+        """Yield bounded page batches with document-global sequential chunk indices."""
         limit = max(1, int(batch_size))
         buffer: list[PageExtraction] = []
         offset = 0
