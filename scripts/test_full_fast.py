@@ -11,7 +11,6 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,39 +38,11 @@ def collect_nodeids() -> list[str]:
             continue
         if line.startswith("<"):
             continue
-        # Pytest -q --collect-only emits one nodeid per line.
         if "::" in line and not line.startswith("collected"):
             nodeids.append(line)
     if not nodeids:
         raise RuntimeError("pytest collection produced no test node IDs")
     return nodeids
-
-
-def run_worker(index: int, nodeids: list[str], timeout: float) -> tuple[int, str, float]:
-    started = time.perf_counter()
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-        "--tb=short",
-        "--disable-warnings",
-        *nodeids,
-    ]
-    try:
-        proc = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-            timeout=timeout,
-        )
-        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        return proc.returncode, output, time.perf_counter() - started
-    except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + "\n" + (exc.stderr or "")
-        return 124, output + f"\nWORKER {index} TIMEOUT", time.perf_counter() - started
 
 
 def main() -> int:
@@ -90,33 +61,69 @@ def main() -> int:
     print(f"Workers: {workers}")
     print(f"Budget: {budget:.0f}s")
 
-    nodeids = collect_nodeids()
+    try:
+        nodeids = collect_nodeids()
+    except Exception as exc:
+        print(f"COLLECTION FAILURE: {type(exc).__name__}: {exc}")
+        return 2
+
     print(f"Collected: {len(nodeids)} tests")
     buckets: list[list[str]] = [[] for _ in range(workers)]
     for index, nodeid in enumerate(nodeids):
         buckets[index % workers].append(nodeid)
 
-    results: dict[int, tuple[int, str, float]] = {}
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {
-            executor.submit(run_worker, index, bucket, per_worker_timeout): index
-            for index, bucket in enumerate(buckets)
-            if bucket
-        }
-        deadline = started + budget
-        for future in as_completed(futures, timeout=max(1.0, budget - (time.perf_counter() - started))):
-            index = futures[future]
-            results[index] = future.result()
-            code, output, elapsed = results[index]
-            print(f"worker {index}: code={code}, {len(buckets[index])} tests, {elapsed:.1f}s")
-            if code != 0:
-                print(output[-12000:])
+    processes: dict[int, subprocess.Popen[str]] = {}
+    for index, bucket in enumerate(buckets):
+        if not bucket:
+            continue
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--tb=short",
+            "--disable-warnings",
+            *bucket,
+        ]
+        processes[index] = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
 
-            if time.perf_counter() >= deadline:
-                break
+    deadline = started + budget
+    results: dict[int, tuple[int, str, float]] = {}
+    while processes and time.perf_counter() < deadline:
+        now = time.perf_counter()
+        for index, proc in list(processes.items()):
+            return_code = proc.poll()
+            if return_code is None:
+                if now - started >= per_worker_timeout:
+                    proc.kill()
+                    output = proc.stdout.read() if proc.stdout else ""
+                    results[index] = (124, output + f"\nWORKER {index} TIMEOUT", now - started)
+                    processes.pop(index, None)
+                continue
+            output = proc.stdout.read() if proc.stdout else ""
+            results[index] = (int(return_code), output, now - started)
+            processes.pop(index, None)
+            print(f"worker {index}: code={return_code}, {len(buckets[index])} tests, {now - started:.1f}s")
+            if return_code != 0:
+                print(output[-12000:])
+        if processes:
+            time.sleep(0.15)
+
+    if processes:
+        for index, proc in list(processes.items()):
+            proc.kill()
+            output = proc.stdout.read() if proc.stdout else ""
+            results[index] = (124, output + f"\nWORKER {index} HARD TIMEOUT", time.perf_counter() - started)
+            processes.pop(index, None)
 
     elapsed = time.perf_counter() - started
-    missing = [index for index in range(len(buckets)) if buckets[index] and index not in results]
     failed = [index for index, (code, _, _) in results.items() if code != 0]
 
     print("=== BOUNDED FULL RESULT ===")
@@ -124,16 +131,12 @@ def main() -> int:
     print(f"Collected: {len(nodeids)}")
     print(f"Workers completed: {len(results)}/{len(buckets)}")
     print(f"Failed/timeout workers: {failed}")
-    print(f"Missing workers: {missing}")
 
-    if elapsed > budget:
+    if elapsed > budget + 1.0:
         print("FAIL: overall budget exceeded")
         return 124
-    if missing:
-        print("FAIL: overall budget expired before every worker completed")
-        return 124
     if failed:
-        print("FAIL: one or more workers failed")
+        print("FAIL: one or more workers failed or timed out")
         return 1
     print("PASS: full suite completed within budget")
     return 0
