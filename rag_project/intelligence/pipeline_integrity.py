@@ -104,7 +104,7 @@ def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entit
 def _looks_like_followup(question:str,history:Sequence[tuple[str,str]])->bool:
     cleaned=_normalize(question)
     if not cleaned or not history:return False
-    english_or_french=re.search(r"\b(and|also|then|it|this|that|they|them|those|these|what about|how about|the latter|the former|et|puis|ça|cela|celui|celle|et le|et la)\b",cleaned,re.I|re.UNICODE)
+    english_or_french=re.search(r"\b(and|also|then|it|this|that|they|them|those|these|what about|how about|the latter|the former|et|puis|ça|cela|celui|celle|et le|et la|et les)\b",cleaned,re.I|re.UNICODE)
     arabic=cleaned.startswith(("و","ثم","هذا","هذه","ذلك","تلك"))
     return bool(english_or_french or arabic)
 
@@ -164,14 +164,12 @@ def _install_legacy_extractive_guard()->None:
         from rag_project.intelligence import god_mode as legacy_god_mode
         legacy_god_mode._simple_extractive_answer=_safe_simple_extractive_answer
     except Exception:pass
-
 _install_legacy_extractive_guard()
 
 def install()->None:
     from rag_project.intelligence import top_level_pipeline,entity_coverage,final_answer_contract,god_mode_100
     top_level_pipeline.rewrite_follow_up=safe_rewrite_follow_up;top_level_pipeline._production_integrity_rewrite_installed=True
     entity_coverage.extract_query_entities=safe_extract_query_entities;entity_coverage.score_entity_coverage=safe_score_entity_coverage;entity_coverage._production_integrity_entities_installed=True
-    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer;god_mode_100._simple_extractive_answer=_safe_simple_extractive_answer
-    final_answer_contract.verify_final_answer=safe_verify_final_answer
+    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer;god_mode_100._simple_extractive_answer=_safe_simple_extractive_answer;final_answer_contract.verify_final_answer=safe_verify_final_answer
 
 __all__=["safe_extract_query_entities","safe_score_entity_coverage","safe_rewrite_follow_up","safe_verify_final_answer","is_control_message","install"]
