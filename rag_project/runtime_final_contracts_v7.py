@@ -47,16 +47,44 @@ def _canonical_impl(question: str, history=None) -> str:
     return (f"Follow-up: {payload}" if generic_anchor else payload)[:3500]
 
 
+def _recover_original_safe(module: Any):
+    """Recover the original function object retained by earlier installer closures."""
+    seen = set()
+    stack = [getattr(module, "install", None)]
+    while stack:
+        value = stack.pop()
+        if not callable(value) or id(value) in seen:
+            continue
+        seen.add(id(value))
+        name = getattr(value, "__name__", "")
+        if name == "safe_rewrite_follow_up" and not getattr(value, "_runtime_v6", False):
+            return value
+        wrapped = getattr(value, "__wrapped__", None)
+        if callable(wrapped):
+            stack.append(wrapped)
+        closure = getattr(value, "__closure__", None) or ()
+        for cell in closure:
+            try:
+                item = cell.cell_contents
+            except ValueError:
+                continue
+            if callable(item):
+                stack.append(item)
+    return None
+
+
 def _patch_followup_identity() -> None:
     from rag_project.intelligence import pipeline_integrity, top_level_pipeline
 
-    safe = getattr(pipeline_integrity, "safe_rewrite_follow_up", None)
-    if not callable(safe):
-        return
-    # Keep the originally imported function object alive. Tests and downstream
-    # callers may hold that exact object; only its implementation is replaced.
+    safe = _recover_original_safe(pipeline_integrity)
+    if safe is None:
+        candidate = getattr(pipeline_integrity, "safe_rewrite_follow_up", None)
+        if callable(candidate):
+            safe = candidate
+        else:
+            return
     try:
-        if getattr(_canonical_impl, "__code__", None) is not None and not getattr(safe, "_runtime_v7", False):
+        if not getattr(safe, "_runtime_v7", False):
             if safe.__code__.co_freevars == _canonical_impl.__code__.co_freevars:
                 safe.__code__ = _canonical_impl.__code__
                 safe.__defaults__ = _canonical_impl.__defaults__
