@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/medevidence
 Environment=MEDEVIDENCE_CLOUD_ENABLED=false
-ExecStart=/usr/bin/python3 -m uvicorn rag_project.api.med_evidence_api:app --host 127.0.0.1 --port 8000
+ExecStart=/usr/bin/python3 -m uvicorn scripts.run_medevidence_api:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
