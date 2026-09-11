@@ -122,6 +122,7 @@ def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=No
     for term in _open_set_medical_terms(anchor_answer):
         if term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
     context=" ".join(context_terms[:6]);candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
+    candidate=f"Follow-up: {candidate}"
     return re.sub(r"\s+"," ",candidate)[:3500]
 
 def _safe_simple_extractive_answer(question:str,selected_hits:Sequence[Any],max_sentences:int=6)->str:
@@ -158,6 +159,7 @@ def safe_verify_final_answer(answer:str,hits:Sequence[Any],*,require_entailment:
     elif require_entailment and not matrix_strong:reason="final_matrix_not_fully_entailed"
     else:reason="verified"
     return {"checked":bool(checks),"allow":allow,"reason":reason,"claim_count":len(checks),"blocked_claims":len(blocked_checks),"supported_ratio":round(support_ratio,4),"matrix_claim_count":len(matrix),"matrix_all_entailed":matrix_strong,"claim_checks":[check.to_dict() for check in checks],"evidence_claim_matrix":[record.to_dict() for record in matrix]}
+
 
 def _install_legacy_extractive_guard()->None:
     try:
