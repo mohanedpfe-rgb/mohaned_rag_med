@@ -155,7 +155,7 @@ def _stable_ingest_directory(self: Any, directory: str | Path | None = None) -> 
 
 
 def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
-    """Legacy compatibility ingestion state machine retained for older callers."""
+    """Stable compatibility ingestion state machine with one authoritative version id."""
     from rag_project.chunking.semantic_chunker import SemanticChunker
     from rag_project.ingestion.document_classifier import DocumentClassifier
     from rag_project.parsing.pdf_extractor import PDFExtractor
@@ -169,14 +169,15 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
     existing = self.state_store.get_by_hash(content_hash)
     previous = self.state_store.get_by_path(str(source.resolve()))
     document_id = existing["document_id"] if existing else (previous["document_id"] if previous else content_hash)
-    previous_version = previous.get("content_hash") if previous and previous.get("content_hash") != content_hash else None
+    previous_version = (str(previous.get("version_id") or previous.get("content_hash") or "") if previous and previous.get("content_hash") != content_hash else None)
+    previous_content_hash = str(previous.get("content_hash") or "") if previous and previous.get("content_hash") != content_hash else None
     parser_version = "pdf-extractor-v4-stable"
     chunk_config = {"size": self.settings.chunk_size, "overlap": self.settings.chunk_overlap}
     ocr_config = {"engine": "rapidocr", "enabled": bool(getattr(self.settings, "ocr_enabled", False)), "confidence_threshold": float(getattr(self.settings, "ocr_confidence_threshold", 0.55))}
     version_id = self._ingestion_version_id(content_hash=content_hash, parser_version=parser_version, ocr_config=ocr_config, chunking_config=chunk_config, embedding_model=self.settings.embedding_model, embedding_profile=None, embedding_dimension=None)
     if existing and self.state_store.is_ready_status(existing.get("status")) and existing.get("version_id") == version_id:
         try:
-            validation = self.vector_store.validate_document_index(existing["document_id"], content_hash)
+            validation = self.vector_store.validate_document_index(existing["document_id"], version_id)
         except Exception:
             validation = {"valid": False, "count": 0}
         if validation.get("valid") and validation.get("count", 0) > 0:
@@ -185,11 +186,16 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
         self.state_store.recover_stale_documents()
     except Exception:
         self.logger.exception("Unable to recover stale document leases before %s", source.name)
+    for stale_version in dict.fromkeys(v for v in (previous_version, previous_content_hash) if v and v != version_id):
+        try:
+            self.vector_store.delete_version(document_id, stale_version)
+        except Exception:
+            self.logger.exception("Unable to retire stale version %s for %s", stale_version, source.name)
     try:
-        self.vector_store.delete_version(document_id, content_hash)
+        self.vector_store.delete_version(document_id, version_id)
     except Exception:
         pass
-    if previous and previous.get("content_hash") != content_hash:
+    if previous and previous["content_hash"] != content_hash:
         self.state_store.delete_pages(document_id)
     stat = source.stat()
     self.state_store.upsert_document({"document_id": document_id, "content_hash": content_hash, "file_path": str(source.resolve()), "file_name": source.name, "file_size": stat.st_size, "created_at": _now(), "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "ingestion_started_at": _now(), "current_stage": "DISCOVERED", "current_page": 0, "total_pages": 0, "status": "RUNNING", "parser_version": parser_version, "ocr_config": json.dumps(ocr_config, sort_keys=True), "chunking_config": json.dumps(chunk_config, sort_keys=True), "embedding_model": self.settings.embedding_model, "embedding_dimension": None, "index_state": "BUILDING", "version_id": version_id, "error": None})
@@ -205,6 +211,7 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
     page_count = 0
     current_page = 0
     document_language: str | None = None
+    extraction_ms = 0.0
     try:
         classification = DocumentClassifier.classify(source)
         page_count = int(classification.get("page_count") or 0)
@@ -219,7 +226,9 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
         self.state_store.transition_document_state(document_id, "EXTRACTING", current_page=0, total_pages=page_count)
         self.state_store.record_event(document_id, stage="EXTRACTING", status="RUNNING", event_type="extract", message=f"Extracting text page-by-page: 0/{page_count}", current_page=0, total_pages=page_count, file_name=source.name)
         extractor = PDFExtractor(self.state_store, ocr_enabled=bool(getattr(self.settings, "ocr_enabled", True)), ocr_confidence_threshold=float(getattr(self.settings, "ocr_confidence_threshold", 0.55)), ocr_min_char_density=float(getattr(self.settings, "ocr_min_char_density", 0.001)), ocr_image_coverage_threshold=float(getattr(self.settings, "ocr_image_coverage_threshold", 0.55)))
+        extraction_started = time.perf_counter()
         pages = extractor.extract_iter(source, document_id)
+        extraction_ms = (time.perf_counter() - extraction_started) * 1000.0
         chunker = SemanticChunker(self.settings.chunk_size, self.settings.chunk_overlap)
         batches = chunker.chunk_page_batches(pages, batch_size=max(1, int(self.settings.page_batch_size)))
         first_batch = True
@@ -251,7 +260,7 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
                 chunk_id = f"{document_id}-{content_hash[:12]}-{global_index}"
                 chunk.chunk_index = global_index
                 ids.append(chunk_id)
-                metadatas.append({"document_id": document_id, "chunk_id": chunk_id, "file_name": chunk.file_name, "page_numbers": _as_list(getattr(chunk, "page_numbers", None)), "chunk_index": global_index, "document_type": classification.get("document_type", "unknown"), "language": document_language, "evidence_types": _as_list(chunk.metadata.get("evidence_types")) or ["text"], "index_state": "BUILDING", "version_id": content_hash})
+                metadatas.append({"document_id": document_id, "chunk_id": chunk_id, "file_name": chunk.file_name, "page_numbers": _as_list(getattr(chunk, "page_numbers", None)), "chunk_index": global_index, "document_type": classification.get("document_type", "unknown"), "language": document_language, "evidence_types": _as_list(chunk.metadata.get("evidence_types")) or ["text"], "index_state": "BUILDING", "version_id": version_id})
             if semantic_enabled:
                 self.state_store.transition_document_state(document_id, "EMBEDDING", current_page=current_page, total_pages=page_count)
                 try:
@@ -267,7 +276,7 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
                     semantic_enabled = False
                     embedding_count = 0
                     try:
-                        self.vector_store.delete_version(document_id, content_hash)
+                        self.vector_store.delete_version(document_id, version_id)
                     except Exception:
                         pass
             if semantic_enabled:
@@ -278,17 +287,17 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
                 self.state_store.transition_document_state(document_id, "INDEXING", current_page=current_page, total_pages=page_count)
                 self.vector_store.add_lexical_documents(documents, metadatas, ids)
             chunk_count += len(documents)
-            self.state_store.update_document(document_id, current_stage="INDEXING", current_page=current_page, total_pages=page_count, embedding_dimension=self.embedding_service.dimension if semantic_enabled else None, ingestion_metrics=json.dumps({"batch": batch_number, "page": current_page, "pages": page_count, "chunks": chunk_count, "embeddings": embedding_count, "retrieval_mode": "hybrid" if semantic_enabled else "lexical", "elapsed_ms": round((time.perf_counter() - started) * 1000, 3)}, sort_keys=True))
+            self.state_store.update_document(document_id, current_stage="INDEXING", current_page=current_page, total_pages=page_count, embedding_dimension=self.embedding_service.dimension if semantic_enabled else None, ingestion_metrics=json.dumps({"batch": batch_number, "page": current_page, "pages": page_count, "chunks": chunk_count, "embeddings": embedding_count, "retrieval_mode": "hybrid" if semantic_enabled else "lexical", "elapsed_ms": round((time.perf_counter() - started) * 1000, 3), "extraction": round(extraction_ms, 3)}, sort_keys=True))
         if chunk_count == 0:
-            raise RuntimeError(f"FAILED_EXTRACTION: no searchable text was produced for {source.name}.")
+            raise RuntimeError(f"FAILED_EXTRACTION: No extractable text was produced for {source.name}.")
         self.state_store.transition_document_state(document_id, "INDEXING", current_page=page_count, total_pages=page_count)
         if semantic_enabled:
             if embedding_count != chunk_count:
                 raise RuntimeError(f"FAILED_EMBEDDING: expected {chunk_count} embeddings, produced {embedding_count}.")
-            validation = self.vector_store.validate_document_index(document_id, content_hash)
+            validation = self.vector_store.validate_document_index(document_id, version_id)
             if not validation.get("valid") or int(validation.get("count") or 0) != embedding_count:
                 raise RuntimeError("FAILED_INDEXING: semantic index validation failed: " + "; ".join(_as_list(validation.get("issues"))))
-        self.vector_store.set_version_index_state(document_id, content_hash, "READY")
+        self.vector_store.set_version_index_state(document_id, version_id, "READY")
         target = self.settings.processed_dir / source.name
         target.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != target.resolve():
@@ -298,14 +307,15 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
                 os.replace(target, archived)
             os.replace(source, target)
         warning = "Semantic embeddings were unavailable; lexical search is active for this document." if not semantic_enabled else None
-        self.state_store.transition_document_state(document_id, "READY", current_page=page_count, total_pages=page_count, ingestion_completed_at=_now(), file_path=str(target.resolve()), embedding_dimension=self.embedding_service.dimension if semantic_enabled else None, version_id=version_id, index_state="READY", error=warning, ingestion_metrics=json.dumps({"page_count": page_count, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid" if semantic_enabled else "lexical", "total_ms": round((time.perf_counter() - started) * 1000, 3)}, sort_keys=True))
+        self.state_store.transition_document_state(document_id, "READY", current_page=page_count, total_pages=page_count, ingestion_completed_at=_now(), file_path=str(target.resolve()), embedding_dimension=self.embedding_service.dimension if semantic_enabled else None, version_id=version_id, index_state="READY", error=warning, ingestion_metrics=json.dumps({"page_count": page_count, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid" if semantic_enabled else "lexical", "total_ms": round((time.perf_counter() - started) * 1000, 3), "extraction": round(extraction_ms, 3)}, sort_keys=True))
         return {"status": "success", "document_id": document_id, "file_name": source.name, "document_type": classification.get("document_type", "unknown"), "page_count": page_count, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid" if semantic_enabled else "lexical", "degraded": not semantic_enabled, "warning": warning}
     except Exception as exc:
         self.logger.exception("Stable ingestion failed for %s", source.name)
-        try:
-            self.vector_store.delete_version(document_id, content_hash)
-        except Exception:
-            self.logger.exception("Stable rollback failed for %s", source.name)
+        for stale_version in dict.fromkeys(v for v in (version_id, previous_version, previous_content_hash) if v):
+            try:
+                self.vector_store.delete_version(document_id, stale_version)
+            except Exception:
+                self.logger.exception("Stable rollback failed for %s", source.name)
         failure_stage = "FAILED_EXTRACTION" if str(exc).startswith("FAILED_EXTRACTION:") else ("FAILED_EMBEDDING" if str(exc).startswith("FAILED_EMBEDDING:") else "FAILED_INDEXING")
         try:
             self.state_store.transition_document_state(document_id, failure_stage, current_page=current_page, total_pages=page_count, error=str(exc), index_state="FAILED")
@@ -315,13 +325,16 @@ def _stable_ingest_file(self: Any, pdf_path: str | Path) -> dict[str, Any]:
             except Exception:
                 self.logger.exception("Could not persist failure state for %s", source.name)
         failed = _unique_path(self.settings.failed_dir, source, content_hash[:12])
+        quarantine_error = None
         try:
             if source.exists() and source.resolve() != failed.resolve():
                 failed.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(source, failed)
-        except OSError:
+                shutil.copy2(source, failed)
+                source.unlink()
+        except OSError as quarantine_exc:
+            quarantine_error = str(quarantine_exc)
             self.logger.exception("Could not quarantine failed PDF %s", source.name)
-        return {"status": "failed", "document_id": document_id, "file_name": source.name, "error": str(exc)}
+        return {"status": "failed", "document_id": document_id, "file_name": source.name, "error": str(exc), "quarantine_error": quarantine_error}
     finally:
         stop_heartbeat.set()
         heartbeat.join(timeout=2.0)
