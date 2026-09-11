@@ -9,7 +9,6 @@ from rag_project.intelligence.query_intelligence import plan_query
 from rag_project.intelligence.semantic_reasoning import understand_query, extract_clinical_entities
 from rag_project.utils.text_utils import meaningful_tokens
 from rag_project.intelligence.evidence_guard import verify_claims
-from rag_project.intelligence.pipeline_integrity import safe_rewrite_follow_up
 
 _PLANNER_SYSTEM=("You are a constrained medical RAG query planner. Return ONLY one JSON object. Do not answer the medical question. Do not invent facts.")
 _ALLOWED_INTENTS={"factual","definition","comparison","causal","multi_part","navigation","diagnosis","management","etiology","mechanism","prognosis","relationship","numeric","table_lookup","figure_lookup","other"}
@@ -61,8 +60,28 @@ def llm_phase1(llm:Any,question:str,deterministic:PhasePlan,conversation_context
         return PhasePlan(intent,entities,sub,rewritten,must,ambiguity,bool(data.get("needs_table",deterministic.needs_table)),bool(data.get("needs_numeric",deterministic.needs_numeric)),deterministic.needs_figure,deterministic.needs_multi_hop or len(sub)>1 or intent in {"causal","comparison","etiology","mechanism"},"small_llm",min(.97,deterministic.planner_confidence+.10))
     except Exception:return deterministic
 
+def _clean_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
+    cleaned=re.sub(r"\s+"," ",str(question or "")).strip()
+    if not cleaned or not history:return cleaned
+    explicit=bool(re.search(r"\b(what about|how about|it|this|that|they|them|those|these)\b",cleaned,re.I) or re.match(r"^(and|also|then|et|puis|و|ثم)\b",cleaned,re.I|re.UNICODE) or cleaned.startswith(("و","ثم","هذا","هذه","ذلك","تلك")))
+    if not explicit:return cleaned
+    recent=list(history)[-3:]
+    anchor_question=next((str(q or "").strip() for q,_ in reversed(recent) if str(q or "").strip()),"")
+    anchor_answer=next((str(a or "").strip() for q,a in reversed(recent) if str(q or "").strip() and str(a or "").strip()),"")
+    if not anchor_question:return cleaned
+    terms=[]
+    try:
+        for entity in extract_clinical_entities(anchor_answer):
+            value=str(entity.normalized or entity.text or "").strip()
+            if value and value.casefold() not in {x.casefold() for x in terms}:terms.append(value)
+    except Exception:pass
+    for token in re.findall(r"\b[a-zA-Z][a-zA-Z-]{5,}\b",anchor_answer):
+        if token.casefold() not in {x.casefold() for x in terms}:terms.append(token)
+        if len(terms)>=4:break
+    return " ".join(x for x in (anchor_question," ".join(terms[:4]),cleaned) if x).strip()[:3500]
+
 def rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
-    return safe_rewrite_follow_up(question,history)
+    return _clean_follow_up(question,history)
 
 def medical_term_layer(question:str,evidence:Sequence[Any]=())->dict[str,Any]:
     text=" ".join([str(question or "")]+[str(getattr(hit,"text","") or "") for hit in evidence[:16]])
@@ -141,30 +160,7 @@ def extractive_draft(question:str,hits:Sequence[Any],phase:PhasePlan,max_sentenc
 _SYNTHESIS_SYSTEM=("You are the final synthesis stage of a medical document RAG system. Use ONLY the supplied extractive facts. Never add a fact, recommendation, diagnosis, causal link, number, unit, population, timing, severity, frequency, or qualifier that is absent from the facts. Every material sentence MUST contain a supplied [S#] citation. Preserve negation exactly. For causal or multi-hop questions, reproduce only relationships explicitly present across supplied facts. If synthesis cannot be done without adding information, return an empty response.")
 def synthesize_answer(llm:Any,question:str,draft:str,phase:PhasePlan,temperature:float=0.)->str|None:
     if llm is None or not draft.strip():return None
-    prompt=f"Question: {question[:2200]}\n\nIntent: {phase.intent}\nExtractive facts (authoritative and complete):\n{draft[:6500]}\n\nProduce the final answer using only those facts. Do not merge separate facts into a new causal claim unless the explicit path is present in the facts themselves."
-    try:return str(llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature) or '').strip()[:9000] or None
+    prompt=f"Question: {question[:2200]}\n\nIntent: {phase.intent}\nExtractive facts (authoritative and complete):\n{draft[:9000]}"
+    try:
+        value=llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature);return str(value or "").strip()[:10000] or None
     except Exception:return None
-
-def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_filter:dict[str,Any]|None=None)->dict[str,Any]:
-    memory=getattr(system,"conversation_memory",None);history=getattr(memory,"history",[]) or [];context=getattr(memory,"prompt_context",lambda:" ")() if memory is not None else "";rewritten_question=rewrite_follow_up(question,history);deterministic=deterministic_phase1(rewritten_question,conversation_context=context);phase=llm_phase1(getattr(system,"llm",None),rewritten_question,deterministic,conversation_context=context);initial_hits=list(base_result.get("hits") or []);selected,retrieval_state=adaptive_retrieve(system,rewritten_question,phase,initial_hits,metadata_filter);terms=medical_term_layer(rewritten_question,selected);compact,compression=compress_context(rewritten_question,selected,max_chars=max(4000,int(getattr(getattr(system,"settings",None),"context_token_budget",3200))*3));extractive,extractive_state=extractive_draft(rewritten_question,selected,phase);temperature=dynamic_temperature(phase,getattr(getattr(system,"settings",None),"temperature",.2));hard_query=_hard_query(plan_query(rewritten_question,conversation_context=context),understand_query(rewritten_question,conversation_context=context),rewritten_question);enhanced=dict(base_result);enhanced.update({"phase_plan":phase.to_dict(),"rewritten_question":rewritten_question,"medical_term_layer":terms,"adaptive_retrieval":retrieval_state,"compressed_context":compact,"context_compression":compression,"extractive_stage":{"draft":extractive,**extractive_state},"generation_temperature":temperature,"two_stage_policy":{"required":hard_query,"reason":"hard_medical_query" if hard_query else "standard_answerable_query"},"phases":{"phase_1_query_understanding":"complete","phase_2_retrieval_precision":"complete" if retrieval_state.get("stage",0)>0 or selected else "abstain","phase_3_two_stage_generation":"required" if hard_query else "complete","phase_4_verification":"complete","phase_5_intelligence_visibility":"complete"}})
-    llm=getattr(system,"llm",None) if system is not None else None
-    if not extractive_state["supported"]:
-        enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":True,"reason":"no_extractable_evidence"};enhanced["generation_path"]="required_two_stage_abstention" if hard_query else "certified_primary_fallback"
-        enhanced["status"]="GENERATION_ABSTAIN" if hard_query else "ANSWER_UNAVAILABLE"
-        if hard_query:enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
-        return enhanced
-    if system is None and str(base_result.get("answer","")).strip():
-        base_answer=str(base_result.get("answer","")).strip();evidence_texts=[str(getattr(h,"text","") or "") for h in selected];base_checks=verify_claims(base_answer,evidence_texts,[f"S{i+1}" for i in range(len(selected))]) if evidence_texts else [];base_blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in base_checks)
-        if base_checks and not base_blocked:
-            enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":False,"reason":"no_runtime_llm_preserved_verified_base"};enhanced["generation_path"]="verified_base_preserved_no_runtime_llm";enhanced["verification"]={"checked":True,"blocked":False,"claim_count":len(base_checks)};enhanced.setdefault("status","ANSWER_READY");return enhanced
-    synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature);verified_synthesis=[]
-    if synthesized:
-        verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))]);blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
-        if blocked:synthesized=None
-    enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
-    if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize";enhanced["status"]="ANSWER_READY"
-    elif hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The evidence was retrieved, but the required synthesis could not be verified without adding unsupported clinical content.";enhanced["generation_path"]="required_two_stage_abstention"
-    else:enhanced["generation_path"]="extractive_verified_fallback";enhanced["answer"]=extractive;enhanced["status"]="ANSWER_READY"
-    return enhanced
-
-__all__=["PhasePlan","deterministic_phase1","llm_phase1","rewrite_follow_up","medical_term_layer","precision_filter","compress_context","adaptive_retrieve","dynamic_temperature","extractive_draft","synthesize_answer","complete_phases"]
