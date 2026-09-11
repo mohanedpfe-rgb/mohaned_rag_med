@@ -22,19 +22,14 @@ _ABSTENTION_PREFIXES=("the indexed evidence was insufficient","the evidence was 
 _DRUG_SUFFIXES=("pril","olol","sartan","statin","azole","cillin","mycin","vir","mab","nib","prazole","tidine","caine","cycline","floxacin","lukast","setron","gliptin","gliflozin","tide","parin","dipine","xaban","oxetine","triptan","cept","formin")
 _CONDITION_SUFFIXES=("itis","osis","emia","pathy","carcinoma","oma","algia","penia","iasis","megaly","cytosis","trophy","sclerosis","stenosis","ectasia")
 
-
 def _normalize(value:str)->str:return re.sub(r"\s+"," ",str(value or "")).strip().casefold()
-
 def _canonical(value:str)->str:
     try:
         from rag_project.intelligence.semantic_reasoning import normalize_medical_term
         return _normalize(normalize_medical_term(value))
     except Exception:return _normalize(value)
-
 def _contains_internal_label(text:str)->bool:
-    normalized=_normalize(text)
-    return bool(normalized) and any(label in normalized for label in _INTERNAL_LABELS)
-
+    normalized=_normalize(text);return bool(normalized) and any(label in normalized for label in _INTERNAL_LABELS)
 def _open_set_medical_terms(text:str)->list[str]:
     found=[]
     for match in _WORD.finditer(text or ""):
@@ -46,7 +41,6 @@ def _open_set_medical_terms(text:str)->list[str]:
     return found
 
 def safe_extract_query_entities(question:str,planned_entities:Iterable[str]=())->tuple[str,...]:
-    """Return only validated medical concepts, measurements and strong abbreviations."""
     found=[];deterministic=set()
     try:
         for entity in extract_clinical_entities(question or ""):
@@ -67,8 +61,7 @@ def safe_extract_query_entities(question:str,planned_entities:Iterable[str]=())-
                 if value and value not in found:found.append(value)
     for item in planned_entities:
         raw=_normalize(item)
-        if not raw or len(raw)>64 or " " in raw or ":" in raw:continue
-        if _contains_internal_label(raw):continue
+        if not raw or len(raw)>64 or " " in raw or ":" in raw or _contains_internal_label(raw):continue
         medical_like=raw in deterministic or bool(re.search(r"[-_0-9]",raw)) or raw.endswith(_DRUG_SUFFIXES) or raw.endswith(_CONDITION_SUFFIXES) or len(raw)>=7
         if medical_like:
             canonical=_canonical(raw)
@@ -99,9 +92,7 @@ def _evidence_entities(text:str)->list[str]:
     return [item for item in found if item]
 
 def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entities:Iterable[str]=())->dict[str,Any]:
-    planned_items=tuple(str(item or "") for item in planned_entities)
-    query_entities=safe_extract_query_entities(question,planned_items);evidence_entities=[]
-    planned_norms={_normalize(x) for x in planned_items if _normalize(x)}
+    planned_items=tuple(str(item or "") for item in planned_entities);query_entities=safe_extract_query_entities(question,planned_items);evidence_entities=[];planned_norms={_normalize(x) for x in planned_items if _normalize(x)}
     for index,hit in enumerate(evidence):
         text=str(getattr(hit,"text","") or "")
         for entity in _evidence_entities(text):evidence_entities.append((entity,f"S{index+1}"))
@@ -119,15 +110,13 @@ def _looks_like_followup(question:str,history:Sequence[tuple[str,str]])->bool:
     cleaned=_normalize(question)
     if not cleaned or not history:return False
     english_or_french=re.search(r"\b(it|this|that|they|them|those|these|what about|how about|the latter|the former|ça|cela|celui|celle|et le|et la|also|then|puis)\b",cleaned,re.I|re.UNICODE)
-    arabic=re.match(r"^(و|ثم)\s*",cleaned,re.UNICODE) or cleaned.startswith(("و", "ثم"))
+    arabic=re.match(r"^(و|ثم)\s*",cleaned,re.UNICODE) or cleaned.startswith(("و","ثم"))
     return bool(english_or_french or arabic)
 
 def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
-    """Resolve actual follow-ups using bounded clinical context and an explicit stable label."""
     cleaned=re.sub(r"\s+"," ",str(question or "")).strip()
     if not cleaned or not history or not _looks_like_followup(cleaned,history):return cleaned
-    recent=list(history[-3:]);anchor_question=next((str(q).strip() for q,_ in reversed(recent) if str(q or "").strip()),"")
-    anchor_answer=next((str(a).strip() for q,a in reversed(recent) if str(q or "").strip() and str(a or "").strip()),"")
+    recent=list(history[-3:]);anchor_question=next((str(q).strip() for q,_ in reversed(recent) if str(q or "").strip()),"");anchor_answer=next((str(a).strip() for q,a in reversed(recent) if str(q or "").strip() and str(a or "").strip()),"")
     if not anchor_question:return cleaned
     context_terms=[]
     try:
@@ -137,25 +126,18 @@ def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=No
     except Exception:pass
     for term in _open_set_medical_terms(anchor_answer):
         if term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
-    context=" ".join(context_terms[:6])
-    candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
+    context=" ".join(context_terms[:6]);candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
     return "Follow-up: " + re.sub(r"\s+"," ",candidate)[:3470]
 
 def _safe_simple_extractive_answer(question:str,selected_hits:Sequence[Any],max_sentences:int=6)->str:
-    question_terms=set(re.findall(r"[\wÀ-ÿ-]{3,}",str(question or "").casefold()))
-    question_terms-={"what","are","the","main","findings","is","this","that","does","document","report","explain","define","list","show","about","principal","biais"}
-    candidates=[]
+    question_terms=set(re.findall(r"[\wÀ-ÿ-]{3,}",str(question or "").casefold()));question_terms-={"what","are","the","main","findings","is","this","that","does","document","report","explain","define","list","show","about","principal","biais"};candidates=[]
     for index,hit in enumerate(selected_hits or ()):
         if hit is None:continue
-        raw=str(getattr(hit,"text","") or "")
-        raw=re.sub(r"\[(?:section|source|file|page|document|metadata|citation|reference)\s*:\s*.*?\]\s*"," ",raw,flags=re.I|re.S)
+        raw=str(getattr(hit,"text","") or "");raw=re.sub(r"\[(?:section|source|file|page|document|metadata|citation|reference)\s*:\s*.*?\]\s*"," ",raw,flags=re.I|re.S)
         for sentence in re.split(r"(?<=[.!?؟])\s+|\n+",raw):
             sentence=re.sub(r"\s+"," ",sentence).strip()
             if not sentence or len(sentence)<12:continue
-            tokens=set(re.findall(r"[\wÀ-ÿ-]{3,}",sentence.casefold()))
-            overlap=len(tokens&question_terms)/max(1,len(question_terms)) if question_terms else 0.0
-            score=.60*float(getattr(hit,"score",0.0) or 0.0)+.40*overlap
-            candidates.append((score,f"{sentence} [S{index+1}]") )
+            tokens=set(re.findall(r"[\wÀ-ÿ-]{3,}",sentence.casefold()));overlap=len(tokens&question_terms)/max(1,len(question_terms)) if question_terms else 0.;score=.60*float(getattr(hit,"score",0.0) or 0.0)+.40*overlap;candidates.append((score,f"{sentence} [S{index+1}]") )
     candidates.sort(key=lambda row:row[0],reverse=True);chosen=[];seen=set()
     for score,sentence in candidates:
         normalized=re.sub(r"\[S\d+\]", "", sentence).casefold()
@@ -165,14 +147,12 @@ def _safe_simple_extractive_answer(question:str,selected_hits:Sequence[Any],max_
     return "\n".join(f"- {sentence}" for sentence in chosen)
 
 def is_control_message(text:str)->bool:
-    """Return True only for non-empty operational abstention/error messages."""
     normalized=_normalize(text).lstrip("-•* ")
     if not normalized:return False
     if re.search(r"\[s\d+\]",normalized,re.I) and not any(normalized.startswith(prefix) for prefix in _ABSTENTION_PREFIXES):return False
     return any(normalized.startswith(prefix) for prefix in _ABSTENTION_PREFIXES)
 
 def safe_verify_final_answer(answer:str,hits:Sequence[Any],*,require_entailment:bool=False)->dict[str,Any]:
-    """Verify actual answer claims while treating controlled abstentions as states."""
     if is_control_message(answer):return {"checked":False,"allow":False,"reason":"abstention_not_claim","claim_count":0,"blocked_claims":0,"supported_ratio":0.0,"matrix_claim_count":0,"matrix_all_entailed":False,"claim_checks":[],"evidence_claim_matrix":[]}
     from rag_project.intelligence.evidence_guard import verify_claims
     from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix
@@ -184,12 +164,20 @@ def safe_verify_final_answer(answer:str,hits:Sequence[Any],*,require_entailment:
     else:reason="verified"
     return {"checked":bool(checks),"allow":allow,"reason":reason,"claim_count":len(checks),"blocked_claims":len(blocked_checks),"supported_ratio":round(support_ratio,4),"matrix_claim_count":len(matrix),"matrix_all_entailed":matrix_strong,"claim_checks":[check.to_dict() for check in checks],"evidence_claim_matrix":[record.to_dict() for record in matrix]}
 
+def _install_legacy_extractive_guard()->None:
+    try:
+        from rag_project.intelligence import god_mode as legacy_god_mode
+        legacy_god_mode._simple_extractive_answer=_safe_simple_extractive_answer
+    except Exception:
+        pass
+
+_install_legacy_extractive_guard()
+
 def install()->None:
     from rag_project.intelligence import top_level_pipeline,entity_coverage,final_answer_contract,god_mode_100
     top_level_pipeline.rewrite_follow_up=safe_rewrite_follow_up;top_level_pipeline._production_integrity_rewrite_installed=True
     entity_coverage.extract_query_entities=safe_extract_query_entities;entity_coverage.score_entity_coverage=safe_score_entity_coverage;entity_coverage._production_integrity_entities_installed=True
-    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer
-    god_mode_100._simple_extractive_answer=_safe_simple_extractive_answer
+    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer;god_mode_100._simple_extractive_answer=_safe_simple_extractive_answer
     final_answer_contract.verify_final_answer=safe_verify_final_answer
 
 __all__=["safe_extract_query_entities","safe_score_entity_coverage","safe_rewrite_follow_up","safe_verify_final_answer","is_control_message","install"]
