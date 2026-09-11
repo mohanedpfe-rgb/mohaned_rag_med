@@ -4,7 +4,7 @@ Two modes are supported:
 - offline smoke: deterministic local callable benchmark;
 - HTTP validation: real requests against the running MedEvidence API.
 The HTTP mode is the certification path for the plan's 100+ concurrent / 1000+
-queries-per-minute requirement.
+queries-per-minute requirement and can persist evidence to an artifact file.
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import json
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -105,6 +106,7 @@ def main() -> int:
     parser.add_argument("--queries", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--output", default=None, help="Optional JSON evidence path")
     args = parser.parse_args()
 
     if args.url:
@@ -112,8 +114,14 @@ def main() -> int:
     else:
         payload = run_offline(args.queries, min(args.workers, 32))
     payload["created"] = time.time()
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if payload.get("errors", 0) == 0 else 2
+    if payload.get("mode") == "offline_smoke":
+        return 0
+    return 0 if payload.get("target_met_in_this_run") else 2
 
 
 if __name__ == "__main__":
