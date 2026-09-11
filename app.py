@@ -7,6 +7,7 @@ from typing import Any
 import streamlit as st
 
 from rag_project.app import bookrag_ui
+from rag_project.app.advanced_intelligence_panel import render_advanced_intelligence_panel
 from rag_project.app.intelligence_panel import render_intelligence_panel
 from rag_project.app.production_contract_panel import render_production_contract_panel
 from rag_project.ingestion.responsive_supervisor import start as start_supervisor
@@ -16,7 +17,7 @@ from rag_project.intelligence.production_contract_v2 import install as install_p
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 from rag_project.canonical_runtime import install as install_canonical_runtime
 
-_PIPELINE_RUNTIME_VERSION = "2026-09-11-document-aware-v5"
+_PIPELINE_RUNTIME_VERSION = "2026-09-11-document-aware-v6"
 
 
 def _load_local_env():
@@ -55,6 +56,7 @@ def _install_ui_guards():
         ask(system); result=st.session_state.get('answer_result')
         if isinstance(result,dict):
             render_intelligence_panel(result)
+            render_advanced_intelligence_panel(result)
             render_production_contract_panel(result)
     def enhanced_evidence_row(item:Any,index:int):
         if isinstance(item,dict):
