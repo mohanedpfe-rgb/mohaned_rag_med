@@ -26,6 +26,8 @@ class PageExtraction:
     routing_decision: str = "native"
     table_ids: List[str] = field(default_factory=list)
     figure_ids: List[str] = field(default_factory=list)
+    table_texts: List[str] = field(default_factory=list)
+    figure_captions: List[str] = field(default_factory=list)
     normalized_text: str = ""
     entities: Dict[str, List[str]] = field(default_factory=dict)
     headings: List[str] = field(default_factory=list)
