@@ -13,6 +13,7 @@ from rag_project.intelligence.deep_pdf_finalizer import VisionFigureAdapter
 from rag_project.intelligence.deep_pdf_finalizer import install as install_final
 from rag_project.intelligence.deep_pdf_finalizer_v2 import install as install_v2
 from rag_project.intelligence.deep_pdf_finalizer_v3 import install as install_v3
+from rag_project.intelligence.deep_pdf_finalizer_v4 import install as install_v4
 from rag_project.intelligence.document_structure import (
     DocumentStructureStore,
     DocumentStructureTracker,
@@ -30,6 +31,7 @@ install_deep()
 install_final()
 install_v2()
 install_v3()
+install_v4()
 
 
 def _page(number: int = 1, text: str = "Chapter 1 Anatomy\n1.1 Bones\nText") -> PageExtraction:
@@ -55,7 +57,7 @@ def test_all_45_pdf_architecture_contracts() -> None:
         ("04_structure_store", inspect.isclass(DocumentStructureStore)),
         ("05_heading_candidates", bool(extract_heading_candidates("Chapter 2 Physiology\n2.1 Ventilation"))),
         ("06_tracker_cross_page", (lambda t: (lambda a, b: a.chapter_id == b.chapter_id and a.section_id == b.section_id and a.parent_id == b.parent_id)(t.analyze_page(1, "Chapter 2\n2.1 A"), t.analyze_page(2, "continued prose")))(DocumentStructureTracker("d"))),
-        ("07_extractor_final_patch_hook", getattr(PDFExtractor, "_final_pdf_patched", False) and getattr(PDFExtractor, "_final_pdf_v2_patched", False) and getattr(PDFExtractor, "_final_pdf_v3_patched", False)),
+        ("07_extractor_final_patch_hook", getattr(PDFExtractor, "_final_pdf_patched", False) and getattr(PDFExtractor, "_final_pdf_v2_patched", False) and getattr(PDFExtractor, "_final_pdf_v3_patched", False) and getattr(PDFExtractor, "_final_pdf_v4_patched", False)),
         ("08_chunker_final_patch_hook", getattr(SemanticChunker, "_final_pdf_patched", False) and getattr(SemanticChunker, "_final_pdf_v2_patched", False)),
         ("09_vector_final_patch_hook", getattr(VectorStore, "_final_pdf_patched", False) and getattr(VectorStore, "_final_pdf_v3_patched", False)),
         ("10_context_final_patch_hook", getattr(ContextBuilder, "_final_pdf_patched", False) and getattr(ContextBuilder, "_final_pdf_v2_patched", False)),
