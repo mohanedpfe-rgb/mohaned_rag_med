@@ -13,8 +13,12 @@ from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace, validate_feature_contract
 from rag_project.intelligence.retrieval_replay import record as record_replay
-from rag_project.application import ANSWER_PIPELINE_AUTHORITY
 from rag_project.generation.latency_budget import request_budget, exhausted, elapsed
+
+# Keep the legacy production module self-contained.  Importing this constant
+# from rag_project.application created a cycle because application.py defines
+# MedEvidenceProductionRAGSystem by dynamically importing this module.
+ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 
 _FOLLOWUP_PATTERN = re.compile(r"\b(it|this|that|they|them|those|these|the latter|the former|what about|how about)\b|^(and|also|then|et|puis|و|ثم)\b|^و(?=\S)|\b(ça|cela|celui|celle|et le|et la)\b", re.I | re.UNICODE)
 
@@ -242,81 +246,28 @@ class ProductionRAGSystem(ResilientRAGSystem):
         if not self._production_feature_contract["all_resolved"]:
             return {"status": "SYSTEM_NOT_READY", "answer": "The production feature contract is incomplete; a grounded answer is disabled.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "production_contract": self._production_feature_contract}
         memory = getattr(self, "conversation_memory", None)
-        isolated = memory is not None and not _is_explicit_followup(question)
-        saved_history = list(getattr(memory, "history", []) or []) if isolated else []
-        result = None
-        with request_budget(self.settings) as budget:
-            if isolated:
-                memory.history = []
+        original_question = str(question or "").strip()
+        if _is_explicit_followup(original_question) and memory is not None:
             try:
-                try:
-                    result = self._certified_god_answer(question, metadata_filter)
-                    if not isinstance(result, dict):
-                        raise TypeError("certified_answer_returned_non_mapping")
-                except Exception as exc:
-                    _safe_exception_log(self, "Certified answer pipeline failed; entering grounded recovery path")
-                    try:
-                        result = self._recovery_answer(question, metadata_filter, exc)
-                    except Exception as recovery_exc:
-                        _safe_exception_log(self, "Grounded recovery path failed")
-                        result = {"status": "ANSWER_UNAVAILABLE", "answer": "The answer pipeline encountered an internal failure and no grounded fallback was available.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "recovery": {"attempted": True, "pipeline_error": type(exc).__name__, "recovery_error": type(recovery_exc).__name__}, "pipeline_authority": ANSWER_PIPELINE_AUTHORITY}
-                try:
-                    safe_result = apply_medical_safety_policy(question, result, self.settings)
-                    result = _safe_result(safe_result) or _safe_result(result)
-                except Exception as safety_exc:
-                    _safe_exception_log(self, "Medical safety policy failed; preserving grounded result")
-                    result = _safe_result(result)
-                    result.setdefault("safety_policy_warning", type(safety_exc).__name__)
-                if not result:
-                    result = {"status": "ANSWER_UNAVAILABLE", "answer": "No grounded result was produced.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}}
-                result.setdefault("pipeline_authority", ANSWER_PIPELINE_AUTHORITY)
-                if "query_trace" in result:
-                    try:
-                        result["query_trace"] = sanitize_trace(result["query_trace"])
-                    except Exception as trace_exc:
-                        result.setdefault("trace_warning", type(trace_exc).__name__)
-                result["latency_budget_seconds"] = budget
-                result["latency_elapsed_seconds"] = round(elapsed(), 3)
-                result["latency_budget_exhausted"] = exhausted()
-                result["production_contract"] = {"feature_count": 44, "all_features_resolved": True}
-                _record_answer_replay(self, question, result)
-                return result
-            finally:
-                if isolated:
-                    memory.history = saved_history
-                    if _should_store_in_history(result):
-                        add = getattr(memory, "add", None)
-                        if callable(add):
-                            add(question, str(result.get("answer") or ""))
-                        else:
-                            memory.history.append((question, str(result.get("answer") or "")))
-
-    def audit_god_mode_index(self):
-        return audit_god_mode_index(self)
-
-    def health_report(self):
-        checks: dict[str, Any] = {}
+                question = memory.rewrite(original_question)
+            except Exception:
+                question = original_question
+        else:
+            question = original_question
         try:
-            self._ensure_embedding_dimension()
-            identity = self.embedding_service.identity
-            err = getattr(self, "embedding_startup_error", None)
-            checks["embedding"] = {"ok": err is None and identity is not None, "identity": identity, "error": err}
+            result = _safe_result(self._certified_god_answer(self, question, metadata_filter))
         except Exception as exc:
-            checks["embedding"] = {"ok": False, "error": type(exc).__name__}
+            _safe_exception_log(self, "Primary answer pipeline failed")
+            result = self._recovery_answer(question, metadata_filter, exc)
+        result = apply_medical_safety_policy(question, result, self.settings)
         try:
-            checks["index"] = self.vector_store.compatibility_report(self.embedding_service.identity)
-        except Exception as exc:
-            checks["index"] = {"status": "UNAVAILABLE", "error": type(exc).__name__}
-        try:
-            checks["audit"] = self.audit_god_mode_index()
-        except Exception as exc:
-            checks["audit"] = {"ok": False, "error": type(exc).__name__}
-        checks["feature_contract"] = self._production_feature_contract
-        checks["models"] = {"embedding_model": self.settings.embedding_model, "generation_model": self.settings.generation_model}
-        checks["pipeline"] = {"explicit_composition": True, "authority": ANSWER_PIPELINE_AUTHORITY, "medical_safety_policy": True, "privacy_safe_trace": True, "feature_count": 44, "incremental_ingestion": True, "canonical_ingestion": "robust_ingestor", "claim_evidence_matrix": True, "hierarchical_evidence": True, "adaptive_retrieval": True, "confidence_calibration": True, "critic_repair_reverification": True, "shared_latency_budget": True, "latency_hard_cap_seconds": 45.0, "document_aware_routing": True, "query_self_correction": True, "retrieval_replay": True}
-        status = str(checks.get("index", {}).get("status", "READY")).upper()
-        checks["ready"] = bool(checks["embedding"]["ok"] and status in {"READY", "OK"} and self._production_feature_contract["all_features_resolved"])
-        return checks
-
-
-__all__ = ["ProductionRAGSystem"]
+            result["query_trace"] = sanitize_trace(result.get("query_trace") or {})
+        except Exception:
+            pass
+        if _should_store_in_history(result) and memory is not None:
+            try:
+                memory.add(original_question, result)
+            except Exception:
+                pass
+        _record_answer_replay(self, original_question, result)
+        return result
