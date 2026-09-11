@@ -161,20 +161,43 @@ class ResilientCall:
             raise RuntimeError("call_failed")
 
 
+class _ClosableConnection:
+    """Proxy that keeps the existing `with store._connect()` API but always closes."""
+    def __init__(self, connection: sqlite3.Connection):
+        self._connection = connection
+
+    def __enter__(self):
+        self._connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return self._connection.__exit__(exc_type, exc, tb)
+        finally:
+            self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 class OperationsStore:
     """SQLite store matching the plan's query/answer/verification/feedback model."""
 
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as db:
+        db = sqlite3.connect(self.db_path)
+        try:
             db.executescript(SCHEMA)
             db.commit()
+        finally:
+            db.close()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> _ClosableConnection:
         db = sqlite3.connect(self.db_path, timeout=10)
         db.execute("PRAGMA foreign_keys=ON")
-        return db
+        db.execute("PRAGMA busy_timeout=10000")
+        return _ClosableConnection(db)
 
     def record_result(self, query_id: str, query: str, result: Mapping[str, Any], latency_ms: float,
                       *, user_id: str | None = None, session_id: str | None = None) -> None:
@@ -185,17 +208,9 @@ class OperationsStore:
         metadata = {"status": result.get("status"), "emergency": result.get("emergency_flag", False),
                     "needs_review": result.get("needs_review", False)}
         with self._connect() as db:
-            db.execute("INSERT OR REPLACE INTO query_log VALUES (?,?,?,?,?,?,?,?,?)", (
-                query_id, query[:4000], route.get("intent"), float(route.get("complexity", 0.0) or 0.0),
-                result.get("generation_path"), now, user_id, session_id, json.dumps(metadata, ensure_ascii=False)))
-            db.execute("INSERT OR REPLACE INTO answer_log VALUES (?,?,?,?,?)", (
-                query_id, str(result.get("answer", ""))[:20000], float(confidence.get("evidence_confidence", 0.0) or 0.0),
-                float(latency_ms), now))
-            db.execute("INSERT OR REPLACE INTO verification_log VALUES (?,?,?,?,?)", (
-                query_id,
-                json.dumps(verification.get("alerts", []), ensure_ascii=False),
-                json.dumps(verification.get("failed_checks", []), ensure_ascii=False),
-                float(confidence.get("evidence_confidence", verification.get("supported_ratio", 0.0)) or 0.0), now))
+            db.execute("INSERT OR REPLACE INTO query_log VALUES (?,?,?,?,?,?,?,?,?)", (query_id, query[:4000], route.get("intent"), float(route.get("complexity", 0.0) or 0.0), result.get("generation_path"), now, user_id, session_id, json.dumps(metadata, ensure_ascii=False)))
+            db.execute("INSERT OR REPLACE INTO answer_log VALUES (?,?,?,?,?)", (query_id, str(result.get("answer", ""))[:20000], float(confidence.get("evidence_confidence", 0.0) or 0.0), float(latency_ms), now))
+            db.execute("INSERT OR REPLACE INTO verification_log VALUES (?,?,?,?,?)", (query_id, json.dumps(verification.get("alerts", []), ensure_ascii=False), json.dumps(verification.get("failed_checks", []), ensure_ascii=False), float(confidence.get("evidence_confidence", verification.get("supported_ratio", 0.0)) or 0.0), now))
             db.commit()
 
     def add_feedback(self, query_id: str, feedback_type: str, feedback_text: str | None = None) -> None:
@@ -203,18 +218,12 @@ class OperationsStore:
         if feedback_type not in allowed:
             raise ValueError(f"feedback_type must be one of {sorted(allowed)}")
         with self._connect() as db:
-            db.execute("INSERT INTO feedback_log(query_id,user_feedback,feedback_text,timestamp) VALUES(?,?,?,?)",
-                       (query_id, feedback_type, feedback_text, time.time()))
+            db.execute("INSERT INTO feedback_log(query_id,user_feedback,feedback_text,timestamp) VALUES(?,?,?,?)", (query_id, feedback_type, feedback_text, time.time()))
             db.commit()
 
     def wrong_feedback_rows(self) -> list[dict[str, Any]]:
         with self._connect() as db:
-            rows = db.execute("""
-                SELECT q.query, q.intent, q.complexity, q.path, f.user_feedback, f.feedback_text
-                FROM feedback_log f JOIN query_log q ON q.query_id=f.query_id
-                WHERE f.user_feedback IN ('wrong','incomplete')
-                ORDER BY f.timestamp DESC
-            """).fetchall()
+            rows = db.execute("SELECT q.query, q.intent, q.complexity, q.path, f.user_feedback, f.feedback_text FROM feedback_log f JOIN query_log q ON q.query_id=f.query_id WHERE f.user_feedback IN ('wrong','incomplete') ORDER BY f.timestamp DESC").fetchall()
         return [dict(zip(("query","intent","complexity","path","feedback","feedback_text"), r)) for r in rows]
 
     def samples(self, metric: str, labels: Mapping[str, str] | None = None) -> list[float]:
@@ -233,8 +242,7 @@ class OperationsStore:
 
     def observe(self, metric: str, value: float, labels: Mapping[str, str] | None = None) -> None:
         with self._connect() as db:
-            db.execute("INSERT INTO metric_sample(timestamp,metric,value,labels_json) VALUES(?,?,?,?)",
-                       (time.time(), metric, float(value), json.dumps(dict(labels or {}), sort_keys=True)))
+            db.execute("INSERT INTO metric_sample(timestamp,metric,value,labels_json) VALUES(?,?,?,?)", (time.time(), metric, float(value), json.dumps(dict(labels or {}), sort_keys=True)))
             db.commit()
 
 
@@ -244,196 +252,97 @@ class MetricsService:
 
     @staticmethod
     def _percentile(values: Sequence[float], q: float) -> float:
-        if not values:
-            return 0.0
-        vals = sorted(values)
-        idx = min(len(vals) - 1, max(0, math.ceil(q * len(vals)) - 1))
-        return float(vals[idx])
+        if not values: return 0.0
+        vals = sorted(values); idx = min(len(vals) - 1, max(0, math.ceil(q * len(vals)) - 1)); return float(vals[idx])
 
     def snapshot(self) -> dict[str, Any]:
         with self.store._connect() as db:
             rows = db.execute("SELECT q.intent,q.path,a.latency_ms,q.query_id,q.timestamp FROM query_log q JOIN answer_log a ON a.query_id=q.query_id").fetchall()
             feedback = db.execute("SELECT user_feedback, COUNT(*) FROM feedback_log GROUP BY user_feedback").fetchall()
-        by_intent: dict[str, dict[str, int]] = {}
-        paths: dict[str, int] = {}
-        latencies = []
+        by_intent: dict[str, dict[str, int]] = {}; paths: dict[str, int] = {}; latencies = []
         for intent, path, latency, _, _ in rows:
-            by_intent.setdefault(intent or "unknown", {"total": 0, "positive": 0, "negative": 0})["total"] += 1
-            paths[path or "unknown"] = paths.get(path or "unknown", 0) + 1
-            latencies.append(float(latency or 0.0))
-        positive = sum(int(count) for kind, count in feedback if kind in {"correct", "helpful"})
-        negative = sum(int(count) for kind, count in feedback if kind in {"wrong", "incomplete"})
-        total_feedback = positive + negative
-        return {
-            "accuracy_by_type": {k: {**v, "observed_accuracy": (v["positive"] / v["total"] if v["total"] else None)} for k, v in by_intent.items()},
-            "latency_percentiles": {"p50": self._percentile(latencies, .50), "p95": self._percentile(latencies, .95), "p99": self._percentile(latencies, .99)},
-            "path_usage": paths,
-            "feedback": dict(feedback),
-            "error_rates": {"negative_feedback_rate": (negative / total_feedback if total_feedback else 0.0)},
-        }
+            by_intent.setdefault(intent or "unknown", {"total": 0, "positive": 0, "negative": 0})["total"] += 1; paths[path or "unknown"] = paths.get(path or "unknown", 0) + 1; latencies.append(float(latency or 0.0))
+        positive = sum(int(count) for kind, count in feedback if kind in {"correct", "helpful"}); negative = sum(int(count) for kind, count in feedback if kind in {"wrong", "incomplete"}); total_feedback = positive + negative
+        return {"accuracy_by_type": {k: {**v, "observed_accuracy": (v["positive"] / v["total"] if v["total"] else None)} for k, v in by_intent.items()}, "latency_percentiles": {"p50": self._percentile(latencies, .50), "p95": self._percentile(latencies, .95), "p99": self._percentile(latencies, .99)}, "path_usage": paths, "feedback": dict(feedback), "error_rates": {"negative_feedback_rate": (negative / total_feedback if total_feedback else 0.0)}}
 
     def alerts(self, *, latency_p95_ms: float = 20000, failure_rate: float = 0.15, accuracy_drop: float = 0.05) -> list[str]:
-        snap = self.snapshot()
-        alerts: list[str] = []
-        if snap["latency_percentiles"]["p95"] > latency_p95_ms:
-            alerts.append("latency_p95_above_threshold")
-        if snap["error_rates"]["negative_feedback_rate"] > failure_rate:
-            alerts.append("negative_feedback_above_threshold")
+        snap = self.snapshot(); alerts: list[str] = []
+        if snap["latency_percentiles"]["p95"] > latency_p95_ms: alerts.append("latency_p95_above_threshold")
+        if snap["error_rates"]["negative_feedback_rate"] > failure_rate: alerts.append("negative_feedback_above_threshold")
         accuracies = [v["observed_accuracy"] for v in snap["accuracy_by_type"].values() if v["observed_accuracy"] is not None]
-        if accuracies and min(accuracies) < 1.0 - accuracy_drop:
-            alerts.append("observed_accuracy_below_threshold")
+        if accuracies and min(accuracies) < 1.0 - accuracy_drop: alerts.append("observed_accuracy_below_threshold")
         return alerts
 
 
 class ABTestManager:
-    """Deterministic config-based experiment assignment and basic significance helpers."""
-    def __init__(self, store: OperationsStore):
-        self.store = store
-
+    def __init__(self, store: OperationsStore): self.store = store
     @staticmethod
     def assign(experiment: str, query_id: str, variants: Sequence[str] = ("A", "B"), weights: Sequence[float] | None = None) -> str:
-        if not variants:
-            raise ValueError("variants cannot be empty")
+        if not variants: raise ValueError("variants cannot be empty")
         weights = list(weights or [1.0] * len(variants))
-        if len(weights) != len(variants) or any(w < 0 for w in weights) or sum(weights) <= 0:
-            raise ValueError("weights must be non-negative and match variants")
-        value = int(hashlib.sha256(f"{experiment}:{query_id}".encode()).hexdigest()[:16], 16) / float(0xFFFFFFFFFFFFFFFF)
-        cumulative = 0.0
-        total = float(sum(weights))
+        if len(weights) != len(variants) or any(w < 0 for w in weights) or sum(weights) <= 0: raise ValueError("weights must be non-negative and match variants")
+        value = int(hashlib.sha256(f"{experiment}:{query_id}".encode()).hexdigest()[:16], 16) / float(0xFFFFFFFFFFFFFFFF); cumulative = 0.0; total = float(sum(weights))
         for variant, weight in zip(variants, weights):
             cumulative += weight / total
-            if value < cumulative:
-                return variant
+            if value < cumulative: return variant
         return variants[-1]
-
     def assignment(self, experiment: str, query_id: str) -> str:
         with self.store._connect() as db:
             row = db.execute("SELECT variant FROM ab_assignment WHERE experiment=? AND query_id=?", (experiment, query_id)).fetchone()
-            if row:
-                return str(row[0])
-            variant = self.assign(experiment, query_id)
-            db.execute("INSERT INTO ab_assignment VALUES(?,?,?,?)", (experiment, query_id, variant, time.time()))
-            db.commit()
-            return variant
-
-    def record(self, experiment: str, query_id: str, variant: str, *, success: float | None = None,
-               latency_ms: float | None = None, satisfaction: float | None = None) -> None:
+            if row: return str(row[0])
+            variant = self.assign(experiment, query_id); db.execute("INSERT INTO ab_assignment VALUES(?,?,?,?)", (experiment, query_id, variant, time.time())); db.commit(); return variant
+    def record(self, experiment: str, query_id: str, variant: str, *, success: float | None = None, latency_ms: float | None = None, satisfaction: float | None = None) -> None:
         with self.store._connect() as db:
-            db.execute("INSERT OR REPLACE INTO ab_result VALUES(?,?,?,?,?,?,?)",
-                       (experiment, query_id, variant, success, latency_ms, satisfaction, time.time()))
-            db.commit()
-
+            db.execute("INSERT OR REPLACE INTO ab_result VALUES(?,?,?,?,?,?,?)", (experiment, query_id, variant, success, latency_ms, satisfaction, time.time())); db.commit()
     def compare(self, experiment: str) -> dict[str, Any]:
-        with self.store._connect() as db:
-            rows = db.execute("SELECT variant,success,latency_ms,satisfaction FROM ab_result WHERE experiment=?", (experiment,)).fetchall()
+        with self.store._connect() as db: rows = db.execute("SELECT variant,success,latency_ms,satisfaction FROM ab_result WHERE experiment=?", (experiment,)).fetchall()
         groups: dict[str, list[tuple[float,float,float]]] = {}
-        for variant, success, latency, satisfaction in rows:
-            groups.setdefault(variant, []).append((float(success or 0), float(latency or 0), float(satisfaction or 0)))
-        summary = {}
-        for variant, values in groups.items():
-            summary[variant] = {
-                "n": len(values),
-                "success_rate": statistics.fmean(v[0] for v in values) if values else 0.0,
-                "latency_ms": statistics.fmean(v[1] for v in values) if values else 0.0,
-                "satisfaction": statistics.fmean(v[2] for v in values) if values else 0.0,
-            }
-        winner = None
-        if summary:
-            winner = max(summary, key=lambda k: (summary[k]["success_rate"], -summary[k]["latency_ms"], summary[k]["satisfaction"]))
+        for variant, success, latency, satisfaction in rows: groups.setdefault(variant, []).append((float(success or 0), float(latency or 0), float(satisfaction or 0)))
+        summary = {variant: {"n": len(values), "success_rate": statistics.fmean(v[0] for v in values) if values else 0.0, "latency_ms": statistics.fmean(v[1] for v in values) if values else 0.0, "satisfaction": statistics.fmean(v[2] for v in values) if values else 0.0} for variant, values in groups.items()}
+        winner = max(summary, key=lambda k: (summary[k]["success_rate"], -summary[k]["latency_ms"], summary[k]["satisfaction"])) if summary else None
         return {"experiment": experiment, "variants": summary, "winner": winner, "statistical_test": "descriptive; use scipy/stats externally for formal p-values"}
 
 
 class RetrainingManager:
-    """Turns wrong/incomplete feedback into a deterministic review/retraining manifest."""
-    def __init__(self, store: OperationsStore, output_dir: str | Path):
-        self.store = store
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
+    def __init__(self, store: OperationsStore, output_dir: str | Path): self.store = store; self.output_dir = Path(output_dir); self.output_dir.mkdir(parents=True, exist_ok=True)
     def build_manifest(self) -> dict[str, Any]:
-        rows = self.store.wrong_feedback_rows()
-        by_intent: dict[str, int] = {}
-        by_path: dict[str, int] = {}
+        rows = self.store.wrong_feedback_rows(); by_intent: dict[str, int] = {}; by_path: dict[str, int] = {}
         for row in rows:
-            by_intent[row.get("intent") or "unknown"] = by_intent.get(row.get("intent") or "unknown", 0) + 1
-            by_path[row.get("path") or "unknown"] = by_path.get(row.get("path") or "unknown", 0) + 1
-        manifest = {
-            "created": time.time(),
-            "failure_count": len(rows),
-            "by_intent": by_intent,
-            "by_path": by_path,
-            "retrain": {
-                "intent_classifier": any(v >= 10 for v in by_intent.values()),
-                "complexity_scorer": any(float(r.get("complexity") or 0) in (0.3, 0.5, 0.7) for r in rows),
-                "retrieval_reranker": bool(rows),
-                "confidence_threshold_review": bool(rows),
-            },
-            "kb_review_required": bool(rows),
-            "samples": rows[:500],
-        }
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        (self.output_dir / f"retraining-manifest-{stamp}.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        return manifest
+            by_intent[row.get("intent") or "unknown"] = by_intent.get(row.get("intent") or "unknown", 0) + 1; by_path[row.get("path") or "unknown"] = by_path.get(row.get("path") or "unknown", 0) + 1
+        manifest = {"created": time.time(), "failure_count": len(rows), "by_intent": by_intent, "by_path": by_path, "retrain": {"intent_classifier": any(v >= 10 for v in by_intent.values()), "complexity_scorer": any(float(r.get("complexity") or 0) in (0.3, 0.5, 0.7) for r in rows), "retrieval_reranker": bool(rows), "confidence_threshold_review": bool(rows)}, "kb_review_required": bool(rows), "samples": rows[:500]}
+        stamp = time.strftime("%Y%m%d-%H%M%S"); (self.output_dir / f"retraining-manifest-{stamp}.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"); return manifest
 
 
 class BackupManager:
-    def __init__(self, source_dir: str | Path, backup_dir: str | Path, keep: int = 28):
-        self.source_dir = Path(source_dir)
-        self.backup_dir = Path(backup_dir)
-        self.keep = max(1, keep)
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
-
+    def __init__(self, source_dir: str | Path, backup_dir: str | Path, keep: int = 28): self.source_dir = Path(source_dir); self.backup_dir = Path(backup_dir); self.keep = max(1, keep); self.backup_dir.mkdir(parents=True, exist_ok=True)
     def backup(self) -> Path:
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        destination = self.backup_dir / stamp
-        destination.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S"); destination = self.backup_dir / stamp; destination.mkdir(parents=True, exist_ok=True)
         if self.source_dir.exists():
             for item in self.source_dir.rglob("*"):
-                if item.is_file():
-                    target = destination / item.relative_to(self.source_dir)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(item, target)
+                if item.is_file(): target = destination / item.relative_to(self.source_dir); target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(item, target)
         manifests = sorted((p for p in self.backup_dir.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
-        for stale in manifests[self.keep:]:
-            shutil.rmtree(stale, ignore_errors=True)
+        for stale in manifests[self.keep:]: shutil.rmtree(stale, ignore_errors=True)
         return destination
 
 
 @dataclass(frozen=True)
 class BenchmarkResult:
-    count: int
-    total_seconds: float
-    throughput_qps: float
-    p50_ms: float
-    p95_ms: float
-    p99_ms: float
-    errors: int
+    count: int; total_seconds: float; throughput_qps: float; p50_ms: float; p95_ms: float; p99_ms: float; errors: int
 
 
 def benchmark_callable(fn, inputs: Sequence[Any], workers: int = 8) -> BenchmarkResult:
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    timings: list[float] = []
-    errors = 0
-    started = time.perf_counter()
+    from concurrent.futures import ThreadPoolExecutor
+    timings: list[float] = []; errors = 0; started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = []
         for item in inputs:
-            item_started = time.perf_counter()
-            futures.append((item_started, pool.submit(fn, item)))
+            item_started = time.perf_counter(); futures.append((item_started, pool.submit(fn, item)))
         for item_started, future in futures:
-            try:
-                future.result()
-            except Exception:
-                errors += 1
+            try: future.result()
+            except Exception: errors += 1
             timings.append((time.perf_counter() - item_started) * 1000.0)
     total = time.perf_counter() - started
-    return BenchmarkResult(
-        count=len(inputs), total_seconds=total, throughput_qps=(len(inputs) / total if total else 0.0),
-        p50_ms=MetricsService._percentile(timings, .50), p95_ms=MetricsService._percentile(timings, .95),
-        p99_ms=MetricsService._percentile(timings, .99), errors=errors)
+    return BenchmarkResult(count=len(inputs), total_seconds=total, throughput_qps=(len(inputs) / total if total else 0.0), p50_ms=MetricsService._percentile(timings, .50), p95_ms=MetricsService._percentile(timings, .95), p99_ms=MetricsService._percentile(timings, .99), errors=errors)
 
 
-__all__ = [
-    "OperationsStore", "MetricsService", "ABTestManager", "RetrainingManager", "BackupManager",
-    "RetryPolicy", "CircuitBreaker", "ResilientCall", "BenchmarkResult", "benchmark_callable",
-]
+__all__ = ["OperationsStore", "MetricsService", "ABTestManager", "RetrainingManager", "BackupManager", "RetryPolicy", "CircuitBreaker", "ResilientCall", "BenchmarkResult", "benchmark_callable"]
