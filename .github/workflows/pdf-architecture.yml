@@ -29,4 +29,5 @@ jobs:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
+          PDF_CONTRACT_REVISION: "4"
         run: python -m pytest -q tests/test_pdf_45_contract.py tests/test_deep_pdf_architecture.py tests/test_universal_pdf_knowledge_model.py
