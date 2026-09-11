@@ -26,20 +26,13 @@ def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
         next_obj += 1
         page_obj = next_obj
         next_obj += 1
-        objects.append(
-            f"{content_obj} 0 obj\n<< /Length {len(stream)} >>\nstream\n".encode()
-            + stream
-            + b"\nendstream\nendobj\n"
-        )
-        objects.append(
-            f"{page_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode()
-        )
+        objects.append(f"{content_obj} 0 obj\n<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream\nendobj\n")
+        objects.append(f"{page_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 {font_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode())
         page_refs.append(page_obj)
     kids = " ".join(f"{ref} 0 R" for ref in page_refs)
     objects.insert(0, b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
     objects.insert(1, f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {len(page_refs)} >>\nendobj\n".encode())
     objects.insert(2, b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
-
     body = bytearray(b"%PDF-1.4\n")
     offsets = [0]
     for obj in objects:
@@ -49,9 +42,7 @@ def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
     body.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
     for offset in offsets[1:]:
         body.extend(f"{offset:010d} 00000 n \n".encode())
-    body.extend(
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    )
+    body.extend(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
     path.write_bytes(body)
     return path
 
@@ -104,13 +95,10 @@ def temp_project_root(settings_i5: Settings) -> Path:
 @pytest.fixture
 def ready_document(tmp_path: Path):
     path = tmp_path / "clean_diabetes_en.pdf"
-    return write_minimal_pdf(
-        path,
-        [
-            "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. HbA1c is used to assess glycemic control.",
-            "Metformin is commonly used for type 2 diabetes. Dose statements must preserve exact numbers and units from source evidence.",
-        ],
-    )
+    return write_minimal_pdf(path, [
+        "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. HbA1c is used to assess glycemic control.",
+        "Metformin is commonly used for type 2 diabetes. Dose statements must preserve exact numbers and units from source evidence.",
+    ])
 
 
 @pytest.fixture
@@ -141,7 +129,6 @@ def fake_ollama_fast():
 
 
 @pytest.fixture
-
 def real_ollama_optional(settings_i5):
     try:
         from urllib.request import urlopen
