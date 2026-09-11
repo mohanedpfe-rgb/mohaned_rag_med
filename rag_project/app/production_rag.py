@@ -1,7 +1,6 @@
 from __future__ import annotations
 import logging
 import re
-import time
 from pathlib import Path
 from typing import Any,Dict
 from rag_project.app import rag_system as rag_system_module
@@ -20,50 +19,68 @@ def _is_explicit_followup(question:str)->bool:
     text=str(question or '').strip()
     return bool(_FOLLOWUP_PATTERN.search(text))
 
-
 def _safe_list(value: Any) -> list[Any]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    if isinstance(value, tuple):
-        return list(value)
-    try:
-        return list(value)
-    except (TypeError, ValueError):
-        return []
-
+    if value is None:return []
+    if isinstance(value,list):return value
+    if isinstance(value,tuple):return list(value)
+    try:return list(value)
+    except (TypeError,ValueError):return []
 
 def _safe_logger(system: Any) -> Any:
-    logger = getattr(system, 'logger', None)
-    if logger is not None and callable(getattr(logger, 'exception', None)):
-        return logger
+    logger=getattr(system,'logger',None)
+    if logger is not None and callable(getattr(logger,'exception',None)):return logger
     return logging.getLogger(__name__)
 
+def _safe_exception_log(system: Any,message: str)->None:
+    try:_safe_logger(system).exception(message)
+    except Exception:pass
 
-def _safe_exception_log(system: Any, message: str) -> None:
-    try:
-        _safe_logger(system).exception(message)
-    except Exception:
-        pass
+def _safe_result(value: Any)->dict[str,Any]:
+    return dict(value) if isinstance(value,dict) else {}
 
+def _should_store_in_history(result: Any)->bool:
+    if not isinstance(result,dict) or not str(result.get('answer') or '').strip():return False
+    return str(result.get('status') or '').strip().upper() not in {'ANSWER_UNAVAILABLE','SYSTEM_NOT_READY','NOT_SUPPORTED','REASONING_ABSTAIN'}
 
-def _safe_result(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+def _norm_provenance_text(value: Any)->str:
+    text=re.sub(r'\s+',' ',str(value or '')).strip().casefold()
+    text=re.sub(r'\[(?:section|table|figure|source)\s*:[^\]]*\]',' ',text,flags=re.I)
+    return re.sub(r'\s+',' ',text).strip()
 
+def _extract_marker_lines(answer: str)->list[tuple[str,int]]:
+    rows=[]
+    for raw in str(answer or '').splitlines():
+        line=raw.strip()
+        match=re.search(r'\[S(\d+)\]\s*$',line,re.I)
+        if not match:continue
+        text=re.sub(r'\s*\[S\d+\]\s*$','',line,flags=re.I)
+        text=re.sub(r'^[-*•\s]+','',text).strip()
+        if text:rows.append((text,int(match.group(1))))
+    return rows
 
-def _should_store_in_history(result: Any) -> bool:
-    """Only persist usable answers; never turn internal/unavailable states into future context."""
-    if not isinstance(result, dict) or not str(result.get('answer') or '').strip():
-        return False
-    status = str(result.get('status') or '').strip().upper()
-    return status not in {
-        'ANSWER_UNAVAILABLE',
-        'SYSTEM_NOT_READY',
-        'NOT_SUPPORTED',
-        'REASONING_ABSTAIN',
+def _verify_extractive_provenance(answer: str,hits: list[Any])->dict[str,Any]:
+    rows=_extract_marker_lines(answer)
+    if not rows:return {'allow':False,'supported_ratio':0.0,'method':'exact_extractive_provenance','matched':0,'total':0}
+    matched=0;details=[]
+    for text,source_no in rows:
+        idx=source_no-1
+        if idx<0 or idx>=len(hits):
+            details.append({'source':source_no,'matched':False,'reason':'source_out_of_range'});continue
+        source_text=_norm_provenance_text(getattr(hits[idx],'text',''))
+        needle=_norm_provenance_text(text)
+        ok=bool(needle and len(needle)>=12 and needle in source_text)
+        if ok:matched+=1
+        details.append({'source':source_no,'matched':ok,'reason':'exact_source_substring' if ok else 'source_mismatch'})
+    ratio=matched/max(1,len(rows))
+    return {'allow':matched==len(rows) and matched>0,'supported_ratio':ratio,'method':'exact_extractive_provenance','matched':matched,'total':len(rows),'details':details}
+
+def _recovery_trace(question:str,hits:list[Any],exc:Exception,grounding:dict[str,Any],method:str)->dict[str,Any]:
+    return {
+        'mode':'grounded_recovery','question':str(question or '').strip(),'primary_pipeline_error':type(exc).__name__,
+        'retrieval':{'status':'completed','final_hits':len(hits)},
+        'generation':{'status':'extractive','method':method},
+        'verification':{'status':'completed','method':method,'supported_ratio':float(grounding.get('supported_ratio',0.0) or 0.0)},
     }
-
 
 class ProductionRAGSystem(ResilientRAGSystem):
     _certified_god_answer=enhanced_god_answer
@@ -98,109 +115,66 @@ class ProductionRAGSystem(ResilientRAGSystem):
             for flag in rag_system_module._INGEST_CANCEL_FLAGS.values():
                 if not flag.cancelled:flag.cancel();n+=1
             return n
-
     def _recovery_answer(self,question:str,metadata_filter:Dict[str,Any]|None,exc:Exception)->dict[str,Any]:
-        """Return a grounded extractive answer when the certified pipeline hits an unexpected runtime error."""
         try:
             from rag_project.retrieval.metadata_filter import MetadataFilter
             where=MetadataFilter.build(metadata_filter)
-        except Exception:
-            where=None
+        except Exception:where=None
         try:
-            hits=_safe_list(self.retriever.retrieve(str(question or '').strip(),top_k=max(1,min(int(getattr(self.settings,'top_k',8)),12)),where=where))
-            hits=[hit for hit in hits if hit is not None]
+            hits=_safe_list(self.retriever.retrieve(str(question or '').strip(),top_k=max(1,min(int(getattr(self.settings,'top_k',8)),12)),where=where));hits=[h for h in hits if h is not None]
         except Exception as retrieve_exc:
-            _safe_exception_log(self,"Recovery retrieval failed")
-            return {
-                'status':'ANSWER_UNAVAILABLE','answer':'I could not safely produce an answer from the indexed evidence right now.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'retrieval_failed':type(retrieve_exc).__name__,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-            }
+            _safe_exception_log(self,'Recovery retrieval failed')
+            return {'status':'ANSWER_UNAVAILABLE','answer':'I could not safely produce an answer from the indexed evidence right now.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'recovery':{'attempted':True,'retrieval_failed':type(retrieve_exc).__name__,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
         if not hits:
-            return {
-                'status':'NOT_SUPPORTED','answer':'I could not find sufficient evidence in the indexed documents to answer this question.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-            }
+            return {'status':'NOT_SUPPORTED','answer':'I could not find sufficient evidence in the indexed documents to answer this question.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
         try:
             from rag_project.intelligence.god_mode import _simple_extractive_answer
             answer=str(_simple_extractive_answer(str(question or ''),hits,max_sentences=6) or '').strip()
         except Exception as answer_exc:
-            _safe_exception_log(self,"Recovery extractive answer failed")
-            answer=''
-            answer_error=type(answer_exc).__name__
-        else:
-            answer_error=None
+            _safe_exception_log(self,'Recovery extractive answer failed');answer='';answer_error=type(answer_exc).__name__
+        else:answer_error=None
         if not answer:
-            return {
-                'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but it could not be safely converted into a grounded answer.','citations':[],'hits':hits,'confidence':{'level':'low','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'extractive_failed':answer_error},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-            }
+            return {'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but it could not be safely converted into a grounded answer.','citations':[],'hits':hits,'confidence':{'level':'low','evidence_confidence':0.0},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'extractive_failed':answer_error},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
+        provenance=_verify_extractive_provenance(answer,hits)
         try:
-            built=self.citation_manager.build(hits) or []
-            citations=self.citation_manager.validate(built,hits) or []
-        except Exception:
-            citations=[]
+            built=self.citation_manager.build(hits) or [];citations=self.citation_manager.validate(built,hits) or []
+        except Exception:citations=[]
+        if provenance.get('allow'):
+            grounding={'allow':True,'supported_ratio':1.0,'method':'exact_extractive_provenance','verified_items':provenance.get('details',[])}
+            return {'status':'SUCCESS_WITH_WARNINGS','answer':answer,'citations':citations,'hits':hits,'confidence':{'level':'high','evidence_confidence':1.0},'grounding':grounding,'claims':provenance.get('details',[]),'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True,'verification':'exact_extractive_provenance'},'query_trace':_recovery_trace(question,hits,exc,grounding,'exact_extractive_provenance'),'phase_implementation':{'canonical_pipeline_executed':False,'degraded_to_recovery':True,'phase_1':'preserved_from_primary_failure','phase_2':'retrieval_completed','phase_3':'extractive_fallback','phase_4':'exact_source_provenance_verified','phase_5':'visibility_preserved'},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
         try:
-            from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
-            blocks=[str(getattr(hit,'text','') or '') for hit in hits]
-            checks=_safe_list(verify_claims(answer,blocks,[f'S{i+1}' for i in range(len(hits))]))
-            ground=grounding_decision(checks,min_supported_ratio=0.60) if checks else {'allow':False,'supported_ratio':0.0}
-        except Exception:
-            checks=[];ground={'allow':False,'supported_ratio':0.0}
-        if not checks or not ground.get('allow',False):
-            return {
-                'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but the answer could not pass the grounding check safely.','citations':[],'hits':hits,
-                'confidence':{'level':'low','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounding_failed':True},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-            }
-        return {
-            'status':'SUCCESS_WITH_WARNINGS','answer':answer,'citations':citations,'hits':hits,
-            'confidence':{'level':'medium','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'grounding':ground,
-            'claims':[getattr(check,'to_dict',lambda: {'claim':str(getattr(check,'claim',''))})() for check in checks],
-            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-        }
-
+            from rag_project.intelligence.evidence_guard import verify_claims,grounding_decision
+            blocks=[str(getattr(hit,'text','') or '') for hit in hits];checks=_safe_list(verify_claims(answer,blocks,[f'S{i+1}' for i in range(len(hits))]));ground=grounding_decision(checks,min_supported_ratio=0.60) if checks else {'allow':False,'supported_ratio':0.0}
+        except Exception:checks=[];ground={'allow':False,'supported_ratio':0.0}
+        if checks and ground.get('allow',False):
+            ground=dict(ground);ground['method']='semantic_claim_verification'
+            return {'status':'SUCCESS_WITH_WARNINGS','answer':answer,'citations':citations,'hits':hits,'confidence':{'level':'medium','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'grounding':ground,'claims':[getattr(c,'to_dict',lambda:{'claim':str(getattr(c,'claim',''))})() for c in checks],'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True,'verification':'semantic_claim_verification'},'query_trace':_recovery_trace(question,hits,exc,ground,'semantic_claim_verification'),'phase_implementation':{'canonical_pipeline_executed':False,'degraded_to_recovery':True,'phase_1':'preserved_from_primary_failure','phase_2':'retrieval_completed','phase_3':'extractive_fallback','phase_4':'semantic_claim_verification','phase_5':'visibility_preserved'},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
+        return {'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but the answer could not pass the grounding check safely.','citations':[],'hits':hits,'confidence':{'level':'low','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounding_failed':True,'provenance':provenance},'query_trace':_recovery_trace(question,hits,exc,ground,'semantic_claim_verification'),'phase_implementation':{'canonical_pipeline_executed':False,'degraded_to_recovery':True,'phase_1':'primary_failed','phase_2':'retrieval_completed','phase_3':'extractive_fallback','phase_4':'grounding_failed','phase_5':'visibility_preserved'},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
         if not self._production_feature_contract['all_resolved']:
             return {'status':'SYSTEM_NOT_READY','answer':'The production feature contract is incomplete; a grounded answer is disabled.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'production_contract':self._production_feature_contract}
-        memory=getattr(self,'conversation_memory',None)
-        isolated=memory is not None and not _is_explicit_followup(question)
-        saved_history=list(getattr(memory,'history',[]) or []) if isolated else []
-        result=None
+        memory=getattr(self,'conversation_memory',None);isolated=memory is not None and not _is_explicit_followup(question);saved_history=list(getattr(memory,'history',[]) or []) if isolated else [];result=None
         with request_budget(self.settings) as budget:
-            if isolated:
-                memory.history=[]
+            if isolated:memory.history=[]
             try:
                 try:
                     result=self._certified_god_answer(question,metadata_filter)
-                    if not isinstance(result,dict):
-                        raise TypeError('certified_answer_returned_non_mapping')
+                    if not isinstance(result,dict):raise TypeError('certified_answer_returned_non_mapping')
                 except Exception as exc:
-                    _safe_exception_log(self,"Certified answer pipeline failed; entering grounded recovery path")
-                    try:
-                        result=self._recovery_answer(question,metadata_filter,exc)
+                    _safe_exception_log(self,'Certified answer pipeline failed; entering grounded recovery path')
+                    try:result=self._recovery_answer(question,metadata_filter,exc)
                     except Exception as recovery_exc:
-                        _safe_exception_log(self,"Grounded recovery path failed")
-                        result={
-                            'status':'ANSWER_UNAVAILABLE',
-                            'answer':'The answer pipeline encountered an internal failure and no grounded fallback was available.',
-                            'citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
-                            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'recovery_error':type(recovery_exc).__name__},
-                            'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
-                        }
+                        _safe_exception_log(self,'Grounded recovery path failed');result={'status':'ANSWER_UNAVAILABLE','answer':'The answer pipeline encountered an internal failure and no grounded fallback was available.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'recovery_error':type(recovery_exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY}
                 try:
-                    safe_result=apply_medical_safety_policy(question,result,self.settings)
-                    result=_safe_result(safe_result) or _safe_result(result)
+                    safe_result=apply_medical_safety_policy(question,result,self.settings);result=_safe_result(safe_result) or _safe_result(result)
                 except Exception as safety_exc:
-                    _safe_exception_log(self,"Medical safety policy failed; preserving grounded result")
-                    result=_safe_result(result)
-                    result.setdefault('safety_policy_warning',type(safety_exc).__name__)
-                if not result:
-                    result={'status':'ANSWER_UNAVAILABLE','answer':'No grounded result was produced.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0}}
+                    _safe_exception_log(self,'Medical safety policy failed; preserving grounded result');result=_safe_result(result);result.setdefault('safety_policy_warning',type(safety_exc).__name__)
+                if not result:result={'status':'ANSWER_UNAVAILABLE','answer':'No grounded result was produced.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0}}
                 result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
-                if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
-                result['latency_budget_seconds']=budget
-                result['latency_elapsed_seconds']=round(elapsed(),3)
-                result['latency_budget_exhausted']=exhausted()
-                result['production_contract']={'feature_count':44,'all_features_resolved':True}
+                if 'query_trace' in result:
+                    try:result['query_trace']=sanitize_trace(result['query_trace'])
+                    except Exception as trace_exc:result.setdefault('trace_warning',type(trace_exc).__name__)
+                result['latency_budget_seconds']=budget;result['latency_elapsed_seconds']=round(elapsed(),3);result['latency_budget_exhausted']=exhausted();result['production_contract']={'feature_count':44,'all_features_resolved':True}
                 return result
             finally:
                 if isolated:
