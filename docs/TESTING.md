@@ -16,9 +16,9 @@ This runs the deterministic local gate through `scripts/test_full_fast.py` using
 not slow and not integration and not requires_ollama
 ```
 
-The default local gate has a hard 120-second wall-clock budget. It is designed for deterministic unit, contract, regression, storage, ingestion, retrieval, intelligence, and generation coverage that does not require an external service or explicitly slow scenarios.
+The default local gate has a hard 120-second wall-clock budget. It covers deterministic unit, contract, regression, storage, ingestion, retrieval, intelligence, and generation tests that do not require an external service or explicitly slow scenarios.
 
-The runner reports actual pytest failures separately from timeouts and terminates Windows worker process trees when a timeout occurs, so timed-out children are not left running in the background.
+The runner reports actual pytest failures separately from timeouts and terminates Windows worker process trees when a timeout occurs.
 
 Advanced form:
 
@@ -29,12 +29,6 @@ python scripts/test_full_fast.py --workers 4 --timeout 110 --budget 120
 ## 2. Complete release suite
 
 The complete test inventory is intentionally not forced into the local two-minute budget. Run it explicitly with:
-
-```powershell
-python scripts/test_doctor.py --release-full
-```
-
-or:
 
 ```powershell
 python -m pytest -q --tb=short
@@ -50,7 +44,7 @@ Before an expensive run:
 python scripts/test_doctor.py --smart
 ```
 
-Smart mode runs the inexpensive diagnostic layers first and then the focused contract/storage checks and fast contract gate, reporting the first project-owned failure frame where possible.
+Smart mode runs inexpensive diagnostic layers first, then focused contract/storage checks and the fast contract gate.
 
 ## 4. Runtime provenance
 
@@ -58,15 +52,15 @@ Smart mode runs the inexpensive diagnostic layers first and then the focused con
 python scripts/test_doctor.py --audit-runtime
 ```
 
-This walks every runtime installer in a fresh process and tracks hot public symbols after each installer. It reports baseline owner, every mutation point, first bad owner, final owner, source file and line, signature, and runtime provenance flags.
+This walks every runtime installer in a fresh process and tracks hot public symbols after each installer. It reports baseline owner, mutation points, first bad owner, final owner, source file and line, signature, and runtime provenance flags.
 
-## 5. Fast focused probes
+## 5. Focused probes
 
 ```powershell
 python scripts/test_doctor.py --probe
 ```
 
-The probe set covers follow-up rewriting, structured numeric diagnostics, answer-engine enhancer signatures, document replacement/version retirement, lexical persistence after reopen, and lexical repair against the authoritative vector record.
+These cover follow-up rewriting, structured numeric diagnostics, answer-engine enhancer signatures, document replacement/version retirement, lexical persistence after reopen, and lexical repair.
 
 ## 6. Parallel subsystem matrix
 
@@ -74,18 +68,7 @@ The probe set covers follow-up rewriting, structured numeric diagnostics, answer
 python scripts/test_matrix.py
 ```
 
-This launches several fast lanes with limited parallelism:
-
-```text
-contracts
-runtime-diagnostics
-storage
-intelligence
-ingestion
-regression
-```
-
-A failed lane prints its marker expression and first project-owned traceback frame.
+This launches fast lanes for contracts, runtime diagnostics, storage, intelligence, ingestion, and regression and reports selected counts, failure families, failing node ids, tracebacks, and timing.
 
 ## 7. Automatic test categorisation
 
@@ -119,7 +102,5 @@ python scripts/test_matrix.py
    ↓
 python scripts/test_doctor.py --full
    ↓
-python scripts/test_doctor.py --release-full   (release/CI validation)
+python -m pytest -q --tb=short   (release/CI validation)
 ```
-
-Do not create another runtime compatibility patch until the provenance audit proves that the current owner is the correct place to change.
