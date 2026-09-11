@@ -31,7 +31,7 @@ def test_evidence_first_returns_real_source_sentence_without_llm():
     result = system.enhance(system, "What does insulin do?", None)
     assert result["status"] == "SUCCESS"
     assert "Insulin lowers blood glucose" in result["answer"]
-    assert "evidence_first" is True
+    assert result["evidence_first"] is True
     assert result["grounding"]["supported_ratio"] == 1.0
     assert result["generation_path"] == "deterministic_extractive"
 
