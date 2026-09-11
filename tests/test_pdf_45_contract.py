@@ -10,6 +10,7 @@ from rag_project.configuration.config_i5_16gb import I5_16GB_PRESET
 from rag_project.ingestion.document_models import PageExtraction
 from rag_project.intelligence.deep_pdf_contract import install as install_deep
 from rag_project.intelligence.deep_pdf_finalizer import VisionFigureAdapter
+from rag_project.intelligence.deep_pdf_finalizer import install as install_final
 from rag_project.intelligence.document_structure import (
     DocumentStructureStore,
     DocumentStructureTracker,
@@ -24,6 +25,7 @@ from rag_project.storage.vector_store import VectorStore
 
 
 install_deep()
+install_final()
 
 
 def _page(number: int = 1, text: str = "Chapter 1 Anatomy\n1.1 Bones\nText") -> PageExtraction:
@@ -49,11 +51,11 @@ def test_all_45_pdf_architecture_contracts() -> None:
         ("04_structure_store", inspect.isclass(DocumentStructureStore)),
         ("05_heading_candidates", bool(extract_heading_candidates("Chapter 2 Physiology\n2.1 Ventilation"))),
         ("06_tracker_cross_page", DocumentStructureTracker("d").analyze_page(1, "Chapter 2\n2.1 A").chapter_id == DocumentStructureTracker("d").analyze_page(2, "Chapter 2\n2.1 A").chapter_id),
-        ("07_extractor_final_patch_hook", hasattr(PDFExtractor, "_final_pdf_patched") or hasattr(PDFExtractor, "_deep_pdf_patched")),
-        ("08_chunker_final_patch_hook", hasattr(SemanticChunker, "_final_pdf_patched") or hasattr(SemanticChunker, "_deep_structure_patched")),
-        ("09_vector_final_patch_hook", hasattr(VectorStore, "_final_pdf_patched") or hasattr(VectorStore, "_deep_contract_patched")),
-        ("10_context_final_patch_hook", hasattr(ContextBuilder, "_final_pdf_patched")),
-        ("11_hybrid_final_patch_hook", hasattr(HybridRetriever, "_final_pdf_patched")),
+        ("07_extractor_final_patch_hook", getattr(PDFExtractor, "_final_pdf_patched", False)),
+        ("08_chunker_final_patch_hook", getattr(SemanticChunker, "_final_pdf_patched", False)),
+        ("09_vector_final_patch_hook", getattr(VectorStore, "_final_pdf_patched", False)),
+        ("10_context_final_patch_hook", getattr(ContextBuilder, "_final_pdf_patched", False)),
+        ("11_hybrid_final_patch_hook", getattr(HybridRetriever, "_final_pdf_patched", False)),
         ("12_vision_adapter", inspect.isclass(VisionFigureAdapter)),
         ("13_book_hierarchy_store", inspect.isclass(EnhancedVectorStore)),
     ]
@@ -136,7 +138,7 @@ def test_all_45_pdf_architecture_contracts() -> None:
         ("42_vision_description_method", callable(adapter.describe)),
         ("43_enhanced_store_search_method", callable(getattr(EnhancedVectorStore, "search", None))),
         ("44_vector_validator_method", callable(getattr(VectorStore, "validate_document_index", None))),
-        ("45_runtime_contract_documented", Path("ARCHITECTURE.md").read_text(encoding="utf-8").find("document hierarchy") >= 0),
+        ("45_runtime_contract_documented", "document hierarchy" in Path("ARCHITECTURE.md").read_text(encoding="utf-8").casefold()),
     ]
 
     failed = [name for name, ok in checks if not ok]
