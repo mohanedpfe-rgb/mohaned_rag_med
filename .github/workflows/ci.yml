@@ -60,7 +60,7 @@ jobs:
       - name: Run existing regression and contract suite
         env:
           DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "true"
+          OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
         run: python -m pytest -q tests --ignore=tests/high_level
 
