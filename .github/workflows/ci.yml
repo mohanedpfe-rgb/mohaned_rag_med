@@ -25,7 +25,9 @@ jobs:
       - name: Validate installed environment
         run: python -m pip check
       - name: Compile source
-        run: python -m compileall -q rag_project app.py run_dev.py
+        run: python -m compileall -q rag_project app.py run_dev.py scripts
+      - name: Validate two-plan test inventory
+        run: python scripts/validate_test_inventory.py
       - name: Run high-level behavior suite (primary gate)
         env:
           DEVICE_MODE: i5_16gb
@@ -52,7 +54,9 @@ jobs:
       - name: Validate installed environment
         run: python -m pip check
       - name: Compile source
-        run: python -m compileall -q rag_project app.py run_dev.py
+        run: python -m compileall -q rag_project app.py run_dev.py scripts
+      - name: Validate two-plan test inventory
+        run: python scripts/validate_test_inventory.py
       - name: Run existing regression and contract suite
         env:
           DEVICE_MODE: i5_16gb
