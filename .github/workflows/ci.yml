@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  high-level-behavior:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -26,12 +26,39 @@ jobs:
         run: python -m pip check
       - name: Compile source
         run: python -m compileall -q rag_project app.py run_dev.py
-      - name: Run tests
+      - name: Run high-level behavior suite (primary gate)
         env:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
-        run: python -m pytest -q
+        run: python -m pytest -q tests/high_level -m high_level
+
+  regression-suite:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+      - name: Validate installed environment
+        run: python -m pip check
+      - name: Compile source
+        run: python -m compileall -q rag_project app.py run_dev.py
+      - name: Run existing regression and contract suite
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+        run: python -m pytest -q tests --ignore=tests/high_level
 
   security-audit:
     runs-on: ubuntu-latest
