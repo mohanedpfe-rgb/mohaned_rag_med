@@ -1,0 +1,14 @@
+[Unit]
+Description=Ollama local LLM service for MedEvidence Pro
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/ollama serve
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
