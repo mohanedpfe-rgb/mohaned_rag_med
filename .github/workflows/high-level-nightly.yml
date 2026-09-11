@@ -25,10 +25,12 @@ jobs:
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
         run: python -m pytest -q tests/high_level -m "high_level and slow"
-      - name: Check Ollama availability
-        continue-on-error: true
-        run: curl --fail --silent --show-error --max-time 5 http://127.0.0.1:11434/api/tags
       - name: Run optional real-Ollama tests when available
         env:
           DEVICE_MODE: i5_16gb
-        run: python -m pytest -q tests/high_level -m "high_level and requires_ollama" --maxfail=1
+        run: |
+          if curl --fail --silent --show-error --max-time 5 http://127.0.0.1:11434/api/tags >/dev/null; then
+            python -m pytest -q tests/high_level -m "high_level and requires_ollama" --maxfail=1
+          else
+            echo "Ollama is not available on this runner; optional real-Ollama tests are skipped."
+          fi
