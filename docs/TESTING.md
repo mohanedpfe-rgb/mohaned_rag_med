@@ -1,69 +1,74 @@
 # Intelligent Testing and Failure Localization
 
-The project now has a layered test system designed to find the first broken subsystem before the expensive full suite runs.
+The project uses a layered test strategy so local development can get a reliable answer quickly without confusing an intentionally expensive release suite with a two-minute gate.
 
-## 1. One command: smart diagnosis
+## 1. Fast local gate
 
 From the repository root:
+
+```powershell
+python scripts/test_doctor.py --full
+```
+
+This runs the deterministic local gate through `scripts/test_full_fast.py` using:
+
+```text
+not slow and not integration and not requires_ollama
+```
+
+The default local gate has a hard 120-second wall-clock budget. It is designed for deterministic unit, contract, regression, storage, ingestion, retrieval, intelligence, and generation coverage that does not require an external service or explicitly slow scenarios.
+
+The runner reports actual pytest failures separately from timeouts and terminates Windows worker process trees when a timeout occurs, so timed-out children are not left running in the background.
+
+Advanced form:
+
+```powershell
+python scripts/test_full_fast.py --workers 4 --timeout 110 --budget 120
+```
+
+## 2. Complete release suite
+
+The complete test inventory is intentionally not forced into the local two-minute budget. Run it explicitly with:
+
+```powershell
+python scripts/test_doctor.py --release-full
+```
+
+or:
+
+```powershell
+python -m pytest -q --tb=short
+```
+
+The complete suite includes slow, integration, and external-service tests and remains the release gate.
+
+## 3. Smart diagnosis
+
+Before an expensive run:
 
 ```powershell
 python scripts/test_doctor.py --smart
 ```
 
-Smart mode runs, in order:
+Smart mode runs the inexpensive diagnostic layers first and then the focused contract/storage checks and fast contract gate, reporting the first project-owned failure frame where possible.
 
-```text
-1. static Python parse check
-2. runtime mutation map
-3. pytest collection health
-4. runtime installer provenance
-5. focused contract/storage probes
-6. fast contract gate
-7. optional full suite
-```
-
-For every failing layer it reports the test failure family and the first project-owned traceback frame, for example:
-
-```text
-[lexical-persistence] SQLite lexical mirror was not queryable after reopen
-rag_project/storage/vector_store.py:412
-```
-
-The important distinction is that it reports both the **symptom** and the **owning source location**.
-
-## 2. Runtime provenance
+## 4. Runtime provenance
 
 ```powershell
 python scripts/test_doctor.py --audit-runtime
 ```
 
-This walks every runtime installer in a fresh process and tracks hot public symbols after each installer. It reports:
+This walks every runtime installer in a fresh process and tracks hot public symbols after each installer. It reports baseline owner, every mutation point, first bad owner, final owner, source file and line, signature, and runtime provenance flags.
 
-- baseline owner;
-- every mutation point;
-- first bad owner;
-- final owner;
-- source file and line;
-- signature and runtime provenance flags.
-
-This is specifically designed for the project's historical runtime monkeypatch/compatibility stack.
-
-## 3. Fast focused probes
+## 5. Fast focused probes
 
 ```powershell
 python scripts/test_doctor.py --probe
 ```
 
-The probe set covers the highest-risk contract families:
+The probe set covers follow-up rewriting, structured numeric diagnostics, answer-engine enhancer signatures, document replacement/version retirement, lexical persistence after reopen, and lexical repair against the authoritative vector record.
 
-- follow-up rewriting;
-- structured numeric diagnostics;
-- answer-engine enhancer signature;
-- document replacement/version retirement;
-- lexical persistence after reopen;
-- lexical repair against the authoritative vector record.
-
-## 4. Parallel subsystem matrix
+## 6. Parallel subsystem matrix
 
 ```powershell
 python scripts/test_matrix.py
@@ -80,41 +85,11 @@ ingestion
 regression
 ```
 
-A failed lane prints its marker expression and first project-owned traceback frame. This is the quickest way to see which subsystem is currently unhealthy.
-
-## 5. Contract gate
-
-```powershell
-python scripts/test_doctor.py --contracts
-```
-
-or:
-
-```powershell
-pytest -q -m "fast and contract"
-```
-
-These tests validate public return shapes, signatures, cross-module contracts, and protocol boundaries.
-
-## 6. Full suite
-
-Only after the fast layers are clean:
-
-```powershell
-python scripts/test_doctor.py --full
-```
-
-or:
-
-```powershell
-pytest -q
-```
-
-The full suite remains the release gate. The diagnostic tools are the fast localization layer before that gate.
+A failed lane prints its marker expression and first project-owned traceback frame.
 
 ## 7. Automatic test categorisation
 
-Tests no longer have to be manually marked one by one for the main subsystem groups. `tests/conftest.py` classifies tests from their path/name into categories such as:
+`tests/conftest.py` classifies tests from their path/name into categories such as:
 
 - unit
 - contract
@@ -138,15 +113,13 @@ New failure
    ↓
 python scripts/test_doctor.py --smart
    ↓
-first failing subsystem + first project source frame
-   ↓
-python scripts/test_doctor.py --audit-runtime   (when runtime mutation is involved)
-   ↓
-fix the owning production layer
+python scripts/test_doctor.py --probe
    ↓
 python scripts/test_matrix.py
    ↓
 python scripts/test_doctor.py --full
+   ↓
+python scripts/test_doctor.py --release-full   (release/CI validation)
 ```
 
 Do not create another runtime compatibility patch until the provenance audit proves that the current owner is the correct place to change.
