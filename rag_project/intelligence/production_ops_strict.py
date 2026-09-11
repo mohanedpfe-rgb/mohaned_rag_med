@@ -86,8 +86,12 @@ class VerifiedBackupManager(_BackupManager):
         return digest.hexdigest()
     def backup_sqlite(self, source_db:str|Path, destination_db:str|Path)->Path:
         source=Path(source_db); destination=Path(destination_db); destination.parent.mkdir(parents=True,exist_ok=True)
-        with sqlite3.connect(source) as src, sqlite3.connect(destination) as dst:
+        src=sqlite3.connect(source); dst=sqlite3.connect(destination)
+        try:
             src.execute("PRAGMA wal_checkpoint(FULL)"); src.backup(dst); dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            try: dst.close()
+            finally: src.close()
         if not self.verify_sqlite(destination): raise RuntimeError(f"backup integrity check failed: {destination}")
         return destination
     def backup(self)->Path:
@@ -106,7 +110,11 @@ class VerifiedBackupManager(_BackupManager):
         return {"ok":not failures,"checked":len(expected),"failures":failures}
     @staticmethod
     def verify_sqlite(db_path:str|Path)->bool:
-        with sqlite3.connect(db_path) as db: return str(db.execute("PRAGMA integrity_check").fetchone()[0]).lower()=="ok"
+        db=sqlite3.connect(db_path)
+        try:
+            return str(db.execute("PRAGMA integrity_check").fetchone()[0]).lower()=="ok"
+        finally:
+            db.close()
 
 
 class ExecutableRetrainingManager:
