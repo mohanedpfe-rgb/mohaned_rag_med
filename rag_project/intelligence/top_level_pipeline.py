@@ -164,3 +164,27 @@ def synthesize_answer(llm:Any,question:str,draft:str,phase:PhasePlan,temperature
     try:
         value=llm.generate(prompt=prompt,system_prompt=_SYNTHESIS_SYSTEM,temperature=temperature);return str(value or "").strip()[:10000] or None
     except Exception:return None
+
+def complete_phases(system:Any,question:str,base_result:dict[str,Any],metadata_filter:dict[str,Any]|None=None)->dict[str,Any]:
+    memory=getattr(system,"conversation_memory",None);history=getattr(memory,"history",[]) or [];context=getattr(memory,"prompt_context",lambda:" ")() if memory is not None else "";rewritten_question=rewrite_follow_up(question,history);deterministic=deterministic_phase1(rewritten_question,conversation_context=context);phase=llm_phase1(getattr(system,"llm",None),rewritten_question,deterministic,conversation_context=context);initial_hits=list(base_result.get("hits") or []);selected,retrieval_state=adaptive_retrieve(system,rewritten_question,phase,initial_hits,metadata_filter);terms=medical_term_layer(rewritten_question,selected);compact,compression=compress_context(rewritten_question,selected,max_chars=max(4000,int(getattr(getattr(system,"settings",None),"context_token_budget",3200))*3));extractive,extractive_state=extractive_draft(rewritten_question,selected,phase);temperature=dynamic_temperature(phase,getattr(getattr(system,"settings",None),"temperature",.2));hard_query=_hard_query(plan_query(rewritten_question,conversation_context=context),understand_query(rewritten_question,conversation_context=context),rewritten_question);enhanced=dict(base_result);enhanced.update({"phase_plan":phase.to_dict(),"rewritten_question":rewritten_question,"medical_term_layer":terms,"adaptive_retrieval":retrieval_state,"compressed_context":compact,"context_compression":compression,"extractive_stage":{"draft":extractive,**extractive_state},"generation_temperature":temperature,"two_stage_policy":{"required":hard_query,"reason":"hard_medical_query" if hard_query else "standard_answerable_query"},"phases":{"phase_1_query_understanding":"complete","phase_2_retrieval_precision":"complete" if retrieval_state.get("stage",0)>0 or selected else "abstain","phase_3_two_stage_generation":"required" if hard_query else "complete","phase_4_verification":"complete","phase_5_intelligence_visibility":"complete"}})
+    llm=getattr(system,"llm",None) if system is not None else None
+    if not extractive_state["supported"]:
+        enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":True,"reason":"no_extractable_evidence"};enhanced["generation_path"]="required_two_stage_abstention" if hard_query else "certified_primary_fallback"
+        enhanced["status"]="GENERATION_ABSTAIN" if hard_query else "ANSWER_UNAVAILABLE"
+        if hard_query:enhanced["answer"]="The indexed evidence was insufficient to safely perform the required clinical synthesis."
+        return enhanced
+    if system is None and str(base_result.get("answer","")).strip():
+        base_answer=str(base_result.get("answer","")).strip();evidence_texts=[str(getattr(h,"text","") or "") for h in selected];base_checks=verify_claims(base_answer,evidence_texts,[f"S{i+1}" for i in range(len(selected))]) if evidence_texts else [];base_blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in base_checks)
+        if base_checks and not base_blocked:
+            enhanced["two_stage_synthesis"]={"used":False,"attempted":False,"required":hard_query,"temperature":temperature,"fallback":False,"reason":"no_runtime_llm_preserved_verified_base"};enhanced["generation_path"]="verified_base_preserved_no_runtime_llm";enhanced["verification"]={"checked":True,"blocked":False,"claim_count":len(base_checks)};enhanced.setdefault("status","ANSWER_READY");return enhanced
+    synthesized=synthesize_answer(llm,rewritten_question,extractive,phase,temperature=temperature);verified_synthesis=[]
+    if synthesized:
+        verified_synthesis=verify_claims(synthesized,[str(getattr(h,"text","") or "") for h in selected],[f"S{i+1}" for i in range(len(selected))]);blocked=any(c.status in {'UNSUPPORTED','WEAK','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis)
+        if blocked:synthesized=None
+    enhanced["two_stage_synthesis"]={"used":bool(synthesized),"attempted":True,"required":hard_query,"temperature":temperature,"fallback":not bool(synthesized),"verification":{"checked":bool(verified_synthesis),"blocked":any(c.status in {'UNSUPPORTED','NUMERIC_MISMATCH','CONTRADICTED'} or c.contradiction for c in verified_synthesis),"claim_count":len(verified_synthesis)}}
+    if synthesized:enhanced["answer"]=synthesized;enhanced["generation_path"]="two_stage_extract_synthesize";enhanced["status"]="ANSWER_READY"
+    elif hard_query:enhanced["status"]="GENERATION_ABSTAIN";enhanced["answer"]="The evidence was retrieved, but the required synthesis could not be verified without adding unsupported clinical content.";enhanced["generation_path"]="required_two_stage_abstention"
+    else:enhanced["generation_path"]="extractive_verified_fallback";enhanced["answer"]=extractive;enhanced["status"]="ANSWER_READY"
+    return enhanced
+
+__all__=["PhasePlan","deterministic_phase1","llm_phase1","rewrite_follow_up","medical_term_layer","precision_filter","compress_context","adaptive_retrieve","dynamic_temperature","extractive_draft","synthesize_answer","complete_phases"]
