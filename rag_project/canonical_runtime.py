@@ -8,7 +8,7 @@ CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
-    """Bind the service to the document-aware production answer implementation."""
+    """Bind the service directly to the document-aware production answer implementation."""
     from rag_project.app import production_rag
     from rag_project.intelligence import god_mode_100
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
@@ -42,12 +42,25 @@ def install() -> dict[str, Any]:
                     "post_write_index_validation": True,
                 })
                 report["pipeline"] = pipeline
-                report["canonical_runtime"] = {"service": CANONICAL_SERVICE, "answer_pipeline_authority": ANSWER_AUTHORITY, "production_contract_version": CONTRACT_VERSION, "ingestion_contract_version": INGESTION_CONTRACT_VERSION}
+                report["canonical_runtime"] = {
+                    "service": CANONICAL_SERVICE,
+                    "answer_pipeline_authority": ANSWER_AUTHORITY,
+                    "production_contract_version": CONTRACT_VERSION,
+                    "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+                }
                 return report
             setattr(service_cls, "health_report", canonical_health)
         setattr(service_cls, "_canonical_health_contract", True)
 
-    return {"canonical_service": CANONICAL_SERVICE, "answer_pipeline_authority": ANSWER_AUTHORITY, "class_binding_installed": getattr(service_cls, "_certified_god_answer", None) is authority, "runtime_contract_bound": True, "health_contract_bound": getattr(service_cls, "_canonical_health_contract", False), "production_contract_version": CONTRACT_VERSION, "ingestion_contract_version": INGESTION_CONTRACT_VERSION}
+    return {
+        "canonical_service": CANONICAL_SERVICE,
+        "answer_pipeline_authority": ANSWER_AUTHORITY,
+        "class_binding_installed": getattr(service_cls, "_certified_god_answer", None) is authority,
+        "runtime_contract_bound": True,
+        "health_contract_bound": getattr(service_cls, "_canonical_health_contract", False),
+        "production_contract_version": CONTRACT_VERSION,
+        "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+    }
 
 
 __all__ = ["ANSWER_AUTHORITY", "CANONICAL_SERVICE", "install"]
