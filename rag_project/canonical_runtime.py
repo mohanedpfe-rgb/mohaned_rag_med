@@ -3,21 +3,27 @@ from __future__ import annotations
 
 from typing import Any
 
-ANSWER_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
+# Keep this string stable for UI/health-report compatibility.  The callable below is
+# the real authority and is deliberately bound to the production service.
+ANSWER_AUTHORITY = "rag_project.intelligence.god_mode_100.enhanced_god_answer"
 CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
-    """Bind the live production service to the installed canonical enhancer and health contract."""
+    """Bind the live production service to the authoritative answer implementation."""
     from rag_project.app import production_rag
     from rag_project.intelligence import god_mode_100
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 
     service_cls = production_rag.ProductionRAGSystem
-    enhancer = god_mode_100.enhance_result
-    production_rag.enhanced_god_answer = enhancer
-    setattr(service_cls, "_certified_god_answer", enhancer)
+    authority = god_mode_100.enhanced_god_answer
+
+    # The previous runtime incorrectly installed ``enhance_result`` here. That
+    # function is diagnostic-only and returns its input unchanged; binding it as
+    # the service answer method meant the actual answer pipeline was never run.
+    production_rag.enhanced_god_answer = authority
+    setattr(service_cls, "_certified_god_answer", authority)
     setattr(service_cls, "_canonical_answer_authority", ANSWER_AUTHORITY)
     setattr(service_cls, "_canonical_runtime_contract", True)
 
@@ -56,7 +62,7 @@ def install() -> dict[str, Any]:
     return {
         "canonical_service": CANONICAL_SERVICE,
         "answer_pipeline_authority": ANSWER_AUTHORITY,
-        "class_binding_installed": getattr(service_cls, "_certified_god_answer", None) is enhancer,
+        "class_binding_installed": getattr(service_cls, "_certified_god_answer", None) is authority,
         "runtime_contract_bound": True,
         "health_contract_bound": getattr(service_cls, "_canonical_health_contract", False),
         "production_contract_version": CONTRACT_VERSION,
