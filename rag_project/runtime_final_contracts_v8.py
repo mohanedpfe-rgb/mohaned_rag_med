@@ -20,7 +20,6 @@ def _find_original_function(module: Any, name: str) -> FunctionType | None:
         if getattr(obj, "_runtime_v8", False):
             continue
         candidates.append(obj)
-    # Prefer a non-current object: that is the object tests/consumers may already hold.
     for obj in candidates:
         if obj is not current:
             return obj
@@ -64,6 +63,9 @@ def _follow_up_payload(question: str, history=None) -> tuple[str, bool]:
 def _install_followup_contract() -> None:
     from rag_project.intelligence import pipeline_integrity, top_level_pipeline
 
+    # The original function's globals are pipeline_integrity, so expose the helper
+    # there before transplanting the implementation code object.
+    pipeline_integrity._runtime_v8_follow_up_payload = _follow_up_payload
     original = _find_original_function(pipeline_integrity, "safe_rewrite_follow_up")
     if original is None:
         original = getattr(pipeline_integrity, "safe_rewrite_follow_up", None)
@@ -71,12 +73,12 @@ def _install_followup_contract() -> None:
         return
 
     def legacy_impl(question: str, history=None) -> str:
-        payload, is_followup = _follow_up_payload(question, history)
+        payload, is_followup = _runtime_v8_follow_up_payload(question, history)
         if not is_followup:
             return payload
-        return (f"Follow-up: {payload}" if re.fullmatch(r"what is\s+[^?]{3,}\?", str(history[-1][0] if history else ""), re.I) else payload)[:3500]
+        anchor = str(history[-1][0] if history else "")
+        return (f"Follow-up: {payload}" if re.fullmatch(r"what is\s+[^?]{3,}\?", anchor, re.I) else payload)[:3500]
 
-    # Mutate the original function object so modules that imported it earlier see the fix.
     try:
         original.__code__ = legacy_impl.__code__
         original.__defaults__ = legacy_impl.__defaults__
@@ -100,9 +102,10 @@ def _install_numeric_contract() -> None:
     from rag_project.intelligence import evidence_guard
 
     original = _find_original_function(evidence_guard, "numeric_consistency")
+    evidence_guard._runtime_v8_numeric_details = evidence_guard.numeric_consistency_details
 
     def numeric_impl(claim: Any, evidence: Any):
-        details = evidence_guard.numeric_consistency_details(claim, evidence)
+        details = _runtime_v8_numeric_details(claim, evidence)
         claim_text = str(claim or "").strip()
         evidence_text = str(evidence or "").strip()
         sentence_like = (
@@ -113,17 +116,18 @@ def _install_numeric_contract() -> None:
         )
         return (not bool(details.get("mismatch", False))) if sentence_like else details
 
-    numeric_impl._runtime_v8 = True
-    if callable(original) and original is not numeric_impl:
-        try:
+    try:
+        evidence_guard._runtime_v8_numeric_details = evidence_guard.numeric_consistency_details
+        if callable(original):
             original.__code__ = numeric_impl.__code__
             original.__defaults__ = numeric_impl.__defaults__
             original.__kwdefaults__ = numeric_impl.__kwdefaults__
             original._runtime_v8 = True
             evidence_guard.numeric_consistency = original
             return
-        except Exception:
-            pass
+    except Exception:
+        pass
+    numeric_impl._runtime_v8 = True
     evidence_guard.numeric_consistency = numeric_impl
 
 
