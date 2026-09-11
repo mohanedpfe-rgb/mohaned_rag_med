@@ -36,18 +36,14 @@ def _ensure_schema(path: Path) -> None:
         db.commit()
 
 
-def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
-    documents = list(documents or [])
-    metadatas = list(metadatas or [])
-    ids = [str(item) for item in (ids or [])]
-    if not (len(documents) == len(metadatas) == len(ids)):
+def _normalized_rows(documents: Any, metadatas: Any, ids: Any) -> list[tuple[str, str, str, str, str]]:
+    documents_list = list(documents or [])
+    metadata_list = list(metadatas or [])
+    id_list = [str(item) for item in (ids or [])]
+    if not (len(documents_list) == len(metadata_list) == len(id_list)):
         raise ValueError("documents, metadatas, and ids must have the same length")
-    if not ids:
-        return
-    database = Path(self.lexical_database)
-    _ensure_schema(database)
-    rows = []
-    for item_id, document, raw_meta in zip(ids, documents, metadatas, strict=True):
+    rows: list[tuple[str, str, str, str, str]] = []
+    for item_id, document, raw_meta in zip(id_list, documents_list, metadata_list, strict=True):
         metadata = dict(raw_meta or {})
         metadata.setdefault("chunk_id", item_id)
         metadata.setdefault("document_id", "unknown")
@@ -63,6 +59,15 @@ def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
                 json.dumps(_tokens(text), ensure_ascii=False),
             )
         )
+    return rows
+
+
+def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
+    rows = _normalized_rows(documents, metadatas, ids)
+    if not rows:
+        return
+    database = Path(self.lexical_database)
+    _ensure_schema(database)
     with _connect(database) as db:
         db.executemany(
             """INSERT INTO lexical_documents(id, document, metadata, index_state, tokens)
@@ -75,9 +80,13 @@ def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
             rows,
         )
         db.commit()
-        for item_id in ids:
-            if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (item_id,)).fetchone() is None:
-                raise RuntimeError(f"Lexical persistence verification failed for id {item_id!r}")
+        missing = [
+            row[0]
+            for row in rows
+            if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (row[0],)).fetchone() is None
+        ]
+        if missing:
+            raise RuntimeError(f"Lexical persistence verification failed for ids: {missing!r}")
 
 
 def _matches(meta: dict[str, Any], where: dict[str, Any] | None) -> bool:
@@ -90,18 +99,40 @@ def _matches(meta: dict[str, Any], where: dict[str, Any] | None) -> bool:
     return all(meta.get(key) == value for key, value in where.items())
 
 
-def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
-    query_tokens = {token for token in _tokens(query) if token}
-    empty = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-    if not query_tokens:
-        return empty
+def _read_ready_rows(self: Any, where: dict[str, Any] | None = None) -> list[tuple[str, str, dict[str, Any]]]:
     database = Path(self.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
         rows = db.execute(
             "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
         ).fetchall()
-    scored = []
+    ready: list[tuple[str, str, dict[str, Any]]] = []
+    for row_id, document, metadata_json, state, _tokens_json in rows:
+        try:
+            metadata = dict(json.loads(metadata_json or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            metadata = {}
+        effective_state = str(state or metadata.get("index_state") or "READY").upper()
+        metadata_state = str(metadata.get("index_state") or "").upper()
+        if effective_state != "READY" and metadata_state == "READY":
+            effective_state = "READY"
+        if effective_state != "READY" or not _matches(metadata, where):
+            continue
+        ready.append((str(row_id), str(document), metadata))
+    return ready
+
+
+def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    query_tokens = {token for token in _tokens(query) if token}
+    if not query_tokens:
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+    database = Path(self.lexical_database)
+    _ensure_schema(database)
+    with _connect(database) as db:
+        rows = db.execute(
+            "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
+        ).fetchall()
+    scored: list[tuple[float, str, str, dict[str, Any]]] = []
     for row_id, document, metadata_json, state, tokens_json in rows:
         try:
             metadata = dict(json.loads(metadata_json or "{}"))
@@ -128,8 +159,48 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
         "ids": [[item[1] for item in selected]],
         "documents": [[item[2] for item in selected]],
         "metadatas": [[item[3] for item in selected]],
-        "distances": [[1.0 / (1.0 + item[0]) for item in selected] for _ in [0]],
+        "distances": [[1.0 / (1.0 + item[0]) for item in selected]],
     }
+
+
+def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    original = getattr(self, "_storage_contract_original_get_documents", None)
+    if callable(original):
+        try:
+            result = original(self, where)
+            documents = result.get("documents") if isinstance(result, dict) else None
+            if documents:
+                return result
+        except Exception:
+            pass
+    rows = _read_ready_rows(self, where)
+    return {
+        "ids": [item[0] for item in rows],
+        "documents": [item[1] for item in rows],
+        "metadatas": [item[2] for item in rows],
+    }
+
+
+def _wrap_write_method(name: str):
+    def decorator(original: Any):
+        def wrapped(self: Any, *args: Any, **kwargs: Any):
+            result = original(self, *args, **kwargs)
+            if name == "add_documents":
+                if len(args) >= 4:
+                    _upsert(self, args[0], args[1], args[3])
+                else:
+                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
+            elif name == "add_lexical_documents":
+                if len(args) >= 3:
+                    _upsert(self, args[0], args[1], args[2])
+                else:
+                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
+            return result
+        wrapped.__name__ = getattr(original, "__name__", name)
+        wrapped.__qualname__ = getattr(original, "__qualname__", name)
+        wrapped._storage_contract_fix = True
+        return wrapped
+    return decorator
 
 
 def _retire(system: Any, document_id: str, current_version: str) -> None:
@@ -147,7 +218,10 @@ def _retire(system: Any, document_id: str, current_version: str) -> None:
     collection = getattr(store, "collection", None)
     if collection is None:
         return
-    records = collection.get(where={"document_id": document_id}, include=["metadatas"])
+    try:
+        records = collection.get(where={"document_id": document_id}, include=["metadatas"])
+    except Exception:
+        return
     stale_ids = []
     for item_id, metadata in zip(records.get("ids") or [], records.get("metadatas") or [], strict=False):
         if str((metadata or {}).get("version_id") or "") != current_version:
@@ -165,6 +239,16 @@ def install() -> None:
 
     VectorStore._upsert_lexical_records = _upsert
     VectorStore.search_lexical = _search
+
+    current_get_documents = getattr(VectorStore, "get_documents", None)
+    if callable(current_get_documents) and not getattr(current_get_documents, "_storage_contract_fix", False):
+        VectorStore._storage_contract_original_get_documents = current_get_documents
+        VectorStore.get_documents = _get_documents
+
+    for method_name in ("add_documents", "add_lexical_documents"):
+        current_method = getattr(VectorStore, method_name, None)
+        if callable(current_method) and not getattr(current_method, "_storage_contract_fix", False):
+            setattr(VectorStore, method_name, _wrap_write_method(method_name)(current_method))
 
     current_ingest = getattr(RAGSystem, "ingest_file", None)
     if callable(current_ingest) and not getattr(current_ingest, "_storage_contract_fix", False):
