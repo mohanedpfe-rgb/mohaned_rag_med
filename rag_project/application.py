@@ -16,6 +16,7 @@ from rag_project.canonical_runtime import install as install_canonical_runtime
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
 from rag_project.intelligence.production_ops import OperationsStore
 from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
+from rag_project.intelligence.semantic_cache import install as install_semantic_cache
 
 _FACTORY_LOCK = threading.RLock()
 ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
@@ -86,6 +87,7 @@ def create_rag_system(settings: Settings | None = None):
     with _FACTORY_LOCK:
         install(); install_pipeline_integrity(); install_production_contract(); install_ingestion_contract(); install_canonical_runtime()
         system = MedEvidenceProductionRAGSystem(_normalize_runtime_settings(settings)); system = harden_system(system)
+        install_semantic_cache(system)
         try: system.cloud_hybrid = create_hybrid_router(CloudConfig.from_env(), getattr(system.settings, "project_root", Path.cwd()))
         except Exception: system.cloud_hybrid = None
         try:
