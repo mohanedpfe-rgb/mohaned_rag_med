@@ -45,7 +45,7 @@ class EnhancedVectorStore(VectorStore):
         )
 
     @staticmethod
-    def _enrich_metadata(metadata: Dict[str, Any], document: str) -> Dict[str, Any]:
+    def _enrich_metadata(metadata: Dict[str, Any], document: str, item_id: str = "") -> Dict[str, Any]:
         enriched = dict(metadata)
         match = _STRUCTURE_RE.search(document or "")
         if match:
@@ -63,6 +63,14 @@ class EnhancedVectorStore(VectorStore):
             enriched["ocr_status"] = values.get("ocr_status") or enriched.get("ocr_status")
             enriched["table_id"] = values.get("table_id") or None
             enriched["figure_id"] = values.get("figure_id") or None
+        if "[TABLE]" in (document or "") and not enriched.get("table_id"):
+            enriched["table_id"] = f"{enriched.get('document_id', 'document')}:table:{item_id}"
+            enriched["representation_type"] = "table"
+            enriched["evidence_types"] = ["table"]
+        if "[FIGURE CAPTION]" in (document or "") and not enriched.get("figure_id"):
+            enriched["figure_id"] = f"{enriched.get('document_id', 'document')}:figure:{item_id}"
+            enriched["representation_type"] = "figure_caption"
+            enriched["evidence_types"] = ["figure"]
         enriched.setdefault("record_type", "chunk")
         enriched.setdefault("hierarchy_level", "chunk")
         return enriched
@@ -75,16 +83,13 @@ class EnhancedVectorStore(VectorStore):
         ids: Sequence[str],
     ) -> None:
         normalized = [
-            self._enrich_metadata(dict(meta or {}), str(document))
-            for meta, document in zip(metadatas, documents, strict=True)
+            self._enrich_metadata(dict(meta or {}), str(document), str(item_id))
+            for meta, document, item_id in zip(metadatas, documents, ids, strict=True)
         ]
         super().add_documents(documents, normalized, embeddings, ids)
 
     def _publish_hierarchy(self, document_id: str, version_id: str) -> None:
-        records = self.collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas", "embeddings"],
-        )
+        records = self.collection.get(where={"document_id": document_id}, include=["documents", "metadatas", "embeddings"])
         ids = list(records.get("ids") or [])
         documents = list(records.get("documents") or [])
         metadatas = list(records.get("metadatas") or [])
@@ -92,20 +97,9 @@ class EnhancedVectorStore(VectorStore):
         rows: list[dict[str, Any]] = []
         for index, metadata in enumerate(metadatas):
             meta = self._coerce_metadata(metadata)
-            if str(meta.get("version_id")) != str(version_id):
+            if str(meta.get("version_id")) != str(version_id) or str(meta.get("record_type", "chunk")) != "chunk" or index >= len(embeddings):
                 continue
-            if str(meta.get("record_type", "chunk")) != "chunk":
-                continue
-            if index >= len(embeddings):
-                continue
-            rows.append(
-                {
-                    "id": str(ids[index]),
-                    "document": str(documents[index] if index < len(documents) else ""),
-                    "metadata": meta,
-                    "embedding": embeddings[index],
-                }
-            )
+            rows.append({"id": str(ids[index]), "document": str(documents[index] if index < len(documents) else ""), "metadata": meta, "embedding": embeddings[index]})
         if not rows:
             return
 
@@ -114,23 +108,7 @@ class EnhancedVectorStore(VectorStore):
         if document_vector:
             first_meta = rows[0]["metadata"]
             pages = [p for row in rows for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append(
-                {
-                    "id": f"{document_id}-{_stable_id(str(version_id))}-book",
-                    "document": f"Book overview: {first_meta.get('file_name', document_id)}",
-                    "embedding": document_vector,
-                    "metadata": {
-                        "document_id": document_id,
-                        "version_id": version_id,
-                        "record_type": "book",
-                        "hierarchy_level": "book",
-                        "file_name": first_meta.get("file_name"),
-                        "page_start": min(pages, default=0),
-                        "page_end": max(pages, default=0),
-                        "index_state": "READY",
-                    },
-                }
-            )
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id))}-book", "document": f"Book overview: {first_meta.get('file_name', document_id)}", "embedding": document_vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "book", "hierarchy_level": "book", "file_name": first_meta.get("file_name"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
 
         chapter_groups: dict[str, list[dict[str, Any]]] = {}
         section_groups: dict[str, list[dict[str, Any]]] = {}
@@ -149,24 +127,7 @@ class EnhancedVectorStore(VectorStore):
                 continue
             meta = group[0]["metadata"]
             pages = [p for row in group for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append(
-                {
-                    "id": f"{document_id}-{_stable_id(str(version_id) + ':chapter:' + chapter_id)}",
-                    "document": f"Chapter: {meta.get('chapter') or chapter_id}",
-                    "embedding": vector,
-                    "metadata": {
-                        "document_id": document_id,
-                        "version_id": version_id,
-                        "record_type": "chapter",
-                        "hierarchy_level": "chapter",
-                        "chapter": meta.get("chapter"),
-                        "chapter_id": chapter_id,
-                        "page_start": min(pages, default=0),
-                        "page_end": max(pages, default=0),
-                        "index_state": "READY",
-                    },
-                }
-            )
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':chapter:' + chapter_id)}", "document": f"Chapter: {meta.get('chapter') or chapter_id}", "embedding": vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "chapter", "hierarchy_level": "chapter", "chapter": meta.get("chapter"), "chapter_id": chapter_id, "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
 
         for section_id, group in section_groups.items():
             vector = _unit_mean([row["embedding"] for row in group])
@@ -174,35 +135,10 @@ class EnhancedVectorStore(VectorStore):
                 continue
             meta = group[0]["metadata"]
             pages = [p for row in group for p in row["metadata"].get("page_numbers", [])]
-            aggregate_rows.append(
-                {
-                    "id": f"{document_id}-{_stable_id(str(version_id) + ':section:' + section_id)}",
-                    "document": f"Section: {meta.get('section') or section_id}",
-                    "embedding": vector,
-                    "metadata": {
-                        "document_id": document_id,
-                        "version_id": version_id,
-                        "record_type": "section",
-                        "hierarchy_level": "section",
-                        "chapter": meta.get("chapter"),
-                        "chapter_id": meta.get("chapter_id"),
-                        "section": meta.get("section"),
-                        "section_id": section_id,
-                        "parent_id": meta.get("parent_id"),
-                        "page_start": min(pages, default=0),
-                        "page_end": max(pages, default=0),
-                        "index_state": "READY",
-                    },
-                }
-            )
+            aggregate_rows.append({"id": f"{document_id}-{_stable_id(str(version_id) + ':section:' + section_id)}", "document": f"Section: {meta.get('section') or section_id}", "embedding": vector, "metadata": {"document_id": document_id, "version_id": version_id, "record_type": "section", "hierarchy_level": "section", "chapter": meta.get("chapter"), "chapter_id": meta.get("chapter_id"), "section": meta.get("section"), "section_id": section_id, "parent_id": meta.get("parent_id"), "page_start": min(pages, default=0), "page_end": max(pages, default=0), "index_state": "READY"}})
 
         if aggregate_rows:
-            self.hierarchy_collection.upsert(
-                ids=[row["id"] for row in aggregate_rows],
-                documents=[row["document"] for row in aggregate_rows],
-                metadatas=[row["metadata"] for row in aggregate_rows],
-                embeddings=[row["embedding"] for row in aggregate_rows],
-            )
+            self.hierarchy_collection.upsert(ids=[row["id"] for row in aggregate_rows], documents=[row["document"] for row in aggregate_rows], metadatas=[row["metadata"] for row in aggregate_rows], embeddings=[row["embedding"] for row in aggregate_rows])
             metadata = dict(self.hierarchy_collection.metadata or {})
             metadata["dimension"] = len(aggregate_rows[0]["embedding"])
             metadata["source_collection"] = self.collection_name
@@ -213,26 +149,14 @@ class EnhancedVectorStore(VectorStore):
         if str(state).upper() == "READY":
             self._publish_hierarchy(document_id, version_id)
         else:
-            matches = self.hierarchy_collection.get(
-                where={"document_id": document_id}, include=["metadatas"]
-            )
-            remove_ids = [
-                str(item_id)
-                for item_id, meta in zip(matches.get("ids") or [], matches.get("metadatas") or [])
-                if str((meta or {}).get("version_id")) == str(version_id)
-            ]
+            matches = self.hierarchy_collection.get(where={"document_id": document_id}, include=["metadatas"])
+            remove_ids = [str(item_id) for item_id, meta in zip(matches.get("ids") or [], matches.get("metadatas") or []) if str((meta or {}).get("version_id")) == str(version_id)]
             if remove_ids:
                 self.hierarchy_collection.delete(ids=remove_ids)
 
     def delete_version(self, document_id: str, version_id: str) -> None:
-        matches = self.hierarchy_collection.get(
-            where={"document_id": document_id}, include=["metadatas"]
-        )
-        remove_ids = [
-            str(item_id)
-            for item_id, meta in zip(matches.get("ids") or [], matches.get("metadatas") or [])
-            if str((meta or {}).get("version_id")) == str(version_id)
-        ]
+        matches = self.hierarchy_collection.get(where={"document_id": document_id}, include=["metadatas"])
+        remove_ids = [str(item_id) for item_id, meta in zip(matches.get("ids") or [], matches.get("metadatas") or []) if str((meta or {}).get("version_id")) == str(version_id)]
         if remove_ids:
             self.hierarchy_collection.delete(ids=remove_ids)
         super().delete_version(document_id, version_id)
@@ -243,17 +167,7 @@ class EnhancedVectorStore(VectorStore):
         except Exception:
             return 0
 
-    def search_hierarchy(
-        self,
-        embedding: Sequence[float],
-        n_results: int = 5,
-        where: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any]:
+    def search_hierarchy(self, embedding: Sequence[float], n_results: int = 5, where: Dict[str, Any] | None = None) -> Dict[str, Any]:
         if not embedding:
             return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-        return self.hierarchy_collection.query(
-            query_embeddings=[list(map(float, embedding))],
-            n_results=max(1, int(n_results)),
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        return self.hierarchy_collection.query(query_embeddings=[list(map(float, embedding))], n_results=max(1, int(n_results)), where=where, include=["documents", "metadatas", "distances"])
