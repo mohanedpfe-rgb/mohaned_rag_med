@@ -19,6 +19,20 @@ def _is_explicit_followup(question:str)->bool:
     text=str(question or '').strip()
     return bool(_FOLLOWUP_PATTERN.search(text))
 
+
+def _safe_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 class ProductionRAGSystem(ResilientRAGSystem):
     _certified_god_answer=enhanced_god_answer
     def __init__(self,settings=None):super().__init__(settings);self._production_feature_contract=validate_feature_contract()
@@ -52,6 +66,91 @@ class ProductionRAGSystem(ResilientRAGSystem):
             for flag in rag_system_module._INGEST_CANCEL_FLAGS.values():
                 if not flag.cancelled:flag.cancel();n+=1
             return n
+
+    def _recovery_answer(self,question:str,metadata_filter:Dict[str,Any]|None,exc:Exception)->dict[str,Any]:
+        """Return a grounded extractive answer when the certified pipeline hits an unexpected runtime error."""
+        try:
+            from rag_project.retrieval.metadata_filter import MetadataFilter
+            where=MetadataFilter.build(metadata_filter)
+        except Exception:
+            where=None
+        try:
+            hits=_safe_list(self.retriever.retrieve(str(question or '').strip(),top_k=max(1,min(int(getattr(self.settings,'top_k',8)),12)),where=where))
+            hits=[hit for hit in hits if hit is not None]
+        except Exception as retrieve_exc:
+            self.logger.exception("Recovery retrieval failed")
+            return {
+                'status':'ANSWER_UNAVAILABLE',
+                'answer':'I could not safely produce an answer from the indexed evidence right now.',
+                'citations':[],
+                'hits':[],
+                'confidence':{'level':'none','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'retrieval_failed':type(retrieve_exc).__name__,'pipeline_error':type(exc).__name__},
+                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+            }
+        if not hits:
+            return {
+                'status':'NOT_SUPPORTED',
+                'answer':'I could not find sufficient evidence in the indexed documents to answer this question.',
+                'citations':[],
+                'hits':[],
+                'confidence':{'level':'none','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__},
+                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+            }
+        try:
+            from rag_project.intelligence.god_mode import _simple_extractive_answer
+            answer=str(_simple_extractive_answer(str(question or ''),hits,max_sentences=6) or '').strip()
+        except Exception as answer_exc:
+            self.logger.exception("Recovery extractive answer failed")
+            answer=''
+            answer_error=type(answer_exc).__name__
+        else:
+            answer_error=None
+        if not answer:
+            return {
+                'status':'ANSWER_UNAVAILABLE',
+                'answer':'The indexed evidence was retrieved, but it could not be safely converted into a grounded answer.',
+                'citations':[],
+                'hits':hits,
+                'confidence':{'level':'low','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'extractive_failed':answer_error},
+                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+            }
+        try:
+            built=self.citation_manager.build(hits) or []
+            citations=self.citation_manager.validate(built,hits) or []
+        except Exception:
+            citations=[]
+        try:
+            from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
+            blocks=[str(getattr(hit,'text','') or '') for hit in hits]
+            checks=_safe_list(verify_claims(answer,blocks,[f'S{i+1}' for i in range(len(hits))]))
+            ground=grounding_decision(checks,min_supported_ratio=0.60) if checks else {'allow':False,'supported_ratio':0.0}
+        except Exception:
+            checks=[];ground={'allow':False,'supported_ratio':0.0}
+        if not checks or not ground.get('allow',False):
+            return {
+                'status':'ANSWER_UNAVAILABLE',
+                'answer':'The indexed evidence was retrieved, but the answer could not pass the grounding check safely.',
+                'citations':[],
+                'hits':hits,
+                'confidence':{'level':'low','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},
+                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounding_failed':True},
+                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+            }
+        return {
+            'status':'SUCCESS_WITH_WARNINGS',
+            'answer':answer,
+            'citations':citations,
+            'hits':hits,
+            'confidence':{'level':'medium','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},
+            'grounding':ground,
+            'claims':[getattr(check,'to_dict',lambda: {'claim':str(getattr(check,'claim',''))})() for check in checks],
+            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True},
+            'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+        }
+
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
         request_started=time.perf_counter()
         if not self._production_feature_contract['all_resolved']:
@@ -64,7 +163,11 @@ class ProductionRAGSystem(ResilientRAGSystem):
             if isolated:
                 memory.history=[]
             try:
-                result=self._certified_god_answer(question,metadata_filter)
+                try:
+                    result=self._certified_god_answer(question,metadata_filter)
+                except Exception as exc:
+                    self.logger.exception("Certified answer pipeline failed; entering grounded recovery path")
+                    result=self._recovery_answer(question,metadata_filter,exc)
                 result=apply_medical_safety_policy(question,result,self.settings)
                 result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
                 if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
