@@ -50,7 +50,15 @@ def _normalized_rows(documents: Any, metadatas: Any, ids: Any) -> list[tuple[str
         metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
         metadata["index_state"] = str(metadata.get("index_state", "READY") or "READY").upper()
         text = str(document or "")
-        rows.append((item_id, text, json.dumps(metadata, ensure_ascii=False, sort_keys=True), metadata["index_state"], json.dumps(_tokens(text), ensure_ascii=False)))
+        rows.append(
+            (
+                item_id,
+                text,
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                metadata["index_state"],
+                json.dumps(_tokens(text), ensure_ascii=False),
+            )
+        )
     return rows
 
 
@@ -61,7 +69,47 @@ def _remember_authoritative_records(self: Any, rows: list[tuple[str, str, str, s
         self._storage_contract_authoritative_records = registry
     for item_id, document, metadata_json, index_state, _tokens_json in rows:
         metadata = json.loads(metadata_json)
-        registry[item_id] = {"id": item_id, "document": document, "metadata": metadata, "index_state": index_state}
+        registry[item_id] = {
+            "id": item_id,
+            "document": document,
+            "metadata": metadata,
+            "index_state": index_state,
+        }
+
+
+def _sync_authoritative_state(self: Any, document_id: str, version_id: str, state: str) -> None:
+    registry = getattr(self, "_storage_contract_authoritative_records", None)
+    if not isinstance(registry, dict):
+        return
+    normalized_state = str(state or "").upper()
+    for record in registry.values():
+        metadata = record.get("metadata") if isinstance(record, dict) else None
+        if not isinstance(metadata, dict):
+            continue
+        if (
+            str(metadata.get("document_id") or "") == str(document_id)
+            and str(metadata.get("version_id") or "") == str(version_id)
+        ):
+            metadata["index_state"] = normalized_state
+            record["index_state"] = normalized_state
+
+
+def _drop_authoritative_version(self: Any, document_id: str, version_id: str) -> None:
+    registry = getattr(self, "_storage_contract_authoritative_records", None)
+    if not isinstance(registry, dict):
+        return
+    stale_ids = []
+    for item_id, record in registry.items():
+        metadata = record.get("metadata") if isinstance(record, dict) else None
+        if not isinstance(metadata, dict):
+            continue
+        if (
+            str(metadata.get("document_id") or "") == str(document_id)
+            and str(metadata.get("version_id") or "") == str(version_id)
+        ):
+            stale_ids.append(item_id)
+    for item_id in stale_ids:
+        registry.pop(item_id, None)
 
 
 def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
@@ -83,7 +131,11 @@ def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
             rows,
         )
         db.commit()
-        missing = [row[0] for row in rows if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (row[0],)).fetchone() is None]
+        missing = [
+            row[0]
+            for row in rows
+            if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (row[0],)).fetchone() is None
+        ]
         if missing:
             raise RuntimeError(f"Lexical persistence verification failed for ids: {missing!r}")
 
@@ -102,7 +154,9 @@ def _read_ready_rows(self: Any, where: dict[str, Any] | None = None) -> list[tup
     database = Path(self.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
-        rows = db.execute("SELECT id, document, metadata, index_state, tokens FROM lexical_documents").fetchall()
+        rows = db.execute(
+            "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
+        ).fetchall()
     ready: list[tuple[str, str, dict[str, Any]]] = []
     for row_id, document, metadata_json, state, _tokens_json in rows:
         try:
@@ -154,11 +208,6 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
 
 
 def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, Any]:
-    # The lexical mirror is the authoritative text/version view because it is
-    # updated transactionally by the storage contract wrapper and explicitly
-    # retires stale versions. Chroma can temporarily expose a non-empty but
-    # stale snapshot during replacement, so never prefer that snapshot merely
-    # because it contains documents.
     rows = _read_ready_rows(self, where)
     if rows:
         return {
@@ -166,6 +215,25 @@ def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, 
             "documents": [item[1] for item in rows],
             "metadatas": [item[2] for item in rows],
         }
+
+    registry = getattr(self, "_storage_contract_authoritative_records", None)
+    if isinstance(registry, dict):
+        selected = []
+        for item_id, record in registry.items():
+            if not isinstance(record, dict):
+                continue
+            metadata = dict(record.get("metadata") or {})
+            if str(record.get("index_state") or metadata.get("index_state") or "").upper() != "READY":
+                continue
+            if not _matches(metadata, where):
+                continue
+            selected.append((str(item_id), str(record.get("document") or ""), metadata))
+        if selected:
+            return {
+                "ids": [item[0] for item in selected],
+                "documents": [item[1] for item in selected],
+                "metadatas": [item[2] for item in selected],
+            }
 
     original = getattr(self, "_storage_contract_original_get_documents", None)
     if callable(original):
@@ -200,6 +268,27 @@ def _wrap_write_method(name: str):
     return decorator
 
 
+def _wrap_version_state(original: Any):
+    def wrapped(self: Any, document_id: str, version_id: str, state: str):
+        result = original(self, document_id, version_id, state)
+        _sync_authoritative_state(self, document_id, version_id, state)
+        database = Path(self.lexical_database)
+        _ensure_schema(database)
+        normalized_state = str(state or "").upper()
+        with _connect(database) as db:
+            db.execute(
+                "UPDATE lexical_documents SET index_state = ?, metadata = json_set(metadata, '$.index_state', ?) "
+                "WHERE json_extract(metadata, '$.document_id') = ? AND json_extract(metadata, '$.version_id') = ?",
+                (normalized_state, normalized_state, str(document_id), str(version_id)),
+            )
+            db.commit()
+        return result
+    wrapped.__name__ = getattr(original, "__name__", "set_version_index_state")
+    wrapped.__qualname__ = getattr(original, "__qualname__", "set_version_index_state")
+    wrapped._storage_contract_version_state_fix = True
+    return wrapped
+
+
 def _retire(system: Any, document_id: str, current_version: str) -> None:
     store = getattr(system, "vector_store", None)
     if store is None or not document_id or not current_version:
@@ -207,8 +296,25 @@ def _retire(system: Any, document_id: str, current_version: str) -> None:
     database = Path(store.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
-        db.execute("DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ? AND json_extract(metadata, '$.version_id') <> ?", (document_id, current_version))
+        db.execute(
+            "DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ? AND json_extract(metadata, '$.version_id') <> ?",
+            (document_id, current_version),
+        )
         db.commit()
+    registry = getattr(store, "_storage_contract_authoritative_records", None)
+    if isinstance(registry, dict):
+        stale_ids = []
+        for item_id, record in registry.items():
+            metadata = record.get("metadata") if isinstance(record, dict) else None
+            if not isinstance(metadata, dict):
+                continue
+            if (
+                str(metadata.get("document_id") or "") == str(document_id)
+                and str(metadata.get("version_id") or "") != str(current_version)
+            ):
+                stale_ids.append(item_id)
+        for item_id in stale_ids:
+            registry.pop(item_id, None)
     collection = getattr(store, "collection", None)
     if collection is None:
         return
@@ -258,6 +364,11 @@ def install() -> None:
         if callable(current_method) and not getattr(current_method, "_storage_contract_fix", False):
             setattr(VectorStore, method_name, _wrap_write_method(method_name)(current_method))
 
+    current_state_method = getattr(VectorStore, "set_version_index_state", None)
+    if callable(current_state_method) and not getattr(current_state_method, "_storage_contract_version_state_fix", False):
+        VectorStore._storage_contract_original_set_version_index_state = current_state_method
+        VectorStore.set_version_index_state = _wrap_version_state(current_state_method)
+
     current_ingest = getattr(RAGSystem, "ingest_file", None)
     if callable(current_ingest) and not getattr(current_ingest, "_storage_contract_fix", False):
         def ingest_file(self: Any, pdf_path: Any):
@@ -277,7 +388,7 @@ def install() -> None:
             return result
         ingest_file._storage_contract_fix = True
         ingest_file.__name__ = getattr(current_ingest, "__name__", "ingest_file")
-        ingest_file.__qualname__ = getattr(current_ingest, "__qualname__", "ingest_file")
+        ingest_file.__qualname__ = getattr(current_ingest, "__name__", "ingest_file")
         RAGSystem.ingest_file = ingest_file
 
     _INSTALLED = True
