@@ -8,15 +8,15 @@ CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
-    """Bind the service to the backward-compatible authoritative answer entry point."""
+    """Bind the service to the document-aware production answer implementation."""
     from rag_project.app import production_rag
     from rag_project.intelligence import god_mode_100
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 
     service_cls = production_rag.ProductionRAGSystem
-    authority = god_mode_100.enhance_result
-    production_rag.enhanced_god_answer = god_mode_100.enhanced_god_answer
+    authority = god_mode_100.enhanced_god_answer
+    production_rag.enhanced_god_answer = authority
     setattr(service_cls, "_certified_god_answer", authority)
     setattr(service_cls, "_canonical_answer_authority", ANSWER_AUTHORITY)
     setattr(service_cls, "_canonical_runtime_contract", True)
