@@ -254,19 +254,24 @@ def retrieve_document_aware(system:Any,question:str,metadata_filter:dict[str,Any
     rerank_start=time.perf_counter(); ranked=rerank_hits(question,list(candidates.values()),route); selection_limit=max(int(top_k)*3,16); selected=_add_parent_context(diversify_hits(ranked,route,selection_limit),ranked,selection_limit); coverage=evidence_coverage(question,route,selected); correction_count=0
     if not coverage["sufficient"] and attempts < 12:
         correction_count=1; correction_queries=list(queries[-2:])+[f"{question} section",f"{question} clinical findings",f"{question} definition"]; correction_queries=list(dict.fromkeys(_clean(x) for x in correction_queries if _clean(x)))[:3]
+        correction_hits=[]
         for query in correction_queries:
             try: raw=system.retriever.retrieve(query,top_k=max(32,min(64,int(top_k)*6)),where=where)
             except Exception: raw=[]
-            attempts+=1; _add_candidates(candidates,raw)
+            attempts+=1
+            for hit in raw or ():
+                if hit is not None and str(getattr(hit,"text","") or "").strip(): correction_hits.append(hit)
+            _add_candidates(candidates,raw)
         ranked=rerank_hits(question,list(candidates.values()),route)
-        # After a corrective pass, never let diversification hide the best corrected evidence.
-        selected=_add_parent_context(ranked[:selection_limit],ranked,selection_limit)
+        correction_ranked=rerank_hits(question,correction_hits,route)
+        # Corrective evidence has explicit priority over stale weak candidates. This is
+        # critical when the initial retriever repeatedly returns low-quality background text.
+        selected=_add_parent_context(correction_ranked[:selection_limit],ranked,selection_limit) if correction_ranked else _add_parent_context(ranked[:selection_limit],ranked,selection_limit)
         coverage=evidence_coverage(question,route,selected); strategy.append("self-correction")
-        # Hard relevance backstop: a correction that materially improves lexical/semantic fit must lead.
-        if selected:
-            best=ranked[0]
-            if best is not selected[0]:
-                selected=[best]+[h for h in selected if h is not best][:selection_limit-1]
+        if correction_ranked:
+            best_corrected=correction_ranked[0]
+            if selected and selected[0] is not best_corrected:
+                selected=[best_corrected]+[h for h in selected if h is not best_corrected][:selection_limit-1]
     contradiction=detect_contradictions(selected); structure=section_coverage(selected); document_map=build_document_map(selected); elapsed=(time.perf_counter()-started)*1000
     decision=RetrievalDecision(query=_clean(question),route=route,queries=queries[:16],candidates=len(candidates),final_hits=len(selected),rerank_ms=round((time.perf_counter()-rerank_start)*1000,2),retrieval_ms=round(elapsed,2),self_corrections=correction_count,strategy=strategy,coverage=coverage,contradiction=contradiction,document_map=document_map,structure=structure,knowledge_graph=graph)
     return selected,decision.to_dict()
