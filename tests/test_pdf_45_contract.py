@@ -11,6 +11,8 @@ from rag_project.ingestion.document_models import PageExtraction
 from rag_project.intelligence.deep_pdf_contract import install as install_deep
 from rag_project.intelligence.deep_pdf_finalizer import VisionFigureAdapter
 from rag_project.intelligence.deep_pdf_finalizer import install as install_final
+from rag_project.intelligence.deep_pdf_finalizer_v2 import install as install_v2
+from rag_project.intelligence.deep_pdf_finalizer_v3 import install as install_v3
 from rag_project.intelligence.document_structure import (
     DocumentStructureStore,
     DocumentStructureTracker,
@@ -26,6 +28,8 @@ from rag_project.storage.vector_store import VectorStore
 
 install_deep()
 install_final()
+install_v2()
+install_v3()
 
 
 def _page(number: int = 1, text: str = "Chapter 1 Anatomy\n1.1 Bones\nText") -> PageExtraction:
@@ -50,11 +54,11 @@ def test_all_45_pdf_architecture_contracts() -> None:
         ("03_structure_schema", STRUCTURE_SCHEMA_VERSION >= 3),
         ("04_structure_store", inspect.isclass(DocumentStructureStore)),
         ("05_heading_candidates", bool(extract_heading_candidates("Chapter 2 Physiology\n2.1 Ventilation"))),
-        ("06_tracker_cross_page", DocumentStructureTracker("d").analyze_page(1, "Chapter 2\n2.1 A").chapter_id == DocumentStructureTracker("d").analyze_page(2, "Chapter 2\n2.1 A").chapter_id),
-        ("07_extractor_final_patch_hook", getattr(PDFExtractor, "_final_pdf_patched", False)),
-        ("08_chunker_final_patch_hook", getattr(SemanticChunker, "_final_pdf_patched", False)),
-        ("09_vector_final_patch_hook", getattr(VectorStore, "_final_pdf_patched", False)),
-        ("10_context_final_patch_hook", getattr(ContextBuilder, "_final_pdf_patched", False)),
+        ("06_tracker_cross_page", (lambda t: (lambda a, b: a.chapter_id == b.chapter_id and a.section_id == b.section_id and a.parent_id == b.parent_id)(t.analyze_page(1, "Chapter 2\n2.1 A"), t.analyze_page(2, "continued prose")))(DocumentStructureTracker("d"))),
+        ("07_extractor_final_patch_hook", getattr(PDFExtractor, "_final_pdf_patched", False) and getattr(PDFExtractor, "_final_pdf_v2_patched", False) and getattr(PDFExtractor, "_final_pdf_v3_patched", False)),
+        ("08_chunker_final_patch_hook", getattr(SemanticChunker, "_final_pdf_patched", False) and getattr(SemanticChunker, "_final_pdf_v2_patched", False)),
+        ("09_vector_final_patch_hook", getattr(VectorStore, "_final_pdf_patched", False) and getattr(VectorStore, "_final_pdf_v3_patched", False)),
+        ("10_context_final_patch_hook", getattr(ContextBuilder, "_final_pdf_patched", False) and getattr(ContextBuilder, "_final_pdf_v2_patched", False)),
         ("11_hybrid_final_patch_hook", getattr(HybridRetriever, "_final_pdf_patched", False)),
         ("12_vision_adapter", inspect.isclass(VisionFigureAdapter)),
         ("13_book_hierarchy_store", inspect.isclass(EnhancedVectorStore)),
@@ -132,15 +136,27 @@ def test_all_45_pdf_architecture_contracts() -> None:
         ("40_layout_figure_regions_field", "figure_regions" in layout),
     ]
 
+    from rag_project.intelligence.deep_pdf_finalizer_v3 import _ocr_table_from_regions
+
     adapter = VisionFigureAdapter(model="")
+    recovered = _ocr_table_from_regions(
+        [
+            {"bbox": [0.10, 0.10, 0.30, 0.14], "text": "Age"},
+            {"bbox": [0.40, 0.10, 0.60, 0.14], "text": "Male"},
+            {"bbox": [0.70, 0.10, 0.90, 0.14], "text": "Female"},
+            {"bbox": [0.10, 0.18, 0.30, 0.22], "text": "20"},
+            {"bbox": [0.40, 0.18, 0.60, 0.22], "text": "1"},
+            {"bbox": [0.70, 0.18, 0.90, 0.22], "text": "2"},
+        ]
+    )
     checks += [
         ("41_vision_disabled_safely", adapter.enabled is False),
         ("42_vision_description_method", callable(adapter.describe)),
-        ("43_enhanced_store_search_method", callable(getattr(EnhancedVectorStore, "search", None))),
-        ("44_vector_validator_method", callable(getattr(VectorStore, "validate_document_index", None))),
+        ("43_ocr_geometry_table_recovery", bool(recovered and "Age | Male | Female" in recovered)),
+        ("44_enhanced_store_search_method", callable(getattr(EnhancedVectorStore, "search", None))),
         ("45_runtime_contract_documented", "document hierarchy" in Path("ARCHITECTURE.md").read_text(encoding="utf-8").casefold()),
     ]
 
     failed = [name for name, ok in checks if not ok]
-    assert not failed, "45-point PDF architecture contract failed: " + ", ".join(failed)
     assert len(checks) == 45
+    assert not failed, "45-point PDF architecture contract failed: " + ", ".join(failed)
