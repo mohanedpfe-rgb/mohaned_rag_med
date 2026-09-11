@@ -35,6 +35,8 @@ def _as_list(value: Any) -> list[Any]:
 def _sqlite_connect(database: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database, timeout=30)
     connection.execute("PRAGMA busy_timeout = 30000")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
     return connection
 
 
@@ -54,65 +56,38 @@ def validate_runtime_contract(system: Any) -> dict[str, Any]:
             path_errors.append(f"{name}: {type(exc).__name__}")
     embedding_model = str(getattr(settings, "embedding_model", "") or "").strip()
     ollama_url = str(getattr(settings, "ollama_base_url", "") or "").strip()
-    return {
-        "ok": not missing and not path_errors and bool(embedding_model) and bool(ollama_url),
-        "missing_vector_methods": missing,
-        "path_errors": path_errors,
-        "embedding_model_configured": bool(embedding_model),
-        "ollama_url_configured": bool(ollama_url),
-    }
-
-
-def _authoritative_vector_records(system: Any, document_id: str | None) -> dict[str, tuple[str, dict[str, Any]]]:
-    vector_store = system.vector_store
-    where = {"document_id": document_id} if document_id else None
-    try:
-        records = vector_store.collection.get(where=where, include=["documents", "metadatas"])
-    except Exception:
-        records = {"ids": [], "documents": [], "metadatas": []}
-    vector_ids = _as_list(records.get("ids"))
-    vector_docs = _as_list(records.get("documents"))
-    vector_meta = _as_list(records.get("metadatas"))
-    expected: dict[str, tuple[str, dict[str, Any]]] = {}
-    for index, raw_id in enumerate(vector_ids):
-        metadata = vector_meta[index] if index < len(vector_meta) and isinstance(vector_meta[index], dict) else {}
-        document = vector_docs[index] if index < len(vector_docs) else ""
-        normalized = dict(metadata)
-        normalized.setdefault("chunk_id", str(raw_id))
-        normalized.setdefault("document_id", document_id or "unknown")
-        normalized.setdefault("version_id", normalized.get("document_id", "legacy"))
-        normalized["index_state"] = str(normalized.get("index_state", "READY") or "READY").upper()
-        expected[str(raw_id)] = (str(document), normalized)
-
-    # Runtime storage protection keeps the exact records supplied to add_documents
-    # when an older Chroma/runtime adapter returns an empty collection read-back.
-    cache = getattr(vector_store, "_authoritative_vector_records", None)
-    if not expected and isinstance(cache, dict):
-        for raw_id, item in cache.items():
-            if not isinstance(item, tuple) or len(item) != 2:
-                continue
-            document, metadata = item
-            metadata = dict(metadata or {})
-            if document_id and metadata.get("document_id") != document_id:
-                continue
-            if str(metadata.get("index_state", "READY")).upper() != "READY":
-                continue
-            expected[str(raw_id)] = (str(document), metadata)
-    return expected
+    return {"ok": not missing and not path_errors and bool(embedding_model) and bool(ollama_url), "missing_vector_methods": missing, "path_errors": path_errors, "embedding_model_configured": bool(embedding_model), "ollama_url_configured": bool(ollama_url)}
 
 
 def _collect_consistency_records(system: Any, document_id: str | None) -> dict[str, Any]:
-    vector_map = _authoritative_vector_records(system, document_id)
-    lexical_db = Path(system.vector_store.lexical_database)
+    vector_store = system.vector_store
+    lexical_db = Path(vector_store.lexical_database)
+    where = {"document_id": document_id} if document_id else None
+    records = vector_store.collection.get(where=where, include=["documents", "metadatas"])
+    vector_ids = _as_list(records.get("ids"))
+    vector_docs = _as_list(records.get("documents"))
+    vector_meta = _as_list(records.get("metadatas"))
+    vector_map: dict[str, tuple[str, dict[str, Any]]] = {}
+    for index, raw_id in enumerate(vector_ids):
+        metadata = vector_meta[index] if index < len(vector_meta) and isinstance(vector_meta[index], dict) else {}
+        document = vector_docs[index] if index < len(vector_docs) else ""
+        vector_map[str(raw_id)] = (str(document), dict(metadata))
+
+    authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
+    if isinstance(authoritative, dict):
+        for raw_id, record in authoritative.items():
+            metadata = dict((record or {}).get("metadata") or {})
+            if document_id is not None and metadata.get("document_id") != document_id:
+                continue
+            if str((record or {}).get("index_state") or metadata.get("index_state") or "READY").upper() != "READY":
+                continue
+            vector_map[str(raw_id)] = (str((record or {}).get("document") or ""), metadata)
+
     with _sqlite_connect(lexical_db) as connection:
-        rows = (
-            connection.execute(
-                "SELECT id, document, metadata, index_state FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
-                (str(document_id),),
-            ).fetchall()
-            if document_id
-            else connection.execute("SELECT id, document, metadata, index_state FROM lexical_documents").fetchall()
-        )
+        if document_id:
+            rows = connection.execute("SELECT id, document, metadata, index_state FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?", (str(document_id),)).fetchall()
+        else:
+            rows = connection.execute("SELECT id, document, metadata, index_state FROM lexical_documents").fetchall()
     lexical_map: dict[str, tuple[str, dict[str, Any], str]] = {}
     for raw_id, document, metadata_json, index_state in rows:
         try:
@@ -137,54 +112,67 @@ def audit_index_consistency(system: Any, document_id: str | None = None) -> dict
         lexical_doc, lexical_metadata, _ = lexical_map[item_id]
         if vector_doc != lexical_doc or vector_metadata.get("document_id") != lexical_metadata.get("document_id") or vector_metadata.get("version_id") != lexical_metadata.get("version_id"):
             mismatched.append(item_id)
-    return {
-        "valid": not vector_only and not lexical_only and not mismatched,
-        "vector_count": len(vector_ready),
-        "lexical_count": len(lexical_ready),
-        "vector_only": vector_only,
-        "lexical_only": lexical_only,
-        "metadata_or_content_mismatch": mismatched,
-    }
+    return {"valid": not vector_only and not lexical_only and not mismatched and bool(vector_ready or lexical_ready) if document_id else not vector_only and not lexical_only and not mismatched, "vector_count": len(vector_ready), "lexical_count": len(lexical_ready), "vector_only": vector_only, "lexical_only": lexical_only, "metadata_or_content_mismatch": mismatched}
 
 
 def quick_index_health(system: Any, document_id: str | None = None) -> dict[str, Any]:
-    vector_count = len(_authoritative_vector_records(system, document_id))
-    lexical_db = Path(system.vector_store.lexical_database)
-    with _sqlite_connect(lexical_db) as connection:
-        row = (
-            connection.execute(
-                "SELECT COUNT(*) FROM lexical_documents WHERE index_state = 'READY' AND json_extract(metadata, '$.document_id') = ?",
-                (str(document_id),),
-            ).fetchone()
-            if document_id
-            else connection.execute("SELECT COUNT(*) FROM lexical_documents WHERE index_state = 'READY'").fetchone()
-        )
-    lexical_count = int(row[0] if row else 0)
-    return {"valid": vector_count == lexical_count, "mode": "quick", "vector_count": vector_count, "lexical_count": lexical_count}
+    vector_store = system.vector_store
+    try:
+        where = {"document_id": document_id} if document_id else None
+        vector_count = int(vector_store.collection.count()) if where is None else len(_as_list(vector_store.collection.get(where=where, include=[]).get("ids")))
+        authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
+        if document_id and isinstance(authoritative, dict):
+            vector_count = max(vector_count, sum(1 for record in authoritative.values() if (record.get("metadata") or {}).get("document_id") == document_id and str(record.get("index_state") or "READY").upper() == "READY"))
+        lexical_db = Path(vector_store.lexical_database)
+        with _sqlite_connect(lexical_db) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM lexical_documents WHERE index_state = 'READY'" + (" AND json_extract(metadata, '$.document_id') = ?" if document_id else ""), ((str(document_id),) if document_id else ())).fetchone()
+        lexical_count = int(row[0] if row else 0)
+        return {"valid": vector_count == lexical_count, "mode": "quick", "vector_count": vector_count, "lexical_count": lexical_count}
+    except Exception as exc:
+        return {"valid": False, "mode": "quick", "error": type(exc).__name__}
 
 
 def repair_index_consistency(system: Any, document_id: str | None = None) -> dict[str, Any]:
+    vector_store = system.vector_store
     audit = audit_index_consistency(system, document_id)
-    expected = _authoritative_vector_records(system, document_id)
     scope = str(document_id) if document_id else None
-    database = Path(system.vector_store.lexical_database)
+    records = vector_store.collection.get(where={"document_id": document_id} if document_id else None, include=["documents", "metadatas"])
+    vector_ids = _as_list(records.get("ids"))
+    vector_docs = _as_list(records.get("documents"))
+    vector_meta = _as_list(records.get("metadatas"))
+    expected: dict[str, tuple[str, dict[str, Any]]] = {}
+    for index, raw_id in enumerate(vector_ids):
+        metadata = vector_meta[index] if index < len(vector_meta) and isinstance(vector_meta[index], dict) else {}
+        document = vector_docs[index] if index < len(vector_docs) else ""
+        normalized = dict(metadata)
+        normalized.setdefault("chunk_id", str(raw_id))
+        normalized.setdefault("document_id", scope or "unknown")
+        normalized.setdefault("version_id", normalized.get("document_id", "legacy"))
+        normalized["index_state"] = str(normalized.get("index_state", "READY") or "READY").upper()
+        expected[str(raw_id)] = (str(document), normalized)
+
+    authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
+    if isinstance(authoritative, dict):
+        for raw_id, record in authoritative.items():
+            metadata = dict((record or {}).get("metadata") or {})
+            if scope is not None and metadata.get("document_id") != scope:
+                continue
+            if str((record or {}).get("index_state") or metadata.get("index_state") or "READY").upper() != "READY":
+                continue
+            expected[str(raw_id)] = (str((record or {}).get("document") or ""), metadata)
+
+    if scope and not expected:
+        raise RuntimeError(f"No authoritative vector record exists for document_id={scope!r}; refusing to delete lexical data")
+
+    database = Path(vector_store.lexical_database)
     with _sqlite_connect(database) as connection:
-        rows = (
-            connection.execute(
-                "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
-                (scope,),
-            ).fetchall()
-            if scope
-            else connection.execute("SELECT id, metadata FROM lexical_documents").fetchall()
-        )
+        rows = connection.execute("SELECT id, metadata FROM lexical_documents" + (" WHERE json_extract(metadata, '$.document_id') = ?" if scope else ""), ((scope,) if scope else ())).fetchall()
         delete_ids: list[str] = []
         for raw_id, metadata_json in rows:
             try:
                 metadata = json.loads(metadata_json)
             except (TypeError, ValueError, json.JSONDecodeError):
                 metadata = {}
-            if scope and str(metadata.get("document_id")) != scope:
-                continue
             if str(raw_id) not in expected:
                 delete_ids.append(str(raw_id))
         if delete_ids:
@@ -193,24 +181,17 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
             connection.executemany(
                 """INSERT INTO lexical_documents(id, document, metadata, index_state, tokens)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    document=excluded.document,
-                    metadata=excluded.metadata,
-                    index_state=excluded.index_state,
-                    tokens=excluded.tokens""",
-                [
-                    (item_id, document, json.dumps(metadata, ensure_ascii=False, sort_keys=True), metadata["index_state"], json.dumps(re.findall(r"\w+", document.casefold()), ensure_ascii=False))
-                    for item_id, (document, metadata) in expected.items()
-                ],
+                ON CONFLICT(id) DO UPDATE SET document=excluded.document, metadata=excluded.metadata, index_state=excluded.index_state, tokens=excluded.tokens""",
+                [(item_id, document, json.dumps(metadata, ensure_ascii=False, sort_keys=True), metadata["index_state"], json.dumps(re.findall(r"\w+", document.casefold()), ensure_ascii=False)) for item_id, (document, metadata) in expected.items()],
             )
         connection.commit()
         for item_id, (expected_document, expected_meta) in expected.items():
             row = connection.execute("SELECT document, metadata, index_state FROM lexical_documents WHERE id = ?", (item_id,)).fetchone()
-            if row is None or row[0] != expected_document:
-                raise RuntimeError(f"Lexical repair verification failed for row {item_id!r}")
+            if row is None:
+                raise RuntimeError(f"Lexical repair failed to persist row {item_id!r}")
             persisted_meta = json.loads(row[1] or "{}")
-            if persisted_meta.get("version_id") != expected_meta.get("version_id"):
-                raise RuntimeError(f"Lexical repair metadata verification failed for row {item_id!r}")
+            if row[0] != expected_document or persisted_meta.get("version_id") != expected_meta.get("version_id"):
+                raise RuntimeError(f"Lexical repair verification failed for row {item_id!r}")
     final = audit_index_consistency(system, document_id)
     return {"repaired": not audit["valid"] and final["valid"], "before": audit, "after": final}
 
