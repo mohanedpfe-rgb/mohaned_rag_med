@@ -1,23 +1,4 @@
-"""Fast, deterministic diagnostics for the RAG test/runtime stack.
-
-The doctor is intentionally independent from the full pytest run. It answers:
-
-* Does the diagnostic tool itself bootstrap correctly?
-* Which runtime installer first changes a hot public symbol?
-* What source file, line, signature and runtime flag owns that symbol?
-* Which runtime files statically assign the hot symbol?
-* Which focused regression probe reproduces the contract failure?
-
-Windows examples::
-
-    python scripts/test_doctor.py
-    python scripts/test_doctor.py --audit-runtime
-    python scripts/test_doctor.py --probe
-    python scripts/test_doctor.py --contracts
-    python scripts/test_doctor.py --static-map
-    python scripts/test_doctor.py --full
-"""
-
+"""Fast, deterministic diagnostics for the RAG test/runtime stack."""
 from __future__ import annotations
 
 import argparse
@@ -94,42 +75,46 @@ def _snapshot(spec: SymbolSpec) -> Snapshot:
         signature = str(inspect.signature(obj))
     except (TypeError, ValueError):
         signature = "<unavailable>"
-    flags = ()
-    if hasattr(obj, "__dict__"):
-        flags = tuple(sorted(k for k, v in vars(obj).items() if k.startswith("_runtime_") and v))
-    return Snapshot(
-        identity=id(obj) if callable(obj) else None,
-        module=getattr(obj, "__module__", type(obj).__module__),
-        qualname=getattr(obj, "__qualname__", repr(obj)),
-        source=str(source),
-        line=line,
-        signature=signature,
-        flags=flags,
-    )
+    flags = tuple(sorted(k for k, v in vars(obj).items() if k.startswith("_runtime_") and v)) if hasattr(obj, "__dict__") else ()
+    return Snapshot(id(obj) if callable(obj) else None, getattr(obj, "__module__", type(obj).__module__), getattr(obj, "__qualname__", repr(obj)), str(source), line, signature, flags)
 
 
-def _format_snapshot(snapshot: Snapshot) -> str:
-    return (
-        f"{snapshot.module}.{snapshot.qualname} | {snapshot.source}:{snapshot.line or '?'} | "
-        f"signature={snapshot.signature} | flags={','.join(snapshot.flags) or '-'}"
-    )
+def _format_snapshot(s: Snapshot) -> str:
+    return f"{s.module}.{s.qualname} | {s.source}:{s.line or '?'} | signature={s.signature} | flags={','.join(s.flags) or '-'}"
 
 
-def _expected_contract(snapshot: Snapshot, spec: SymbolSpec) -> str:
+def _semantic_probe(spec: SymbolSpec) -> tuple[bool, str]:
+    try:
+        obj = getattr(import_module(spec.module), spec.attribute)
+        if spec.expected == "clean-contextual-text":
+            result = obj("What about this?", [("What is diabetes?", "Diabetes is a metabolic disease.")])
+            ok = "What is diabetes?" in result and "Follow-up:" not in str(result)
+            return ok, "clean contextual text" if ok else "legacy protocol prefix leaked"
+        if spec.expected == "structured-dict":
+            result = obj("Dose is 600 mg.", "The recommended dose is 500 mg.")
+            ok = isinstance(result, dict) and result.get("checked") is True and result.get("mismatch") is True
+            return ok, "structured numeric diagnostics" if ok else f"returned {type(result).__name__}: {result!r}"
+        if spec.expected == "4-arg-entrypoint":
+            signature = inspect.signature(obj)
+            ok = len(signature.parameters) >= 4
+            return ok, "4-argument entrypoint" if ok else f"signature={signature}"
+    except Exception as exc:
+        return False, f"probe raised {type(exc).__name__}: {exc}"
+    return False, "unknown contract"
+
+
+def _contract_status(snapshot: Snapshot, spec: SymbolSpec) -> tuple[bool, str]:
+    semantic_ok, semantic_reason = _semantic_probe(spec)
+    if not semantic_ok:
+        return False, f"BAD: {semantic_reason}"
     source = snapshot.source.casefold()
-    signature = snapshot.signature
-    if spec.expected == "4-arg-entrypoint":
-        return "OK: accepts production entrypoint shape" if signature.count(",") >= 2 else "BAD: enhancer signature drift"
-    if spec.expected == "structured-dict":
-        return "OK: authoritative evidence_guard owner" if "evidence_guard.py" in source else "BAD: structured API replaced by runtime shim"
-    if spec.expected == "clean-contextual-text":
-        return "BAD: runtime compatibility layer owns clean public API" if "runtime_final_contracts_v" in source else "OK: clean public implementation"
-    return "UNKNOWN CONTRACT"
+    if spec.expected in {"clean-contextual-text", "structured-dict"} and ("runtime_final_contracts_v" in source or "runtime_contract_compat.py" in source):
+        return False, "BAD: runtime compatibility layer owns authoritative public contract"
+    return True, f"OK: {semantic_reason}"
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    runtime = import_module("rag_project.runtime")
-    return runtime._load_installers()
+    return import_module("rag_project.runtime")._load_installers()
 
 
 def _attribute_chain(node: ast.AST) -> str | None:
@@ -146,80 +131,99 @@ def _attribute_chain(node: ast.AST) -> str | None:
 
 def static_mutation_map() -> int:
     print("\n=== RAG TEST DOCTOR: STATIC RUNTIME MUTATION MAP ===")
-    runtime_dirs = [ROOT / "rag_project"]
     matches: list[tuple[str, int, str, str]] = []
-    for root in runtime_dirs:
-        for path in root.rglob("*.py"):
-            if not (path.name.startswith("runtime_") or "contract" in path.name or path.name == "runtime.py"):
+    for path in (ROOT / "rag_project").rglob("*.py"):
+        if not (path.name.startswith("runtime_") or "contract" in path.name or path.name == "runtime.py"):
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            except (OSError, SyntaxError):
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-                    continue
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                for target in targets:
-                    chain = _attribute_chain(target)
-                    if chain in TARGET_ASSIGNMENTS:
-                        spec = TARGET_ASSIGNMENTS[chain]
-                        matches.append((str(path.relative_to(ROOT)), getattr(node, "lineno", 0), chain, spec.expected))
-    if not matches:
-        print("No runtime hot-symbol assignments found.")
-        return 0
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                chain = _attribute_chain(target)
+                if chain in TARGET_ASSIGNMENTS:
+                    matches.append((str(path.relative_to(ROOT)), getattr(node, "lineno", 0), chain, TARGET_ASSIGNMENTS[chain].expected))
     for path, line, chain, expected in sorted(matches):
         print(f"  {chain:<48} {path}:{line}  expected={expected}")
-    print(f"\nFound {len(matches)} direct runtime assignments. These are the first static locations to inspect when provenance changes.")
+    print(f"\nFound {len(matches)} direct runtime assignments. Static assignment != automatic defect.")
     return 0
 
 
 def audit_runtime() -> int:
     print("\n=== RAG TEST DOCTOR: RUNTIME PROVENANCE ===")
     installers = _load_installers()
-    before = {spec.label: _snapshot(spec) for spec in HOT_SYMBOLS}
-    current = dict(before)
-    first_change: dict[str, tuple[str, Snapshot, Snapshot]] = {}
-    installer_count = len(installers)
+    current = {spec.label: _snapshot(spec) for spec in HOT_SYMBOLS}
+    first_mutation: dict[str, tuple[int, str, Snapshot, Snapshot]] = {}
+    first_bad: dict[str, tuple[int, str, Snapshot, str]] = {}
+    final_bad: dict[str, tuple[int, str, Snapshot, str]] = {}
+    transitions: dict[str, list[tuple[int, str, Snapshot, bool, str]]] = {spec.label: [] for spec in HOT_SYMBOLS}
 
     print(f"Repository root: {ROOT}")
-    print(f"Installer count: {installer_count}")
-    print("\nBaseline before installers:")
+    print(f"Installer count: {len(installers)}")
     for spec in HOT_SYMBOLS:
-        print(f"  [{spec.label}] expected={spec.expected}")
-        print(f"      {_format_snapshot(before[spec.label])}")
+        snap = current[spec.label]
+        ok, reason = _contract_status(snap, spec)
+        print(f"BASELINE [{spec.label}] {'PASS' if ok else 'FAIL'} expected={spec.expected}")
+        print(f"  {_format_snapshot(snap)}")
+        print(f"  {reason}")
 
     for index, installer in enumerate(installers, 1):
         name = f"{getattr(installer, '__module__', '?')}.{getattr(installer, '__name__', repr(installer))}"
         try:
             installer()
         except Exception as exc:
-            print(f"  [INSTALLER ERROR {index}/{installer_count}] {name}: {type(exc).__name__}: {exc}")
+            print(f"  [INSTALLER ERROR {index}] {name}: {type(exc).__name__}: {exc}")
             continue
         for spec in HOT_SYMBOLS:
             after = _snapshot(spec)
-            previous = current[spec.label]
-            changed = after.identity != previous.identity or after.source != previous.source or after.line != previous.line or after.signature != previous.signature
-            if changed and spec.label not in first_change:
-                first_change[spec.label] = (name, previous, after)
-                print(f"\nFIRST MUTATION: {spec.label}")
-                print(f"  installer #{index}: {name}")
-                print(f"  before: {_format_snapshot(previous)}")
-                print(f"  after : {_format_snapshot(after)}")
-                print(f"  diagnosis: {_expected_contract(after, spec)}")
+            before = current[spec.label]
+            changed = after.identity != before.identity or after.source != before.source or after.line != before.line or after.signature != before.signature
+            if not changed:
+                continue
+            ok, reason = _contract_status(after, spec)
+            transitions[spec.label].append((index, name, after, ok, reason))
+            if spec.label not in first_mutation:
+                first_mutation[spec.label] = (index, name, before, after)
+            if not ok:
+                final_bad[spec.label] = (index, name, after, reason)
+                if spec.label not in first_bad:
+                    first_bad[spec.label] = (index, name, after, reason)
+                    print(f"\nFIRST BAD TRANSITION [{spec.label}]")
+                    print(f"  installer #{index}: {name}")
+                    print(f"  owner: {_format_snapshot(after)}")
+                    print(f"  {reason}")
             current[spec.label] = after
 
-    print("\nFinal runtime state:")
+    print("\n=== EXACT TRANSITION CHAINS ===")
     for spec in HOT_SYMBOLS:
-        snapshot = current[spec.label]
-        print(f"  [{spec.label}] expected={spec.expected}")
-        print(f"      {_format_snapshot(snapshot)}")
-        print(f"      {_expected_contract(snapshot, spec)}")
+        print(f"\n[{spec.label}]")
+        for index, name, snap, ok, reason in transitions[spec.label]:
+            print(f"  #{index:<2} {'PASS' if ok else 'FAIL':4} {name}")
+            print(f"      {_format_snapshot(snap)}")
+            if not ok:
+                print(f"      {reason}")
+        if not transitions[spec.label]:
+            print("  no installer mutation")
 
-    print("\nFIRST-MUTATOR MAP:")
+    print("\n=== ROOT-CAUSE MAP ===")
     for spec in HOT_SYMBOLS:
-        change = first_change.get(spec.label)
-        print(f"  {spec.label}: {change[0] if change else 'no installer mutation'}")
+        mutation = first_mutation.get(spec.label)
+        bad = first_bad.get(spec.label)
+        final = final_bad.get(spec.label)
+        print(f"\n[{spec.label}]")
+        print(f"  first mutation: {mutation[1] if mutation else 'none'}")
+        print(f"  first bad owner: {bad[1] if bad else 'none'}")
+        if bad:
+            print(f"      {_format_snapshot(bad[2])}")
+            print(f"      {bad[3]}")
+        print(f"  final bad owner: {final[1] if final else 'none'}")
+        if final and (not bad or final[0] != bad[0] or final[2].identity != bad[2].identity):
+            print(f"      {_format_snapshot(final[2])}")
+            print(f"      {final[3]}")
     return 0
 
 
@@ -276,14 +280,13 @@ def run_full(maxfail: int) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Fast RAG runtime/test diagnosis")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--audit-runtime", action="store_true", help="trace the first installer that mutates hot runtime symbols")
+    group.add_argument("--audit-runtime", action="store_true", help="trace every hot-symbol transition and report first/final bad owners")
     group.add_argument("--probe", action="store_true", help="run focused failure probes")
     group.add_argument("--contracts", action="store_true", help="run the fast contract gate")
     group.add_argument("--static-map", action="store_true", help="list direct runtime assignments to hot symbols")
     group.add_argument("--full", action="store_true", help="run the entire pytest suite")
     parser.add_argument("--maxfail", type=int, default=7, help="pytest maxfail for probe/full modes")
     args = parser.parse_args()
-
     if args.audit_runtime:
         return audit_runtime()
     if args.probe:
@@ -294,11 +297,8 @@ def main() -> int:
         return static_mutation_map()
     if args.full:
         return run_full(args.maxfail)
-
     static_mutation_map()
-    result = audit_runtime()
-    if result:
-        return result
+    audit_runtime()
     return run_probes(args.maxfail)
 
 
