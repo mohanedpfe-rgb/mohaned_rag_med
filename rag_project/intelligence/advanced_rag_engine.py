@@ -3,18 +3,19 @@
 Deterministic-first retrieval for a local CPU-friendly medical RAG: route the
 question, expand only bounded query variants, retrieve through the existing
 hybrid index, rerank with semantic/lexical/exact/structural signals, diversify
-by document structure, add parent context, self-correct weak retrieval once,
-and expose the complete decision for evaluation.
+by document structure, add parent context, use a document-derived relation graph
+for multi-hop expansion, self-correct weak retrieval once, and expose the full
+retrieval decision for evaluation and debugging.
 """
 from __future__ import annotations
 
-import math
 import re
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
 from rag_project.intelligence.document_intelligence import build_document_map, section_coverage, structural_score
+from rag_project.intelligence.medical_knowledge_graph import build_graph, expand_from_query
 from rag_project.intelligence.query_intelligence import plan_query
 from rag_project.utils.text_utils import keyword_overlap_score, meaningful_tokens
 
@@ -53,6 +54,7 @@ class RetrievalDecision:
     contradiction: dict[str, Any] = field(default_factory=dict)
     document_map: dict[str, Any] = field(default_factory=dict)
     structure: dict[str, Any] = field(default_factory=dict)
+    knowledge_graph: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -108,9 +110,7 @@ def _entities_from_plan(question: str) -> tuple[str, ...]:
 
 def route_query(question: str, planner: Any | None = None) -> QueryRoute:
     q = _clean(question)
-    entities = _entities_from_plan(q) if planner is None else tuple(
-        _clean(x, 160) for x in (getattr(planner, "entities", ()) or ()) if _clean(x, 160)
-    )[:12]
+    entities = _entities_from_plan(q) if planner is None else tuple(_clean(x, 160) for x in (getattr(planner, "entities", ()) or ()) if _clean(x, 160))[:12]
     summary = bool(_SUMMARY.search(q))
     comparison = bool(_COMPARE.search(q))
     needs_table = bool(_TABLE.search(q))
@@ -268,14 +268,7 @@ def _summary_coverage(hits: list[Any]) -> dict[str, Any]:
     section_signal = min(1.0, distinct_sections / 4.0)
     page_signal = min(1.0, distinct_pages / 6.0)
     overall = 0.45 * section_signal + 0.35 * page_signal + 0.20 * evidence_quality
-    return {
-        "slots": {"overview": overall, "key_points": overall, "supporting_details": overall},
-        "overall": round(overall, 4),
-        "entity_coverage": 1.0,
-        "sufficient": overall >= 0.34,
-        "basis": "document_structure_coverage",
-        "structure": structure,
-    }
+    return {"slots": {"overview": overall, "key_points": overall, "supporting_details": overall}, "overall": round(overall, 4), "entity_coverage": 1.0, "sufficient": overall >= 0.34, "basis": "document_structure_coverage", "structure": structure}
 
 
 def evidence_coverage(question: str, route: QueryRoute, hits: list[Any]) -> dict[str, Any]:
@@ -306,7 +299,7 @@ def evidence_coverage(question: str, route: QueryRoute, hits: list[Any]) -> dict
 
 
 def detect_contradictions(hits: list[Any]) -> dict[str, Any]:
-    """Flag only repeated numeric measurements that share a meaningful anchor."""
+    """Flag repeated numeric measurements that share a meaningful context anchor."""
     number_pattern = re.compile(r"(?<!\w)(\d+(?:\.\d+)?\s*(?:%|mg|mcg|g|kg|mmHg|bpm|years?|days?|hours?|mmol/L|mg/dL)?)(?!\w)", re.I)
     generic = {"the", "and", "with", "from", "this", "that", "are", "was", "for", "dans", "les", "des", "une", "un", "avec"}
     groups: dict[str, list[tuple[str, str, str]]] = {}
@@ -390,6 +383,29 @@ def retrieve_document_aware(system: Any, question: str, metadata_filter: dict[st
             if existing is None or _semantic_score(hit) > _semantic_score(existing):
                 candidates[key] = hit
 
+    # Build a graph only when the route needs relationships; this remains local and
+    # deterministic and therefore does not invoke another model.
+    graph = build_graph(candidates.values()) if route.multi_hop else {"nodes": [], "edges": [], "adjacency": {}, "node_count": 0, "edge_count": 0}
+    if route.multi_hop and graph.get("edge_count", 0):
+        graph_queries = expand_from_query(question, graph, limit=2)
+        for query in graph_queries:
+            if query.casefold() in {item.casefold() for item in queries}:
+                continue
+            queries.append(query)
+            try:
+                raw = system.retriever.retrieve(query, top_k=min(48, max(24, int(top_k) * 5)), where=where)
+            except Exception:
+                raw = []
+            attempts += 1
+            for hit in raw or ():
+                if hit is None or not str(getattr(hit, "text", "") or "").strip():
+                    continue
+                meta = dict(getattr(hit, "metadata", {}) or {})
+                key = str(meta.get("chunk_id") or f"{getattr(hit, 'doc_id', '')}:{_page(meta)}:{str(getattr(hit, 'text', ''))[:120]}")
+                if key not in candidates:
+                    candidates[key] = hit
+        strategy.append("document_graph_expansion")
+
     rerank_start = time.perf_counter()
     ranked = rerank_hits(question, list(candidates.values()), route)
     selection_limit = max(int(top_k) * 3, 16)
@@ -399,7 +415,7 @@ def retrieve_document_aware(system: Any, question: str, metadata_filter: dict[st
 
     if not coverage["sufficient"] and attempts < 12:
         correction_count = 1
-        correction_queries = queries[-2:] + [f"{question} section", f"{question} clinical findings", f"{question} definition"]
+        correction_queries = list(queries[-2:]) + [f"{question} section", f"{question} clinical findings", f"{question} definition"]
         correction_queries = list(dict.fromkeys(_clean(x) for x in correction_queries if _clean(x)))[:3]
         for query in correction_queries:
             try:
@@ -423,10 +439,10 @@ def retrieve_document_aware(system: Any, question: str, metadata_filter: dict[st
     document_map = build_document_map(selected)
     elapsed_ms = (time.perf_counter() - started) * 1000
     decision = RetrievalDecision(
-        query=_clean(question), route=route, queries=queries, candidates=len(candidates), final_hits=len(selected),
+        query=_clean(question), route=route, queries=queries[:16], candidates=len(candidates), final_hits=len(selected),
         rerank_ms=round((time.perf_counter() - rerank_start) * 1000, 2), retrieval_ms=round(elapsed_ms, 2),
         self_corrections=correction_count, strategy=strategy, coverage=coverage, contradiction=contradiction,
-        document_map=document_map, structure=structure,
+        document_map=document_map, structure=structure, knowledge_graph=graph,
     )
     return selected, decision.to_dict()
 
@@ -453,8 +469,4 @@ def build_answer_plan(question: str, route: QueryRoute, coverage: dict[str, Any]
     }
 
 
-__all__ = [
-    "QueryRoute", "RetrievalDecision", "route_query", "expand_query_variants", "rerank_hits",
-    "diversify_hits", "evidence_coverage", "detect_contradictions", "retrieve_document_aware",
-    "build_answer_plan",
-]
+__all__ = ["QueryRoute", "RetrievalDecision", "route_query", "expand_query_variants", "rerank_hits", "diversify_hits", "evidence_coverage", "detect_contradictions", "retrieve_document_aware", "build_answer_plan"]
