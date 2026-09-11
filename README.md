@@ -4,7 +4,7 @@
 
 ### **Your PDFs. Your machine. Your evidence.**
 
-A local-first medical document RAG studio that ingests PDFs, builds a versioned searchable knowledge base, retrieves evidence with hybrid search, and answers questions with grounding and safety gates.
+A local-first medical PDF RAG studio for building a searchable document library, finding relevant evidence, and producing grounded answers with citations and safety checks.
 
 <p>
   <a href="https://github.com/mohanedpfe-rgb/mohaned_rag_med/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/mohanedpfe-rgb/mohaned_rag_med/ci.yml?branch=master&label=CI&logo=github&style=for-the-badge" alt="CI"></a>
@@ -15,14 +15,12 @@ A local-first medical document RAG studio that ingests PDFs, builds a versioned 
   <img src="https://img.shields.io/badge/SQLite-Durable%20State-003B57?logo=sqlite&logoColor=white&style=for-the-badge" alt="SQLite">
 </p>
 
-<p>
-  <strong>PDF → Index → Retrieve → Verify → Answer</strong>
-</p>
+<p><strong>PDF → Index → Retrieve → Verify → Answer</strong></p>
 
 <p>
   <a href="#-start-here">Start here</a> ·
   <a href="#-how-it-works">How it works</a> ·
-  <a href="#-performance-engineering">Performance</a> ·
+  <a href="#-performance">Performance</a> ·
   <a href="#-architecture">Architecture</a> ·
   <a href="#-troubleshooting">Troubleshooting</a>
 </p>
@@ -32,120 +30,81 @@ A local-first medical document RAG studio that ingests PDFs, builds a versioned 
 ---
 
 > [!CAUTION]
-> **BookRAG is a document research tool, not a doctor.** It can retrieve incomplete, conflicting, or incorrectly interpreted information. For clinical decisions, verify the original source and use qualified medical guidance.
+> **BookRAG is a document research tool, not a doctor.** Medical answers can be incomplete, conflicting, or incorrectly interpreted. Verify important clinical information against the original source and qualified medical guidance.
 
 > [!IMPORTANT]
-> **Local-first by design.** The application is built around local storage, local Ollama inference, Chroma/SQLite indexing, and a Streamlit UI. It does not require a hosted RAG backend for the normal workflow.
+> **Local-first by design.** Normal operation is built around local files, local Ollama inference, Chroma/SQLite storage, and the Streamlit app. A hosted RAG backend is not required for the normal workflow.
 
 > [!WARNING]
-> This is a public repository. **Do not publish real passwords, tokens, API keys, private PDFs, or machine-specific secrets in Git.** Use a private `.env` for local credentials and rotate any credential that has ever been committed to a public repository.
+> This is a public repository. Never commit real passwords, API keys, tokens, private PDFs, or machine-specific secrets. Use a private `.env` for local credentials.
 
-## ✨ What is this?
+# 🌟 What is BookRAG Medical?
 
-BookRAG Medical is a **citation-first PDF RAG system** for people who want to ask questions about their own medical books, course notes, papers, manuals, and other technical documents.
+BookRAG lets you **talk to your own PDF library**.
 
-The core philosophy is simple:
+Instead of sending a question to a generic model and hoping it remembers the right information, BookRAG first searches the documents you indexed and then uses the retrieved evidence as the basis for the answer.
 
 ```text
-        YOUR PDFS
-            │
-            ▼
-   ┌─────────────────┐
-   │ Parse / OCR     │
-   └────────┬────────┘
-            ▼
-   ┌─────────────────┐
-   │ Chunk + enrich  │
-   └────────┬────────┘
-            ▼
-   ┌─────────────────┐
-   │ Embed + index   │
-   │ Vector + lexical│
-   └────────┬────────┘
-            ▼
-        QUESTION
-            │
-            ▼
-   ┌─────────────────────────┐
-   │ Query understanding     │
-   │ intent • entities •     │
-   │ numeric/table/figure    │
-   └────────────┬────────────┘
-                ▼
-   ┌─────────────────────────┐
-   │ Hybrid retrieval        │
-   │ semantic + lexical      │
-   └────────────┬────────────┘
-                ▼
-   ┌─────────────────────────┐
-   │ Rerank + precision      │
-   └────────────┬────────────┘
-                ▼
-   ┌─────────────────────────┐
-   │ Evidence / grounding    │
-   │ + contradiction checks  │
-   └────────────┬────────────┘
-                ▼
-   ┌─────────────────────────┐
-   │ Fast extractive answer  │
-   │ OR bounded local LLM    │
-   └────────────┬────────────┘
-                ▼
-          VERIFIED ANSWER
+                    YOUR PDF LIBRARY
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ Parse / OCR     │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Chunk + enrich  │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Embed + index   │
+                  │ Vector + lexical│
+                  └────────┬────────┘
+                           │
+                       QUESTION
+                           │
+                           ▼
+                  ┌─────────────────┐
+                  │ Query planning  │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Hybrid retrieve │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Rerank + select │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Ground + verify │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Fast answer OR  │
+                  │ bounded LLM     │
+                  └────────┬────────┘
+                           ▼
+                    VERIFIED ANSWER
 ```
 
-The important difference from a tiny RAG demo is that **retrieval, evidence quality, failure recovery, latency, and answer verification are treated as first-class engineering problems**.
-
----
-
-## 🎨 The project at a glance
-
-| Area | What BookRAG does |
-|---|---|
-| 📄 Documents | Ingests PDF collections incrementally |
-| 🔍 Retrieval | Hybrid semantic + lexical retrieval |
-| 🎯 Reranking | Reorders promising candidates before answering |
-| 🧠 Intelligence | Intent, entities, query decomposition, multi-hop signals |
-| 🧾 Grounding | Claim/evidence verification and citation checks |
-| 🛡️ Safety | Prompt-injection boundaries, contradiction detection, fail-closed behavior |
-| ⚡ Speed | Fast path for simple factual questions + bounded LLM work |
-| 💾 Durability | SQLite state, leases, checkpoints, index compatibility checks |
-| 🧩 Resilience | Partial failure handling, degraded retrieval paths, retry limits |
-| 🌍 Languages | Designed for English, French, and Arabic text handling |
-| 🖥️ UI | Streamlit Studio with overview, chat, system, processing, inspector, settings |
-| 🧪 Quality | Large pytest regression suite + CI on Python 3.11/3.12 |
+The project is designed to be **local, inspectable, resilient, and practical on a normal i5 / 16 GB RAM class machine**.
 
 ---
 
 # 🚀 Start Here
 
-This section is written for someone who has never used the project before.
-
-## 1️⃣ Install Python
+## 1. Install Python
 
 Use **Python 3.11 or 3.12**.
-
-Check:
 
 ```bash
 python --version
 ```
 
-You want something like:
-
-```text
-Python 3.11.x
-```
-
-or:
-
-```text
-Python 3.12.x
-```
-
 ---
 
-## 2️⃣ Create a virtual environment
+## 2. Create a virtual environment
 
 ### Windows PowerShell
 
@@ -161,24 +120,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-When the environment is active, your terminal usually shows:
-
-```text
-(.venv)
-```
-
-That is good. ✅
-
 ---
 
-## 3️⃣ Install dependencies
+## 3. Install dependencies
 
 ```bash
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-For the reproducible dependency set used by CI:
+For the fully pinned dependency set used by CI:
 
 ```bash
 python -m pip install --require-hashes -r requirements.lock
@@ -186,240 +137,253 @@ python -m pip install --require-hashes -r requirements.lock
 
 ---
 
-## 4️⃣ Install and prepare Ollama
+## 4. Install Ollama
 
-BookRAG uses Ollama for local generation and embeddings.
-
-Make sure Ollama is running locally, then pull the default models:
+Start Ollama locally and pull the default models:
 
 ```bash
 ollama pull nomic-embed-text
 ollama pull llama3.2:3b
 ```
 
-Check what Ollama currently has:
+Check installed models:
 
 ```bash
 ollama list
 ```
 
-The configured model names can be changed through the project settings/environment.
+The model names are configurable, so you can use another local model later.
 
 ---
 
-## 5️⃣ Start BookRAG
-
-The main UI is launched with:
+## 5. Start BookRAG
 
 ```bash
 streamlit run app.py
 ```
 
-The developer launcher is also available:
+or:
 
 ```bash
 python run_dev.py
 ```
 
-Then open the local Streamlit URL shown in your terminal.
+Open the local URL printed by Streamlit.
 
 ---
 
-## 6️⃣ Add your first PDF
+## 6. Add your first PDF
 
-The beginner workflow is intentionally simple:
+The beginner workflow is:
 
 ```text
-Open BookRAG
-     ↓
-Add PDFs
-     ↓
+Add PDF
+  ↓
+Ingestion starts
+  ↓
 Wait for READY
-     ↓
+  ↓
 Ask a question
-     ↓
-Inspect citations/evidence
+  ↓
+Inspect evidence/citations
 ```
 
-Inside the Studio:
-
-1. Add a PDF from the sidebar.
-2. Let the ingestion pipeline process it.
-3. Open **Live Processing** to watch status and events.
-4. Wait until the document becomes **READY**.
-5. Go to **Chat** and ask a question.
-6. Inspect the citations/evidence when you want to know *why* the system answered that way.
-
-For a beginner, that is enough to get started. You do **not** need to understand embeddings or vector databases before using the application.
+You do **not** need to understand embeddings, vector databases, BM25, or LLMs before using the app.
 
 ---
 
-# 🧠 How the system works
+# 🎯 What it is good for
 
-## 📥 1. Ingestion
+BookRAG is especially useful for:
 
-A PDF is not immediately treated as a finished searchable document.
+- medical textbooks
+- university lecture notes
+- research papers
+- technical PDFs
+- manuals and reference books
+- large document libraries where source traceability matters
 
-The ingestion path is designed around durable stages:
+The system can also use OCR for scanned/image-heavy pages when the active configuration enables it.
+
+---
+
+# 🧠 How it works
+
+## 📄 1. PDF ingestion
+
+A document is not treated as “ready” just because a file exists.
+
+The ingestion pipeline can move through stages like:
 
 ```text
-PDF
- ↓
 validate
- ↓
+  ↓
 parse pages
- ↓
-quality / OCR decisions
- ↓
+  ↓
+quality / OCR decision
+  ↓
 normalize + enrich
- ↓
+  ↓
 chunk
- ↓
+  ↓
 embed
- ↓
-write vector + lexical indexes
- ↓
+  ↓
+write indexes
+  ↓
 verify
- ↓
+  ↓
 READY
 ```
 
-This matters because large PDFs and imperfect pages can fail in many different ways. The system keeps state so a failure does not have to become a mysterious half-indexed document.
+The system uses bounded batches, durable SQLite state, checkpoints, heartbeats, leases, cleanup, and compatibility checks so large or imperfect PDFs are less likely to leave behind a misleading half-finished index.
 
-### Incremental ingestion
+## 🔍 2. Hybrid retrieval
 
-Pages/chunks are processed in bounded batches rather than requiring the whole book to exist in memory at once.
+BookRAG combines:
 
-### Checkpointed state
+**Semantic retrieval** — good for meaning and paraphrases.
 
-SQLite tracks document and processing state, allowing the system to reason about progress and recovery.
+**Lexical retrieval** — good for exact names, terminology, abbreviations, measurements, and rare words.
 
-### Ownership / leases
-
-Long-running jobs use leases and heartbeats so an expired worker should not blindly overwrite newer state.
-
----
-
-## 🔎 2. Hybrid retrieval
-
-BookRAG combines two complementary retrieval ideas:
-
-### Semantic / vector retrieval
-
-Embeddings help find text that is **conceptually similar** even when the wording differs.
-
-### Lexical retrieval
-
-BM25-style lexical search is strong when exact terminology matters, which is especially useful for:
-
-- drug names
-- abbreviations
-- measurements
-- named diseases
-- rare technical terms
-
-The result is a fused candidate set rather than relying on one retrieval method alone.
-
----
+This combination is particularly useful for medical documents, where changing one term can change the meaning substantially.
 
 ## 🎯 3. Reranking
 
-Retrieval is only the beginning.
-
-The project can use a cross-encoder reranker to reorder the strongest candidates before the final evidence context is assembled.
-
-Default reranker profile:
+After initial retrieval, promising candidates can be reranked with:
 
 ```text
 cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
+The system then works with a smaller, more relevant evidence set.
+
+## 🧾 4. Evidence and grounding
+
+Retrieved text is treated as **evidence**, not as instructions.
+
+The answer pipeline can check:
+
+- claim support
+- citations
+- numeric consistency
+- units
+- negation
+- contradiction
+- answerability
+
+When the evidence is not sufficient for the requested reasoning task, the system can abstain rather than invent a confident answer.
+
 ---
 
-## 🧩 4. Query intelligence
+# 🧩 Query intelligence
 
-The query pipeline distinguishes between different kinds of questions.
+The current system distinguishes question types instead of forcing every question through the most expensive path.
 
-Examples:
-
-| Question | Likely path |
+| Example | Typical strategy |
 |---|---|
-| `What is diabetes?` | Simple factual / fast evidence path |
+| `What is diabetes?` | Simple factual / fast extractive path |
 | `What is HbA1c?` | Simple factual |
-| `What is the dose of metformin?` | Numeric-sensitive path |
-| `Compare diabetes and hypertension.` | Comparison / complex path |
-| `How does insulin affect glucose?` | Mechanism / reasoning path |
-| `Which table contains potassium values?` | Table-oriented retrieval |
-| `What does Figure 3 show?` | Figure-oriented retrieval |
+| `What is the dose of metformin?` | Numeric-sensitive retrieval |
+| `Compare diabetes and hypertension.` | Comparison / reasoning |
+| `How does insulin affect glucose?` | Mechanism / reasoning |
+| `Which table contains potassium values?` | Table-aware retrieval |
+| `What does Figure 3 show?` | Figure-aware retrieval |
 
-This lets the system spend more computation where it is actually useful.
+The planner also handles multilingual medical terminology, clinical entities, query decomposition, follow-up signals, and structured retrieval hints.
 
 ---
 
-# ⚡ Performance Engineering
+# ⚡ Performance
 
-One of the most important current improvements is **latency control**.
+Performance is a first-class part of the current architecture.
 
-The project previously had a dangerous failure mode where multiple local LLM calls could stack together and turn one question into a multi-minute wait.
+A major failure mode in earlier versions was that several local LLM calls could stack together and turn one answer into a multi-minute wait.
 
-The current architecture attacks that problem in several layers.
+The current pipeline uses several layers to prevent that.
 
-## 🏎️ Fast extractive path
+## 🏎️ Fast path for simple questions
 
-A simple factual question that can be answered directly from retrieved evidence should **not need a generation model**.
-
-Conceptually:
+A simple factual question that can be answered directly from strong evidence can bypass the generation model:
 
 ```text
-Question
+question
   ↓
-Retrieve
+retrieve
   ↓
-Find strong evidence sentence
+select strong evidence
   ↓
-Verify
+extract
   ↓
-Return evidence-backed answer
+verify
+  ↓
+answer
 ```
 
-This avoids wasting time on Ollama for questions that do not need synthesis.
+That saves a full Ollama generation call.
 
-## ⏱️ Shared latency budget
+## ⏱️ Shared request latency budget
 
-The generation package now has a request-scoped latency budget so a primary generation call, retry, fallback, and repair attempt cannot independently consume unlimited time.
+The generation layer has a request-scoped latency budget. Primary generation, retries, fallbacks, and repair work share the same budget rather than each receiving an independent timeout.
 
-Current production target:
+The current answer-path target is:
 
-| Query class | Target | Hard ceiling |
+| Query | Target | Hard ceiling |
 |---|---:|---:|
 | Simple factual | ~2–5 s | 8 s |
 | Normal | ~5–15 s | 20 s |
 | Complex | ~15–30 s | 45 s |
-| Exceptional / degraded | bounded | **≤ 45 s for the main answer path** |
+| Degraded / exceptional | bounded | ~45 s main answer path |
 
-These are **engineering targets**, not measured guarantees for every computer. Actual wall-clock speed depends on CPU, RAM, Ollama model loading, index size, and local workload.
+These are **engineering targets**, not guaranteed wall-clock times. Actual speed depends on CPU/RAM, the local Ollama model, model-loading state, index size, and system workload.
 
 ## 🔁 Bounded retries
 
-Transient local model failures can be retried, but retries must fit inside the shared request budget.
+Transient model failures can be retried, but the retry is allowed only when enough request budget remains.
 
-The important rule is:
+## 🧯 No unlimited fallback chain
 
-> **A retry is allowed only if enough time remains.**
+Repair and fallback generation cannot independently turn one question into another several-minute sequence of calls.
 
-## 🧯 No endless repair loop
+## 📦 Smaller context
 
-Answer repair is useful when verification finds a fixable grounding problem. It should not become an automatic second or third full generation after the latency budget is already exhausted.
+Evidence is compressed and bounded before generation, so ordinary questions do not unnecessarily send huge prompts to the local model.
 
-## 📦 Smaller contexts for ordinary questions
+---
 
-The system compresses and limits evidence context so the local model does not have to process an unnecessarily large block of text for every request.
+# 🖥️ Studio UI
+
+The application is organized like a small local research studio.
+
+### 🏠 Overview
+See document and index health at a glance.
+
+### 💬 Chat
+Ask questions and inspect:
+
+- answers
+- confidence
+- answerability
+- citations
+- evidence
+- query metadata
+
+### ⚙️ System
+Check runtime components such as Ollama, configured models, index compatibility, and readiness.
+
+### ⏳ Live Processing
+Follow persisted ingestion state and recent process events.
+
+### 🔎 Inspector
+Inspect document status, page information, index metadata, and verification details.
+
+### 🛠️ Settings
+Change supported runtime settings without editing the core pipeline.
 
 ---
 
 # 🏗️ Architecture
 
-The repository uses one explicit production composition path rather than letting the UI assemble internal components by itself.
+The UI enters through one explicit application composition path.
 
 ```mermaid
 graph TD
@@ -427,188 +391,93 @@ graph TD
     B --> C[application.py]
     C --> D[ProductionRAGSystem]
     D --> E[Query Intelligence]
-    D --> F[Hybrid Retriever]
+    D --> F[Hybrid Retrieval]
     F --> G[Chroma / Vector Store]
     F --> H[Lexical Index]
     D --> I[Reranker]
     D --> J[Evidence Guards]
-    D --> K[Local Ollama]
+    D --> K[Ollama]
     D --> L[SQLite State]
     D --> M[Medical Safety]
 ```
 
-## 🧭 Main layers
+### Main code areas
 
-| Layer | Location | Responsibility |
+| Area | Location | Purpose |
 |---|---|---|
-| UI | `rag_project/app/bookrag_ui.py` | User-facing Studio |
-| Composition | `rag_project/application.py` | Builds the production system |
-| Production service | `rag_project/app/production_rag.py` | Canonical app-facing RAG wrapper |
-| Core RAG compatibility | `rag_project/app/rag_system.py` | Retrieval/embedding compatibility layer |
+| UI | `rag_project/app/bookrag_ui.py` | Streamlit interface |
+| Composition | `rag_project/application.py` | Builds the application |
+| Production service | `rag_project/app/production_rag.py` | Canonical RAG entrypoint |
+| Core compatibility layer | `rag_project/app/rag_system.py` | Core RAG behavior |
 | Intelligence | `rag_project/intelligence/` | Planning, grounding, reasoning, safety |
-| Retrieval | `rag_project/retrieval/` | Hybrid search and context building |
-| Generation | `rag_project/generation/` | Ollama client and latency budget |
-| Embeddings | `rag_project/embeddings/` | Local embedding service |
+| Retrieval | `rag_project/retrieval/` | Search and context building |
+| Generation | `rag_project/generation/` | Ollama client + latency budget |
+| Embeddings | `rag_project/embeddings/` | Local embeddings |
 | Ingestion | `rag_project/ingestion/` | Durable document processing |
 | Parsing | `rag_project/parsing/` | PDF extraction |
-| OCR | `rag_project/ocr/` | Scanned/image-page handling |
-| Storage | `rag_project/storage/` | Vector + lexical persistence |
-| Configuration | `rag_project/configuration/` | Settings + hardware profiles |
-| Tests | `tests/` | Regression and safety coverage |
+| OCR | `rag_project/ocr/` | Scanned-page handling |
+| Storage | `rag_project/storage/` | Persistent indexes |
+| Configuration | `rag_project/configuration/` | Settings and hardware profiles |
+| Tests | `tests/` | Regression and safety contracts |
 
 ---
 
-# 🧠 The intelligence pipeline
+# 🔐 Safety and reliability
 
-The production answer path currently combines several deterministic and model-assisted layers.
+The project includes defensive behavior around several common RAG failure modes.
+
+### Prompt injection boundary
+Text inside a PDF is data, not a privileged instruction source.
+
+### Grounding gates
+Claims are checked against retrieved evidence before the final answer is accepted.
+
+### Contradiction handling
+Conflicting evidence can lower confidence or block unsafe output instead of being silently merged.
+
+### Version-aware indexing
+Embedding/index identity is tracked so incompatible vector data is less likely to be mixed silently.
+
+### BUILDING → READY visibility
+Incomplete indexing should not be exposed as finished searchable state.
+
+### Durable processing state
+SQLite tracks document processing so long jobs have recoverable state.
+
+### Lease / heartbeat protection
+Workers use ownership and heartbeats so stale workers should not blindly overwrite newer work.
+
+### Partial embedding recovery
+Embedding operations use bounded batches, validation, retry handling, and cleanup paths.
+
+---
+
+# 🌍 English · Français · العربية
+
+The intelligence layer explicitly accounts for multilingual medical text.
+
+Examples:
 
 ```text
-1. Query normalization
-        ↓
-2. Semantic understanding
-        ↓
-3. Entity / term extraction
-        ↓
-4. Query planning
-        ↓
-5. Adaptive retrieval
-        ↓
-6. Precision filtering + reranking
-        ↓
-7. Evidence alignment
-        ↓
-8. Clinical reasoning gate
-        ↓
-9. Fast extractive answer OR bounded synthesis
-        ↓
-10. Claim verification
-        ↓
-11. Contradiction / citation checks
-        ↓
-12. Final answer
+English  → diabetes, hyperglycemia, HbA1c
+Français → diabète, hyperglycémie, acidose métabolique
+العربية → السكري، فرط سكر الدم، الحماض الاستقلابي
 ```
 
-The small model can act as a **bounded planning copilot**, but it is not supposed to become an authority that invents medical evidence.
+The project also handles medical abbreviations, measurements, drug-like terms, and multilingual follow-up signals.
+
+This is an explicit design goal, **not a claim that every PDF or every language is perfect**.
 
 ---
 
-# 🛡️ Grounding and safety
+# ⚙️ Current default profile
 
-BookRAG is intentionally conservative about what it considers a successful answer.
+The default hardware profile is aimed at an **Intel i5 / 16 GB RAM class** machine.
 
-### 📌 Evidence is not trusted instructions
-
-Text retrieved from a PDF is treated as **document evidence**, not as commands for the model.
-
-A malicious line inside a PDF should not become a system instruction.
-
-### 🧾 Claim-level verification
-
-Generated answer claims can be checked against retrieved evidence.
-
-This is especially important for:
-
-- numbers
-- units
-- negation
-- clinical relationships
-- citations
-- unsupported recommendations
-
-### ⚠️ Contradiction detection
-
-When evidence conflicts, the pipeline can treat the contradiction as a reason to lower confidence or abstain rather than silently choosing a convenient statement.
-
-### 🚫 Fail closed
-
-When evidence is not sufficient for the requested reasoning task, the system can refuse to fabricate an answer.
-
----
-
-# 🌍 Multilingual document support
-
-The codebase includes explicit handling intended to remain useful with English, French, and Arabic documents and questions.
-
-Examples of the kinds of terms the intelligence layer considers:
-
-```text
-English   → diabetes, hyperglycemia, HbA1c
-French    → diabète, hyperglycémie, acidose métabolique
-Arabic    → السكري، فرط سكر الدم، الحماض الاستقلابي
-```
-
-Medical abbreviations, measurements, drug-like terms, and multilingual follow-up cues are also handled in the current intelligence stack.
-
-This does **not** mean every language or PDF layout is perfect. It means the architecture explicitly accounts for multilingual medical text instead of assuming English-only input.
-
----
-
-# 🖥️ Studio UI guide
-
-The current application is organized like a small local research studio.
-
-## 🏠 Overview
-
-A high-level view of the index and document estate:
-
-- total documents
-- ready documents
-- processing documents
-- vector chunk counts
-- lexical chunk counts
-
-## 💬 Chat
-
-Ask questions against your indexed documents.
-
-Depending on the query, the UI can expose:
-
-- answer
-- confidence
-- answerability
-- query information
-- citations
-- evidence
-- relevant retrieval metadata
-
-## ⚙️ System
-
-Useful when something is not working.
-
-Check items such as:
-
-- Ollama connectivity
-- configured models
-- embedding compatibility
-- vector index readiness
-- generation configuration
-
-## ⏳ Live Processing
-
-Watch durable ingestion status and process events.
-
-This is where you should look when a PDF is still being processed.
-
-## 🔎 Inspector
-
-Inspect individual document state and index details, including page/index metadata and verification information.
-
-## 🛠️ Settings
-
-Change supported runtime configuration without rewriting the application itself.
-
----
-
-# ⚙️ Current default machine profile
-
-The repository includes an `i5_16gb` profile aimed at a normal Intel i5 / 16 GB RAM laptop-class machine.
-
-Current direction:
-
-| Setting | i5 profile |
+| Setting | Current i5 profile |
 |---|---:|
-| Embedding model | `nomic-embed-text` |
-| Generation model | `llama3.2:3b` |
+| Embeddings | `nomic-embed-text` |
+| Generation | `llama3.2:3b` |
 | Embedding batch | 16 |
 | Ollama concurrency | 1 |
 | Ingestion workers | 2 |
@@ -616,16 +485,17 @@ Current direction:
 | Chunk overlap | 100 |
 | Context budget | 3200 tokens |
 | OCR | Disabled by default |
-| Generation max output | 512 tokens |
-| Latency budget | 60 s configured generation budget, with current bounded answer-path enforcement |
+| Generation output | 512 tokens |
+| Configured generation budget | 60 s |
+| Main answer-path ceiling | ~45 s |
 
-There is also a broader `full` profile for stronger hardware.
+A broader `full` profile is also available for stronger hardware.
 
-> **Important:** a more powerful profile does not automatically make a local model faster. Bigger models and larger contexts can increase latency substantially.
+> **Tip:** bigger local models are not automatically faster. On CPU-heavy machines, a smaller model with a smaller context can be dramatically quicker.
 
 ---
 
-# 📁 Repository map
+# 📁 Repository structure
 
 ```text
 mohaned_rag_med/
@@ -642,12 +512,10 @@ mohaned_rag_med/
 ├── rag_project/
 │   ├── application.py
 │   ├── runtime.py
-│   │
 │   ├── app/
 │   │   ├── bookrag_ui.py
 │   │   ├── production_rag.py
 │   │   └── rag_system.py
-│   │
 │   ├── chunking/
 │   ├── citations/
 │   ├── configuration/
@@ -666,7 +534,6 @@ mohaned_rag_med/
 │   └── utils/
 │
 ├── tests/
-│
 └── .github/
     └── workflows/
         └── ci.yml
@@ -676,78 +543,62 @@ mohaned_rag_med/
 
 # 🧪 Testing
 
-The project has a broad regression suite covering architecture, intelligence, security, storage, ingestion, UI wiring, grounding, and performance behavior.
-
-Run everything locally:
+Run the complete suite:
 
 ```bash
 python -m pytest -q
 ```
 
-Compile-check the application:
+Run a compile check:
 
 ```bash
 python -m compileall -q rag_project app.py run_dev.py
 ```
 
-The GitHub Actions workflow tests the project on:
+CI is configured for Python **3.11 and 3.12** with a deterministic dependency set and a local/test-oriented configuration.
 
-```text
-Python 3.11
-Python 3.12
-```
+The regression suite covers areas including:
 
-with a test-oriented local configuration.
-
-### What the tests protect
-
-The suite includes regression coverage for areas such as:
-
-- query normalization
-- intent classification
-- multilingual entities
-- medical term detection
-- deterministic query planning
+- query normalization and intent
+- multilingual medical entities
 - small-model boundaries
 - claim/evidence verification
 - contradiction detection
 - production pipeline authority
 - conversation isolation
 - ingestion state
-- storage consistency
+- storage behavior
 - security boundaries
 - latency budget behavior
 - fast-path behavior
 
 ---
 
-# 📊 Evaluation mindset
+# 📊 What “good RAG” means here
 
-The system should not be judged only by:
+BookRAG should not be judged only by whether the final paragraph sounds convincing.
 
-> **“Did the model produce a believable paragraph?”**
-
-A useful RAG evaluation asks:
+A stronger evaluation asks:
 
 ```text
-Was the right evidence retrieved?
+Did we retrieve the right evidence?
         ↓
-Was the best evidence ranked highly?
+Did ranking put it near the top?
         ↓
 Did the answer stay inside that evidence?
         ↓
-Were numbers / units / negations preserved?
+Were numbers, units and negations preserved?
         ↓
-Are citations attached to the right claims?
+Are citations aligned with the claims?
         ↓
 Did the system abstain when evidence was insufficient?
 ```
 
-That is the engineering standard this repository is moving toward.
+That is the quality model the project is built around.
 
 ---
 
-# 🔧 Configuration
+# 🛠️ Configuration
 
 Start from:
 
@@ -755,10 +606,10 @@ Start from:
 .env.example
 ```
 
-Common settings include:
+The configuration layer exposes settings for, among other things:
 
 ```text
-DEVICE_MODE\ 프로젝트?
+DEVICE_MODE
 OLLAMA_BASE_URL
 EMBEDDING_MODEL
 GENERATION_MODEL
@@ -775,22 +626,13 @@ OCR_ENABLED
 AUTO_OCR
 ```
 
-The exact environment variable names and defaults are defined in `rag_project/configuration/settings.py`.
-
-### Keep `.env` private
-
-A typical local setup looks like:
-
-```text
-.env.example   ✅ commit
-.env           ❌ do not commit secrets
-```
+Keep your real `.env` private.
 
 ---
 
-# 💾 Where local data goes
+# 💾 Local data
 
-By default, BookRAG separates source and runtime state into project-managed directories such as:
+Typical managed runtime locations are:
 
 ```text
 data/incoming/
@@ -802,46 +644,27 @@ data/ingestion.sqlite3
 logs/
 ```
 
-The precise paths can be changed through configuration.
-
-Think of them like this:
-
-| Directory | Meaning |
+| Location | Purpose |
 |---|---|
-| `incoming/` | New PDFs entering the system |
-| `processed/` | Documents accepted for processed storage |
-| `failed/` | Documents/stages that failed |
-| `archive/` | Archived/duplicate source files where applicable |
-| `vector_db/` | Persistent searchable index data |
-| `ingestion.sqlite3` | Durable ingestion/process state |
+| `incoming/` | New PDFs |
+| `processed/` | Processed document files |
+| `failed/` | Failed processing artifacts |
+| `archive/` | Archived/duplicate files where applicable |
+| `vector_db/` | Persistent search indexes |
+| `ingestion.sqlite3` | Durable processing state |
 | `logs/` | Runtime diagnostics |
+
+Paths are configurable.
 
 ---
 
 # 🧯 Troubleshooting
 
-## “The PDF is still processing.”
+## The PDF is still processing
 
-Open **Live Processing** first.
+Open **Live Processing** and inspect the persisted status and recent process events.
 
-Look for:
-
-```text
-QUEUED
-RUNNING / BUILDING
-READY
-FAILED
-```
-
-Also inspect recent process events and logs.
-
----
-
-## “The answer takes too long.”
-
-First determine whether the question is simple or complex.
-
-A simple factual question should be eligible for the extractive fast path. Complex questions may still need local model generation.
+## Answers are slow
 
 Check:
 
@@ -849,15 +672,11 @@ Check:
 ollama list
 ```
 
-and confirm the configured generation model is actually available.
+Then verify the configured generation model exists locally.
 
-Also remember that CPU-only local inference can be slow when the model is loading or when the prompt/context is large.
+For simple factual questions, the current architecture is designed to use an evidence-first fast path whenever possible. Complex questions may still require local LLM generation.
 
----
-
-## “Ollama is not responding.”
-
-Confirm Ollama is running, then check the configured local URL.
+## Ollama is not responding
 
 The default local endpoint is:
 
@@ -865,52 +684,43 @@ The default local endpoint is:
 http://127.0.0.1:11434
 ```
 
-The application uses local health checks and bounded generation behavior so an unavailable model should not become an infinite retry loop.
+Restart Ollama and confirm the required models are installed.
 
----
+## Answers are weak
 
-## “The document was indexed but answers are weak.”
-
-Check, in order:
+Check in this order:
 
 ```text
 1. Is the document READY?
-2. Did the parser extract useful text?
-3. Is OCR needed?
-4. Is the query using the right terminology?
-5. Are the retrieved citations actually relevant?
-6. Does Inspector show healthy index metadata?
+2. Was useful text extracted?
+3. Does the PDF need OCR?
+4. Are the retrieved evidence chunks relevant?
+5. Does Inspector show healthy index metadata?
 ```
 
-A bad answer can be a retrieval problem, not a generation problem.
+A poor answer can be a retrieval problem rather than a generation problem.
 
----
+## You changed the embedding model
 
-## “I changed models and things became weird.”
-
-Embedding identity and index compatibility matter.
-
-Do not assume that changing an embedding model is equivalent to changing a text-generation model. Vector indexes depend on their embedding contract, dimension, and related identity metadata.
-
-Use the system's compatibility/reporting tools rather than manually mixing old and new vector data.
+Do not casually mix old and new embedding indexes. Embedding dimension and model identity are part of the index compatibility contract.
 
 ---
 
 # 🧑‍💻 Developer workflow
 
-A safe development loop is:
+Use a small, testable loop:
 
 ```text
-Change one thing
-     ↓
-Run focused tests
-     ↓
-Run full pytest
-     ↓
-Compile check
-     ↓
-Review the diff
-     ↓
+Change
+  ↓
+Focused test
+  ↓
+Full pytest
+  ↓
+Compile
+  ↓
+Review diff
+  ↓
 Commit to master
 ```
 
@@ -923,96 +733,72 @@ git status
 git diff
 ```
 
-The repository currently uses **`master` as the main branch**.
+The repository uses **`master` as its main branch**.
 
 ---
 
-# 🧱 Design principles
+# 🧭 Design principles
 
-The project is intentionally built around a few rules.
-
-### 1. Evidence before confidence
+### 🧾 Evidence before confidence
 
 A fluent answer is not automatically a correct answer.
 
-### 2. Deterministic before expensive
+### ⚡ Deterministic before expensive
 
-Use simple deterministic logic when it can solve the problem safely. Reserve LLM work for the questions that actually benefit from it.
+Use a safe deterministic path when it can answer the question without a model call.
 
-### 3. Bounded before clever
+### ⏱️ Bounded before unlimited
 
-A feature that can consume unlimited time or memory is not a production feature.
+No single request should be allowed to become an accidental multi-minute chain of retries and repairs.
 
-### 4. Recoverable before fragile
+### 🧱 Recoverable before fragile
 
-Long-running operations need state, checkpoints, ownership, and cleanup paths.
+Long-running work needs state, leases, checkpoints, and cleanup paths.
 
-### 5. One production authority
+### 🧠 One production authority
 
-The UI should call the canonical production service instead of creating competing implementations of the answer pipeline.
+The UI should enter through the canonical production service rather than maintaining competing answer pipelines.
 
-### 6. Fail closed
+### 🚫 Fail closed
 
-When the evidence is not enough, the system should prefer a transparent limitation over fabricated medical certainty.
+When evidence is insufficient, the system should prefer an explicit limitation to fabricated medical certainty.
 
 ---
 
-# 🌱 What can grow next
+# 🌱 Future growth
 
-The architecture is intentionally positioned for further improvement without requiring a hosted backend.
+The architecture leaves room for:
 
-Natural future directions include:
+- larger real-PDF integration benchmarks
+- stronger retrieval evaluation datasets
+- richer latency dashboards
+- more local-model optimization
+- deeper index migration tooling
+- further consolidation of compatibility paths
 
-- larger representative PDF integration tests
-- retrieval-quality benchmarks over real medical collections
-- stronger latency telemetry dashboards
-- further consolidation of legacy compatibility paths
-- deeper index diagnostics
-- optimized local model selection for different CPUs/RAM configurations
-- stronger migration tooling as the index format evolves
-
-These are extensions, not prerequisites for the current local workflow.
+These are extensions. The current application is already designed to run as a local document research system.
 
 ---
 
 # 📚 Documentation map
 
-| Document | Use it for |
+| File | Purpose |
 |---|---|
 | `README.md` | Beginner setup and project overview |
-| `ARCHITECTURE.md` | Ownership and architectural rules |
-| `.env.example` | Local configuration starting point |
-| `rag_project/configuration/settings.py` | Actual runtime settings |
-| `rag_project/app/production_rag.py` | Production-facing answer service |
+| `ARCHITECTURE.md` | Architectural rules and ownership |
+| `.env.example` | Configuration starting point |
+| `rag_project/configuration/settings.py` | Actual settings model |
+| `rag_project/app/production_rag.py` | Production RAG service |
 | `rag_project/generation/latency_budget.py` | Shared latency budget |
-| `rag_project/generation/llm_client.py` | Local Ollama generation behavior |
+| `rag_project/generation/llm_client.py` | Ollama generation client |
 | `tests/` | Executable behavior contracts |
 
 ---
 
-# ❤️ Philosophy
+<div align="center">
 
-> **Read your books. Search your evidence. Question the machine.**
+### ❤️ **Read your books. Search your evidence. Question the machine.**
 
-BookRAG is built to make local document research feel less like talking to a black box and more like working with a transparent research instrument.
+**Local · Evidence-first · Auditable · Built to keep improving**
 
-```text
-         ╭──────────────────────────╮
-         │        YOUR LIBRARY       │
-         │  books • notes • papers   │
-         ╰─────────────┬────────────╯
-                       │
-                 local indexing
-                       │
-                       ▼
-         ╭──────────────────────────╮
-         │       BOOKRAG MEDICAL     │
-         │ retrieve • verify • cite  │
-         ╰─────────────┬────────────╯
-                       │
-                       ▼
-              evidence-backed
-                 answers
-```
-
-**Local. Evidence-first. Auditable. Built to keep improving.**
+</div>
