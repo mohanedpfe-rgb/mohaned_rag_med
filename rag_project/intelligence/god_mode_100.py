@@ -46,16 +46,11 @@ def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_
     entailment=sum(record.support for record in matrix)/max(1,len(matrix)) if matrix else float(result.get("grounding",{}).get("supported_ratio",0.0) or 0.0);entity_coverage=float(result.get("advanced_reasoning",{}).get("entity_coverage",result.get("semantic_alignment",{}).get("entity_coverage",0.0)) or 0.0);source_agreement=float(result.get("advanced_reasoning",{}).get("source_agreement",0.0) or 0.0);contradiction=1.0 if (result.get("contradiction_report") or {}).get("has_contradiction") else 0.0;safety_conflict=float(result.get("advanced_reasoning",{}).get("safety_conflict",0.0) or 0.0);selected_scores=[float(getattr(hit,"score",0.0)) for hit in hits];top_score=max(selected_scores,default=0.0)
     calibration=calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=entailment,entity_coverage=(1.0 if not query_plan.get("entities") else entity_coverage),source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
     enhanced=dict(result);enhanced["evidence_claim_matrix"]=[record.to_dict() for record in matrix];enhanced["evidence_hierarchy"]=[record.to_dict() for record in hierarchy[:80]];enhanced["evidence_context_levels"]=context_levels;enhanced["adaptive_retrieval_budget"]=budget.to_dict();enhanced["validated_small_model_entities"]=_validated_model_entities(result);enhanced["confidence_calibration"]=calibration.to_dict();enhanced["confidence"]={"level":calibration.level,"evidence_confidence":calibration.calibrated};enhanced["pipeline_authority"]=PIPELINE_AUTHORITY
-
-    # Simple factual/definition queries use the deterministic/extractive path. The
-    # canonical top-level pipeline now classifies the same clean query, so disabling
-    # the LLM here cannot create a later hard-routing mismatch.
     simple=_is_simple_query(query_plan);saved_llm=getattr(system,"llm",None) if simple and system is not None else None
     if simple and system is not None:system.llm=None
     try:completed=complete_phases(system,question,enhanced,metadata_filter)
     finally:
         if simple and system is not None:system.llm=saved_llm
-
     final_hits=list(completed.get("hits") or hits);phase_plan=completed.get("phase_plan") or {};provisional_answer=str(completed.get("answer") or "").strip();require_entailment=bool(phase_plan.get("needs_numeric")) or str(phase_plan.get("intent","")) in {"diagnosis","management","etiology","mechanism","prognosis"};final_verification=verify_final_answer(provisional_answer,final_hits,require_entailment=require_entailment);final_matrix=final_verification.get("evidence_claim_matrix") or []
     completed["evidence_claim_matrix"]=final_matrix;completed["final_evidence_claim_matrix"]=final_matrix;completed["final_claim_checks"]=final_verification.get("claim_checks",[]);completed["final_verification"]=final_verification;completed["pipeline_authority"]=PIPELINE_AUTHORITY
     entity_report=score_entity_coverage(str(completed.get("rewritten_question") or question),final_hits,planned_entities=phase_plan.get("entities") or ());completed["entity_coverage"]=entity_report
@@ -64,20 +59,36 @@ def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_
         reasons=[]
         if final_verification.get("reason"):reasons.append(str(final_verification["reason"]))
         if entity_report.get("missing") and entity_report.get("entity_count",0)>0:reasons.append("missing_query_entities_in_evidence")
-        completed["status"]="REASONING_ABSTAIN";completed["abstained"]=True;completed["abstention_reasons"]=reasons or ["final_answer_verification_failed"]
-        completed["answer"]="I could not verify a sufficiently grounded answer from the indexed evidence; unsupported or conflicting clinical details were withheld.";completed["citations"]=[]
-
-    final_entailment=float(final_verification.get("supported_ratio",0.0) or 0.0)
-    completed_calibration=calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=final_entailment,entity_coverage=(1.0 if entity_report.get("entity_count",0)==0 else max(entity_report.get("coverage",0.0),entity_report.get("partial_coverage",0.0)*0.75)),source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
-    # A failed final gate is not proof of contradiction. Preserve the actual
-    # contradiction signal and cap confidence through verification/entailment alone.
-    if not final_allowed:
-        completed_calibration=calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=0.0,entity_coverage=(1.0 if entity_report.get("entity_count",0)==0 else 0.0),source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
+        completed["status"]="REASONING_ABSTAIN";completed["abstained"]=True;completed["abstention_reasons"]=reasons or ["final_answer_verification_failed"];completed["answer"]="I could not verify a sufficiently grounded answer from the indexed evidence; unsupported or conflicting clinical details were withheld.";completed["citations"]=[]
+    final_entailment=float(final_verification.get("supported_ratio",0.0) or 0.0);completed_calibration=calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=final_entailment,entity_coverage=(1.0 if entity_report.get("entity_count",0)==0 else max(entity_report.get("coverage",0.0),entity_report.get("partial_coverage",0.0)*0.75)),source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
+    if not final_allowed:completed_calibration=calibrate_confidence(retrieval=top_score,rerank=top_score,entailment=0.0,entity_coverage=(1.0 if entity_report.get("entity_count",0)==0 else 0.0),source_agreement=source_agreement,contradiction=contradiction,safety_conflict=safety_conflict)
     completed["confidence_calibration"]=completed_calibration.to_dict();completed["confidence"]={"level":completed_calibration.level,"evidence_confidence":completed_calibration.calibrated};completed["phase_implementation"]=_runtime_phase_implementation(completed,final_matrix,final_verification);completed["phase_implementation"]["hardware_profile"]="llama3.2:3b + nomic-embed-text + i5/16GB";completed["phase_implementation"]["final_claim_evidence_hard_gate"]=True;completed["phase_implementation"]["final_confidence_is_calibrated"]=True;completed["phase_implementation"]["canonical_pipeline_executed"]=True;completed["phase_implementation"]["pipeline_authority"]=PIPELINE_AUTHORITY;completed["god_mode_100"]=True
     return completed
 
 
 def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the certified pipeline, but never discard an already-grounded base answer merely because observability/certification enhancement fails."""
     from rag_project.intelligence.god_mode import _god_answer
     base=_god_answer(self,question,metadata_filter)
-    return enhance_result(self,question,base,metadata_filter)
+    try:
+        return enhance_result(self,question,base,metadata_filter)
+    except Exception as exc:
+        answer=str((base or {}).get("answer") or "").strip() if isinstance(base,dict) else ""
+        status=str((base or {}).get("status") or "").upper() if isinstance(base,dict) else ""
+        grounding=(base or {}).get("grounding") or {} if isinstance(base,dict) else {}
+        safe_base=bool(answer) and (status in {"SUCCESS","SUCCESS_WITH_WARNINGS","GROUNDED"} or bool(grounding.get("allow")))
+        if not safe_base:
+            raise
+        fallback=dict(base)
+        fallback["status"]="SUCCESS_WITH_WARNINGS"
+        fallback["pipeline_degraded"]=True
+        fallback["pipeline_degradation_stage"]="enhancement"
+        fallback["pipeline_error"]=type(exc).__name__
+        fallback["pipeline_authority"]=PIPELINE_AUTHORITY
+        fallback["phase_implementation"]={"canonical_pipeline_executed":False,"degraded_to_base_grounded_answer":True,"phase_1":"base_pipeline_completed","phase_2":"base_retrieval_completed","phase_3":"base_generation_completed","phase_4":"base_grounding_preserved","phase_5":"visibility_degraded_but_answer_preserved","enhancement_error":type(exc).__name__}
+        trace=dict(fallback.get("query_trace") or {}) if isinstance(fallback.get("query_trace"),dict) else {}
+        trace["pipeline_degradation"]={"stage":"enhancement","error":type(exc).__name__}
+        fallback["query_trace"]=trace
+        return fallback
+
+__all__=["enhanced_god_answer","enhance_result"]
