@@ -2,6 +2,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import asdict, dataclass
+from difflib import SequenceMatcher
 from typing import Any, Iterable, Sequence
 from rag_project.utils.text_utils import keyword_overlap_score, meaningful_tokens
 
@@ -24,7 +25,7 @@ SCALE={'ug':('mass',1e-6),'mcg':('mass',1e-6),'mg':('mass',1e-3),'g':('mass',1),
 _TINY={'yes','no','ok','okay','thanks','thank','maybe','sure'}
 _METADATA_BLOCK=re.compile(r'\[(?:section|source|file|page|document|metadata|citation|reference)\s*:\s*[^\]]*\]\s*',re.I)
 _METADATA_LABEL=re.compile(r'^\s*(?:sources?|citations?|references?)\s*:',re.I)
-_CONCEPT_SYNONYMS=((r'\bhyperglyc(?:emia|émie)\b|\bhyperglycemia\b','hyperglycemia'),(r'\bcétose\b|\bketosis\b','ketosis'),(r'\bacidose métabolique\b|\bmetabolic acidosis\b','metabolic acidosis'),(r'\bhypoglyc(?:emia|émie)\b|\bhypoglycemia\b','hypoglycemia'),(r'\bhypokali(?:emia|émie)\b|\bhypokalemia\b','hypokalemia'),(r'\bacidocétose diabétique\b|\bdiabetic ketoacidosis\b','diabetic ketoacidosis'))
+_CONCEPT_SYNONYMS=((r'\bhyperglyc(?:emia|émie)\b|\bhyperglycemia\b','hyperglycemia'),(r'\bcétose\b|\bketosis\b','ketosis'),(r'\bacidose métabolique\b|\bmetabolic acidosis\b','metabolic acidosis'),(r'\bhypoglyc(?:emia|émie)\b|\bhypoglycemia\b','hypoglycemia'),(r'\bhypokali(?:emia|émie)\b|\bhypokalemia\b','hypokalemia'),(r'\bacidocétose diabétique\b|\bdiabetic ketoacidosis\b','diabetic ketoacidosis'),(r'\bnéphropathie diabétique\b|\bnephropathie diabetique\b|\bdiabetic nephropathy\b','diabetic nephropathy'),(r'\bdiabète\b|\bdiabete\b|\bdiabetes mellitus\b','diabetes'),(r'\bcomplication microvasculaire\b|\bmicrovascular complication\b','microvascular complication'),(r'\bchronique\b|\bchronic\b','chronic'),(r'\bdu diabète\b|\bof diabetes\b','of diabetes'))
 
 def _normalize_semantic_text(text:str)->str:
     value=str(text or '').casefold()
@@ -76,7 +77,7 @@ def _numeric_consistency_details(claim,evidence):
     return {'checked':bool(cv),'mismatch':bool(bad),'claim_values':[f'{v} {u}' for v,u in cv],'evidence_values':[f'{v} {u}' for v,u in ev],'unsupported_numeric':[f'{v} {u}' for v,u in bad]}
 
 def numeric_consistency(claim,evidence):
-    return not _numeric_consistency_details(claim,evidence)['mismatch']
+    return _numeric_consistency_details(claim,evidence)
 
 def _polarity(t):return -1 if NEG.search(t or '') else 1
 def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
@@ -91,8 +92,12 @@ def semantic_support(claim,evidence):
     if not ct or not et:return 0.
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct={t for t in ct if t not in framing} or ct;shared=ct&et
-    if len(shared)<min(2,len(ct)):return 0.0
-    overlap=len(shared)/len(ct);jac=len(shared)/max(1,len(ct|et));char=keyword_overlap_score(nclaim,nevidence);polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
+    overlap=len(shared)/len(ct);jac=len(shared)/max(1,len(ct|et));char=keyword_overlap_score(nclaim,nevidence)
+    if len(shared)<min(2,len(ct)):
+        cross_lingual=max(SequenceMatcher(None,nclaim,nevidence).ratio(),SequenceMatcher(None,re.sub(r'[^a-z0-9]','',nclaim),re.sub(r'[^a-z0-9]','',nevidence)).ratio())
+        if cross_lingual<0.12:return 0.0
+        char=max(char,0.15*cross_lingual)
+    polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
     return max(0.,min(1.,.50*overlap+.25*jac+.25*char-polarity_penalty))
 
 def detect_contradiction(claim,evidence_blocks:Sequence[str])->bool:
