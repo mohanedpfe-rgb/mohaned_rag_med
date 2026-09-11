@@ -14,7 +14,6 @@ from rag_project.ingestion.document_classifier import DocumentClassifier
 from rag_project.ocr.ocr_service import OCRService
 from rag_project.parsing.pdf_extractor import PDFExtractor
 from rag_project.retrieval.context_builder import ContextBuilder
-from rag_project.storage.enhanced_vector_store import EnhancedVectorStore
 from rag_project.storage.vector_store import VectorStore
 from rag_project.utils.text_utils import detect_language, meaningful_tokens
 
@@ -145,20 +144,32 @@ def _patch_classifier() -> None:
 def _patch_ocr() -> None:
     if getattr(OCRService, "_final_pdf_v2_patched", False):
         return
-    original = OCRService._recognize
 
     def recognize(self, image_path):
-        result = original(self, image_path)
-        try:
+        if self._rapidocr is None:
+            raise RuntimeError(self._init_error or "No OCR engine available; install rapidocr-onnxruntime.")
+        result, _ = self._rapidocr(str(image_path))
+        if not result:
             from PIL import Image
+            from PIL import ImageEnhance, ImageFilter, ImageOps
 
             with Image.open(image_path) as image:
-                width, height = image.size
-            raw, _ = self._rapidocr(str(image_path)) if self._rapidocr is not None else ([], None)
-            self._last_ocr_regions = _normalized_boxes(raw, width, height)
-        except Exception:
+                enhanced = ImageOps.autocontrast(ImageOps.grayscale(image))
+                enhanced = ImageEnhance.Contrast(enhanced).enhance(self.enhance_contrast)
+                enhanced = enhanced.filter(ImageFilter.SHARPEN)
+                enhanced.save(image_path)
+            result, _ = self._rapidocr(str(image_path))
+        if not result:
             self._last_ocr_regions = []
-        return result
+            raise RuntimeError("OCR produced no text for this page.")
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            width, height = image.size
+        self._last_ocr_regions = _normalized_boxes(result, width, height)
+        text = "\n".join(item[1] for item in result if item and len(item) > 1).strip()
+        confidence = sum(float(item[2]) for item in result if len(item) > 2) / max(len(result), 1)
+        return text, float(confidence)
 
     OCRService._recognize = recognize
     OCRService._final_pdf_v2_patched = True
@@ -293,17 +304,14 @@ def _patch_context() -> None:
             representation = str(metadata.get("representation_type") or "canonical")
             cap = self.max_per_document
             if representation in {"table", "figure_caption", "figure_visual", "section_anchor", "chapter_anchor", "book_anchor"} and per_document[document_id] < self.max_per_document:
-                # Reserve one structural slot even when prose already filled most of the cap.
                 cap = max(cap, self.max_per_document + 1)
             if chunk_id in seen or per_document[document_id] >= cap:
                 continue
             estimated_tokens = max(1, len(str(hit.text or "").split()) * 4 // 3)
             if selected and used_tokens + estimated_tokens > self.token_budget:
                 continue
-            if representation == "canonical" and representations[document_id] and all(rep == "canonical" for rep in representations[document_id]):
-                # Allow prose only when there is still no structural representation for this document.
-                if per_document[document_id] >= max(1, cap - 1):
-                    continue
+            if representation == "canonical" and per_document[document_id] >= max(1, cap - 1) and not representations[document_id]:
+                continue
             seen.add(chunk_id)
             per_document[document_id] += 1
             representations[document_id].add(representation)
