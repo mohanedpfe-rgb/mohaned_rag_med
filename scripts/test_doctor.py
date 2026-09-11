@@ -18,7 +18,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -118,7 +117,7 @@ def semantic_contract(symbol: HotSymbol, obj) -> tuple[bool, str]:
         if symbol.contract == "four-argument":
             count = len(inspect.signature(obj).parameters)
             return count >= 4, f"{count}-argument callable" if count >= 4 else f"only {count} parameters"
-    except Exception as exc:  # pragma: no cover - diagnostic fallback
+    except Exception as exc:
         return False, f"probe raised {type(exc).__name__}: {exc}"
     return False, "unknown contract"
 
@@ -250,23 +249,21 @@ def audit_runtime() -> bool:
 
 
 def parse_failure_locations(output: str) -> list[dict[str, str]]:
-    """Extract the first project-owned traceback frame for each pytest failure."""
     failures: list[dict[str, str]] = []
     current: dict[str, str] | None = None
-    lines = output.splitlines()
-    for line in lines:
-        match = re.search(r"^(?P<path>[^\s:][^:]*\.py):(?P<line>\d+):\s*(?P<rest>.*)$", line.strip())
-        if match and "tests" not in match.group("path").replace("\\", "/").split("/"):
-            path = match.group("path")
-            normalized = path.replace("\\", "/")
-            if normalized.startswith("rag_project/"):
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        match = re.search(r"(?P<path>(?:[A-Za-z]:)?[^\s:]+\.py):(?P<line>\d+)(?::\d+)?", line)
+        if match:
+            normalized = match.group("path").replace("\\", "/")
+            if normalized.startswith("rag_project/") or "/rag_project/" in normalized:
                 current = {
                     "path": normalized,
                     "line": match.group("line"),
-                    "detail": match.group("rest").strip(),
+                    "detail": line,
                 }
                 failures.append(current)
-        exc = re.search(r"(?P<etype>[A-Za-z_][\w.]*(?:Error|Exception|Warning)):\s*(?P<message>.*)$", line.strip())
+        exc = re.search(r"(?P<etype>[A-Za-z_][\w.]*(?:Error|Exception|Warning)):\s*(?P<message>.*)$", line)
         if exc and current is not None:
             current["exception"] = exc.group("etype")
             current["message"] = exc.group("message")
@@ -297,14 +294,7 @@ def run_pytest(label: str, args: list[str], *, timeout: int | None = None) -> tu
     print(f"\n=== {label} ===")
     print("$", " ".join(command))
     try:
-        proc = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            env=env,
-            timeout=timeout,
-        )
+        proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, env=env, timeout=timeout)
         elapsed = time.perf_counter() - started
         output = (proc.stdout or "") + "\n" + (proc.stderr or "")
         print(output)
@@ -347,20 +337,22 @@ def run_collection() -> bool:
     return False
 
 
-def smart(maxfail: int, full: bool) -> int:
+def smart(maxfail: int) -> int:
     started = time.perf_counter()
     print("=== RAG TEST DOCTOR: SMART MODE ===")
     print(f"Repository: {ROOT}")
-    print("Strategy: static -> collection -> runtime provenance -> focused contracts -> adaptive analysis -> optional full suite")
+    print("Strategy: static -> collection -> runtime provenance -> focused contracts -> adaptive analysis")
 
     ok = run_static()
     static_runtime_map(verbose=True)
     ok = run_collection() and ok
-    runtime_ok = audit_runtime()
-    ok = runtime_ok and ok
+    ok = audit_runtime() and ok
 
-    probe_args = ["-q", "--tb=short", f"--maxfail={maxfail}", *FOCUSED_TESTS]
-    probe_code, probe_output, _ = run_pytest("FOCUSED CONTRACT + STORAGE PROBES", probe_args, timeout=180)
+    probe_code, probe_output, _ = run_pytest(
+        "FOCUSED CONTRACT + STORAGE PROBES",
+        ["-q", "--tb=short", f"--maxfail={maxfail}", *FOCUSED_TESTS],
+        timeout=180,
+    )
     ok = probe_code == 0 and ok
 
     findings = classify_failure(probe_output)
@@ -397,34 +389,19 @@ def smart(maxfail: int, full: bool) -> int:
             print(f"  [{label}] {hint}")
     ok = contract_code == 0 and ok
 
-    if full:
-        full_code, full_output, elapsed = run_pytest(
-            "FULL TEST SUITE",
-            ["-q", "--tb=short", f"--maxfail={maxfail}"],
-            timeout=1800,
-        )
-        full_locations = parse_failure_locations(full_output)
-        full_findings = classify_failure(full_output)
-        print("\n=== FULL-SUITE FAILURE LOCALIZATION ===")
-        for label, hint in full_findings:
-            print(f"  [{label}] {hint}")
-        for location in full_locations[:30]:
-            print(f"  {location['path']}:{location['line']} -> {location.get('exception', 'failure')}: {location.get('message', '')}")
-        print(f"Full suite elapsed: {elapsed:.2f}s")
-        ok = full_code == 0 and ok
-
     total = time.perf_counter() - started
     print("\n=== TEST DOCTOR RESULT ===")
     print(f"Overall: {'HEALTHY' if ok else 'FAILURES LOCALIZED'}")
     print(f"Diagnostic time: {total:.2f}s")
-    print("Use --smart for this workflow; use --full only after fast layers are clean.")
+    print("Next escalation: python scripts/test_matrix.py")
+    print("Release gate: python scripts/test_doctor.py --full")
     return 0 if ok else 1
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Intelligent RAG test orchestrator and failure localizer")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--smart", action="store_true", help="run all fast diagnostic layers and localize failures")
+    group.add_argument("--smart", action="store_true", help="run every fast diagnostic layer and localize failures")
     group.add_argument("--audit-runtime", action="store_true", help="trace runtime installer mutations")
     group.add_argument("--probe", action="store_true", help="run focused contract/storage probes")
     group.add_argument("--contracts", action="store_true", help="run the fast contract gate")
@@ -448,7 +425,7 @@ def main() -> int:
         return run_pytest("FAST CONTRACT GATE", ["-q", "-m", "fast and contract", "--tb=short"], timeout=180)[0]
     if args.full:
         return run_pytest("FULL TEST SUITE", ["-q", "--tb=short", f"--maxfail={args.maxfail}"], timeout=1800)[0]
-    return smart(args.maxfail, full=args.smart)
+    return smart(args.maxfail)
 
 
 if __name__ == "__main__":
