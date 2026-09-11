@@ -35,7 +35,7 @@ def test_document_aware_retrieval_self_corrects_weak_coverage() -> None:
 
     def retrieve(query: str, top_k: int, where=None):
         calls.append(query)
-        if len(calls) <= 32:
+        if len(calls) <= 8:
             return [Hit("d1", "Background unrelated passage about medicine.", {"document_id": "d1", "page_number": 2}, 0.03, vector_score=0.03, lexical_score=0.02)]
         return [
             Hit(
@@ -48,12 +48,35 @@ def test_document_aware_retrieval_self_corrects_weak_coverage() -> None:
             )
         ]
 
-    system = SimpleNamespace(retriever=SimpleNamespace(retrieve=retrieve))
+    system = SimpleNamespace(retriever=SimpleNamespace(retrieve=retrieve), settings=SimpleNamespace(max_query_variants=8))
     hits, trace = retrieve_document_aware(system, "What are the clinical manifestations of hyperthyroidism?", top_k=4)
     assert hits
     assert trace["self_corrections"] == 1
     assert "clinical" in hits[0].text.lower()
     assert trace["coverage"]["overall"] > 0.0
+    assert trace["final_hits"] <= 16
+
+
+def test_generic_summary_does_not_get_fake_full_coverage_from_empty_query_terms() -> None:
+    route = route_query("What are the main findings?")
+    hits = [Hit("d", "A completely unrelated sentence about renal physiology.", {"document_id": "d", "page_number": 1}, 0.15)]
+    coverage = evidence_coverage("What are the main findings?", route, hits)
+    assert coverage["overall"] < 0.34
+    assert coverage["sufficient"] is False
+
+
+def test_summary_coverage_uses_document_structure() -> None:
+    route = route_query("Summarize the main findings")
+    hits = [
+        Hit("d", "Introduction content.", {"document_id": "d", "page_number": 1, "section_id": "s1", "section": "Introduction"}, 0.70),
+        Hit("d", "Clinical findings content.", {"document_id": "d", "page_number": 4, "section_id": "s2", "section": "Clinical findings"}, 0.75),
+        Hit("d", "Diagnostic content.", {"document_id": "d", "page_number": 9, "section_id": "s3", "section": "Diagnosis"}, 0.80),
+        Hit("d", "Treatment content.", {"document_id": "d", "page_number": 15, "section_id": "s4", "section": "Treatment"}, 0.78),
+    ]
+    coverage = evidence_coverage("Summarize the main findings", route, hits)
+    assert coverage["basis"] == "document_structure_coverage"
+    assert coverage["sufficient"] is True
+    assert coverage["slots"]["overview"] > 0.34
 
 
 def test_evidence_coverage_tracks_required_slots() -> None:
