@@ -225,6 +225,22 @@ def _add_candidates(candidates, raw):
         if old is None or _semantic_score(hit)>_semantic_score(old): candidates[key]=hit
 
 
+def _ordered_correction_hits(question: str, correction_hits: list[Any], route: QueryRoute, ranked: list[Any], limit: int) -> list[Any]:
+    """Rank only the evidence returned by corrective queries, then keep it authoritative.
+
+    Corrective retrieval is a recovery path: once it finds evidence that improves the
+    failed coverage gate, stale initial candidates must not be allowed to displace it.
+    """
+    if not correction_hits:
+        return []
+    corrected = rerank_hits(question, correction_hits, route)
+    if not corrected:
+        return []
+    seen = {id(hit) for hit in corrected}
+    tail = [hit for hit in ranked if id(hit) not in seen]
+    return (corrected + tail)[:max(1, int(limit))]
+
+
 def retrieve_document_aware(system:Any,question:str,metadata_filter:dict[str,Any]|None=None,*,top_k:int=8)->tuple[list[Any],dict[str,Any]]:
     started=time.perf_counter()
     try: configured=int(getattr(getattr(system,"settings",None),"max_query_variants",8))
@@ -263,15 +279,13 @@ def retrieve_document_aware(system:Any,question:str,metadata_filter:dict[str,Any
                 if hit is not None and str(getattr(hit,"text","") or "").strip(): correction_hits.append(hit)
             _add_candidates(candidates,raw)
         ranked=rerank_hits(question,list(candidates.values()),route)
-        correction_ranked=rerank_hits(question,correction_hits,route)
-        # Corrective evidence has explicit priority over stale weak candidates. This is
-        # critical when the initial retriever repeatedly returns low-quality background text.
-        selected=_add_parent_context(correction_ranked[:selection_limit],ranked,selection_limit) if correction_ranked else _add_parent_context(ranked[:selection_limit],ranked,selection_limit)
-        coverage=evidence_coverage(question,route,selected); strategy.append("self-correction")
+        correction_ranked=_ordered_correction_hits(question,correction_hits,route,ranked,selection_limit)
         if correction_ranked:
-            best_corrected=correction_ranked[0]
-            if selected and selected[0] is not best_corrected:
-                selected=[best_corrected]+[h for h in selected if h is not best_corrected][:selection_limit-1]
+            selected=[correction_ranked[0]] + [h for h in correction_ranked[1:] if h is not correction_ranked[0]][:selection_limit-1]
+            selected=_add_parent_context(selected,[correction_ranked[0]]+ranked,selection_limit)
+        else:
+            selected=_add_parent_context(ranked[:selection_limit],ranked,selection_limit)
+        coverage=evidence_coverage(question,route,selected); strategy.append("self-correction")
     contradiction=detect_contradictions(selected); structure=section_coverage(selected); document_map=build_document_map(selected); elapsed=(time.perf_counter()-started)*1000
     decision=RetrievalDecision(query=_clean(question),route=route,queries=queries[:16],candidates=len(candidates),final_hits=len(selected),rerank_ms=round((time.perf_counter()-rerank_start)*1000,2),retrieval_ms=round(elapsed,2),self_corrections=correction_count,strategy=strategy,coverage=coverage,contradiction=contradiction,document_map=document_map,structure=structure,knowledge_graph=graph)
     return selected,decision.to_dict()
