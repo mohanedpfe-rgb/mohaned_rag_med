@@ -52,6 +52,19 @@ def _safe_result(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _should_store_in_history(result: Any) -> bool:
+    """Only persist usable answers; never turn internal/unavailable states into future context."""
+    if not isinstance(result, dict) or not str(result.get('answer') or '').strip():
+        return False
+    status = str(result.get('status') or '').strip().upper()
+    return status not in {
+        'ANSWER_UNAVAILABLE',
+        'SYSTEM_NOT_READY',
+        'NOT_SUPPORTED',
+        'REASONING_ABSTAIN',
+    }
+
+
 class ProductionRAGSystem(ResilientRAGSystem):
     _certified_god_answer=enhanced_god_answer
     def __init__(self,settings=None):super().__init__(settings);self._production_feature_contract=validate_feature_contract()
@@ -192,7 +205,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             finally:
                 if isolated:
                     memory.history=saved_history
-                    if isinstance(result,dict) and str(result.get('answer') or '').strip():
+                    if _should_store_in_history(result):
                         add=getattr(memory,'add',None)
                         if callable(add):add(question,str(result.get('answer') or ''))
                         else:memory.history.append((question,str(result.get('answer') or '')))
