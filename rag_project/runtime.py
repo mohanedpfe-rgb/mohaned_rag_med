@@ -26,6 +26,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.storage.vector_store_runtime import install as vector_store
     from rag_project.intelligence.deep_pdf_contract import install as deep_pdf_contract
     from rag_project.intelligence.structure_cleanup_contract import install as structure_cleanup
+    from rag_project.intelligence.deep_pdf_finalizer import install as deep_pdf_finalizer
 
     return (
         vector_store,
@@ -44,6 +45,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         stability_v8,
         deep_pdf_contract,
         structure_cleanup,
+        deep_pdf_finalizer,
     )
 
 
