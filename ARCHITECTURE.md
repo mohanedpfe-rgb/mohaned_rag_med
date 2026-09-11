@@ -1,6 +1,6 @@
 # BookRAG architecture contract
 
-This project is a modular, single-node medical RAG service optimized for CPU-first local execution around 16GB RAM. The ingestion path preserves full page text, document-global structural ancestry, alternate table/figure representations, and build-aware publication semantics.
+This project is a modular, single-node medical RAG service optimized for CPU-first local execution around 16GB RAM. The ingestion path preserves full page text, **document hierarchy**, document-global structural ancestry, alternate table/figure representations, and build-aware publication semantics.
 
 ## Layering
 

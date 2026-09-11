@@ -104,7 +104,8 @@ class EnhancedVectorStore(VectorStore):
         ids = list(records.get("ids") or [])
         documents = list(records.get("documents") or [])
         metadatas = list(records.get("metadatas") or [])
-        embeddings = list(records.get("embeddings") or [])
+        raw_embeddings = records.get("embeddings")
+        embeddings = [] if raw_embeddings is None else list(raw_embeddings)
         rows: list[dict[str, Any]] = []
         for index, metadata in enumerate(metadatas):
             meta = self._coerce_metadata(metadata)
