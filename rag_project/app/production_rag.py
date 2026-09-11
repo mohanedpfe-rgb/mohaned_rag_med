@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import re
 import time
 from pathlib import Path
@@ -31,6 +32,24 @@ def _safe_list(value: Any) -> list[Any]:
         return list(value)
     except (TypeError, ValueError):
         return []
+
+
+def _safe_logger(system: Any) -> Any:
+    logger = getattr(system, 'logger', None)
+    if logger is not None and callable(getattr(logger, 'exception', None)):
+        return logger
+    return logging.getLogger(__name__)
+
+
+def _safe_exception_log(system: Any, message: str) -> None:
+    try:
+        _safe_logger(system).exception(message)
+    except Exception:
+        pass
+
+
+def _safe_result(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
@@ -78,44 +97,29 @@ class ProductionRAGSystem(ResilientRAGSystem):
             hits=_safe_list(self.retriever.retrieve(str(question or '').strip(),top_k=max(1,min(int(getattr(self.settings,'top_k',8)),12)),where=where))
             hits=[hit for hit in hits if hit is not None]
         except Exception as retrieve_exc:
-            self.logger.exception("Recovery retrieval failed")
+            _safe_exception_log(self,"Recovery retrieval failed")
             return {
-                'status':'ANSWER_UNAVAILABLE',
-                'answer':'I could not safely produce an answer from the indexed evidence right now.',
-                'citations':[],
-                'hits':[],
-                'confidence':{'level':'none','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'retrieval_failed':type(retrieve_exc).__name__,'pipeline_error':type(exc).__name__},
-                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+                'status':'ANSWER_UNAVAILABLE','answer':'I could not safely produce an answer from the indexed evidence right now.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'retrieval_failed':type(retrieve_exc).__name__,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
             }
         if not hits:
             return {
-                'status':'NOT_SUPPORTED',
-                'answer':'I could not find sufficient evidence in the indexed documents to answer this question.',
-                'citations':[],
-                'hits':[],
-                'confidence':{'level':'none','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__},
-                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+                'status':'NOT_SUPPORTED','answer':'I could not find sufficient evidence in the indexed documents to answer this question.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
             }
         try:
             from rag_project.intelligence.god_mode import _simple_extractive_answer
             answer=str(_simple_extractive_answer(str(question or ''),hits,max_sentences=6) or '').strip()
         except Exception as answer_exc:
-            self.logger.exception("Recovery extractive answer failed")
+            _safe_exception_log(self,"Recovery extractive answer failed")
             answer=''
             answer_error=type(answer_exc).__name__
         else:
             answer_error=None
         if not answer:
             return {
-                'status':'ANSWER_UNAVAILABLE',
-                'answer':'The indexed evidence was retrieved, but it could not be safely converted into a grounded answer.',
-                'citations':[],
-                'hits':hits,
-                'confidence':{'level':'low','evidence_confidence':0.0},
-                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'extractive_failed':answer_error},
-                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+                'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but it could not be safely converted into a grounded answer.','citations':[],'hits':hits,'confidence':{'level':'low','evidence_confidence':0.0},
+                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'extractive_failed':answer_error},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
             }
         try:
             built=self.citation_manager.build(hits) or []
@@ -131,28 +135,17 @@ class ProductionRAGSystem(ResilientRAGSystem):
             checks=[];ground={'allow':False,'supported_ratio':0.0}
         if not checks or not ground.get('allow',False):
             return {
-                'status':'ANSWER_UNAVAILABLE',
-                'answer':'The indexed evidence was retrieved, but the answer could not pass the grounding check safely.',
-                'citations':[],
-                'hits':hits,
-                'confidence':{'level':'low','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},
-                'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounding_failed':True},
-                'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+                'status':'ANSWER_UNAVAILABLE','answer':'The indexed evidence was retrieved, but the answer could not pass the grounding check safely.','citations':[],'hits':hits,
+                'confidence':{'level':'low','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounding_failed':True},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
             }
         return {
-            'status':'SUCCESS_WITH_WARNINGS',
-            'answer':answer,
-            'citations':citations,
-            'hits':hits,
-            'confidence':{'level':'medium','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},
-            'grounding':ground,
+            'status':'SUCCESS_WITH_WARNINGS','answer':answer,'citations':citations,'hits':hits,
+            'confidence':{'level':'medium','evidence_confidence':float(ground.get('supported_ratio',0.0) or 0.0)},'grounding':ground,
             'claims':[getattr(check,'to_dict',lambda: {'claim':str(getattr(check,'claim',''))})() for check in checks],
-            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True},
-            'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'grounded_extractive_fallback':True},'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
         }
 
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
-        request_started=time.perf_counter()
         if not self._production_feature_contract['all_resolved']:
             return {'status':'SYSTEM_NOT_READY','answer':'The production feature contract is incomplete; a grounded answer is disabled.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},'production_contract':self._production_feature_contract}
         memory=getattr(self,'conversation_memory',None)
@@ -165,10 +158,30 @@ class ProductionRAGSystem(ResilientRAGSystem):
             try:
                 try:
                     result=self._certified_god_answer(question,metadata_filter)
+                    if not isinstance(result,dict):
+                        raise TypeError('certified_answer_returned_non_mapping')
                 except Exception as exc:
-                    self.logger.exception("Certified answer pipeline failed; entering grounded recovery path")
-                    result=self._recovery_answer(question,metadata_filter,exc)
-                result=apply_medical_safety_policy(question,result,self.settings)
+                    _safe_exception_log(self,"Certified answer pipeline failed; entering grounded recovery path")
+                    try:
+                        result=self._recovery_answer(question,metadata_filter,exc)
+                    except Exception as recovery_exc:
+                        _safe_exception_log(self,"Grounded recovery path failed")
+                        result={
+                            'status':'ANSWER_UNAVAILABLE',
+                            'answer':'The answer pipeline encountered an internal failure and no grounded fallback was available.',
+                            'citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0},
+                            'recovery':{'attempted':True,'pipeline_error':type(exc).__name__,'recovery_error':type(recovery_exc).__name__},
+                            'pipeline_authority':ANSWER_PIPELINE_AUTHORITY,
+                        }
+                try:
+                    safe_result=apply_medical_safety_policy(question,result,self.settings)
+                    result=_safe_result(safe_result) or _safe_result(result)
+                except Exception as safety_exc:
+                    _safe_exception_log(self,"Medical safety policy failed; preserving grounded result")
+                    result=_safe_result(result)
+                    result.setdefault('safety_policy_warning',type(safety_exc).__name__)
+                if not result:
+                    result={'status':'ANSWER_UNAVAILABLE','answer':'No grounded result was produced.','citations':[],'hits':[],'confidence':{'level':'none','evidence_confidence':0.0}}
                 result.setdefault('pipeline_authority',ANSWER_PIPELINE_AUTHORITY)
                 if 'query_trace' in result:result['query_trace']=sanitize_trace(result['query_trace'])
                 result['latency_budget_seconds']=budget
@@ -181,10 +194,8 @@ class ProductionRAGSystem(ResilientRAGSystem):
                     memory.history=saved_history
                     if isinstance(result,dict) and str(result.get('answer') or '').strip():
                         add=getattr(memory,'add',None)
-                        if callable(add):
-                            add(question,str(result.get('answer') or ''))
-                        else:
-                            memory.history.append((question,str(result.get('answer') or '')))
+                        if callable(add):add(question,str(result.get('answer') or ''))
+                        else:memory.history.append((question,str(result.get('answer') or '')))
     def audit_god_mode_index(self):return audit_god_mode_index(self)
     def health_report(self):
         checks={}
