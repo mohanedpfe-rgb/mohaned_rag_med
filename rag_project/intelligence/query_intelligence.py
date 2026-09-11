@@ -14,7 +14,7 @@ _NAV = ("where", "which page", "section", "page number", "citation", "source", "
 _TABLE = ("table", "tables", "row", "column", "tabular", "tableau", "جدول", "الجدول", "صف", "الصف", "عمود", "العمود")
 _FIGURE = ("figure", "fig.", "image", "images", "diagram", "chart", "graph", "illustration", "رسم", "شكل", "الشكل", "صورة", "الصورة", "مخطط", "المخطط")
 _MANAGEMENT = ("manage", "managed", "management", "treat", "treated", "treatment", "therapy", "therapeutic", "contraindication", "contraindications", "how should", "prise en charge", "traitement", "contre-indication", "contre-indications", "علاج", "يعالج", "تدبير", "موانع", "موانع الاستعمال")
-_ETIOLOGY = ("cause", "causes", "caused", "etiology", "aetiology", "risk factor", "risk factors", "pourquoi", "cause", "étiologie", "سبب", "أسباب", "عوامل الخطر")
+_ETIOLOGY = ("cause", "causes", "caused", "etiology", "aetiology", "risk factor", "risk factors", "pourquoi", "étiologie", "سبب", "أسباب", "عوامل الخطر")
 _MECHANISM = ("mechanism", "mechanisms", "pathway", "pathophysiology", "physiopathology", "mécanisme", "physiopathologie", "آلية", "آليات", "المسار")
 _PROGNOSIS = ("prognosis", "outcome", "outcomes", "survival", "risk prediction", "prognostic", "pronostic", "مآل", "الإنذار", "البقاء")
 _STOP = {"what", "does", "the", "and", "for", "with", "which", "from", "that", "this", "about", "have", "into", "dans", "avec", "pour", "les", "des", "est", "sont", "une", "sur", "ما", "ماذا", "كيف", "هل", "عن", "من", "هذا", "هذه"}
@@ -24,7 +24,6 @@ def _contains_term(text: str, term: str) -> bool:
     haystack = (text or "").casefold(); needle = (term or "").casefold().strip()
     if not needle: return False
     if re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE): return True
-    # Arabic definite articles are orthographic prefixes, not separate tokens.
     if re.match(r"[\u0600-\u06ff]", needle) and not needle.startswith("ال"):
         return bool(re.search(rf"(?<!\w)ال{re.escape(needle)}(?!\w)", haystack, flags=re.UNICODE))
     return False
@@ -92,19 +91,22 @@ def decompose_query(query: str) -> tuple[str, ...]:
 def classify_intent(normalized: str, subqueries: tuple[str, ...]) -> str:
     semantic = understand_query(normalized)
     primary = semantic.primary_intent
-    # Multi-part requests must remain multi-part even when one clause dominates
-    # the semantic classifier (e.g. dose + contraindications). This preserves all
-    # requested retrieval paths instead of collapsing the request to one intent.
-    if len(subqueries) > 1 and (_contains_any(normalized, _NUMERIC) or _contains_any(normalized, _MANAGEMENT)):
-        return "multi_part"
+    # Preserve explicit/high-confidence semantic categories before the generic
+    # multi-part fallback. The mixed dose + contraindications case is the one
+    # deliberate exception because it must activate both numeric and management
+    # retrieval paths.
     if primary == "association": return "relationship"
     if primary == "comparison" or _contains_any(normalized, _COMPARISON): return "comparison"
+    numeric_requested = _contains_any(normalized, _NUMERIC) or "numeric" in semantic.intents
+    management_requested = _contains_any(normalized, _MANAGEMENT)
+    if len(subqueries) > 1 and numeric_requested and management_requested:
+        return "multi_part"
     if primary in {"diagnosis", "management", "etiology", "mechanism", "prognosis"}: return primary
-    if _contains_any(normalized, _MANAGEMENT): return "management"
+    if management_requested: return "management"
     if _contains_any(normalized, _ETIOLOGY): return "etiology"
     if _contains_any(normalized, _MECHANISM): return "mechanism"
     if _contains_any(normalized, _PROGNOSIS): return "prognosis"
-    if _contains_any(normalized, _NUMERIC) or "numeric" in semantic.intents: return "numeric"
+    if numeric_requested: return "numeric"
     if primary == "factual":
         if _contains_any(normalized, _TABLE): return "table_lookup"
         if _contains_any(normalized, _FIGURE): return "figure_lookup"
