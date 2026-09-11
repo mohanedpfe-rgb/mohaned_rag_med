@@ -8,7 +8,16 @@ from typing import Any, Dict, Sequence
 from rag_project.storage.vector_store import VectorStore
 
 
-_STRUCTURE_RE = re.compile(
+_NEW_STRUCTURE_RE = re.compile(
+    r"\[RAG-STRUCTURE\s+schema=(?P<schema>\d+);\s*"
+    r"chapter_id=(?P<chapter_id>[^;\]]*);\s*chapter=(?P<chapter>[^;\]]*);\s*"
+    r"section_id=(?P<section_id>[^;\]]*);\s*section=(?P<section>[^;\]]*);\s*"
+    r"parent_id=(?P<parent_id>[^;\]]*);\s*path=(?P<path>\[[^\]]*\]);\s*"
+    r"page=(?P<page>[^;\]]*);\s*quality=(?P<quality>[^;\]]*);\s*"
+    r"ocr=(?P<ocr>[^\]]*)\]",
+    re.I,
+)
+_OLD_STRUCTURE_RE = re.compile(
     r"\[RAG-STRUCTURE\s+chapter_id=(?P<chapter_id>[^;\]]*);\s*chapter=(?P<chapter>[^;\]]*);\s*"
     r"section_id=(?P<section_id>[^;\]]*);\s*section=(?P<section>[^;\]]*);\s*"
     r"parent_id=(?P<parent_id>[^;\]]*);\s*quality=(?P<quality>[^;\]]*);\s*"
@@ -51,17 +60,25 @@ class EnhancedVectorStore(VectorStore):
     @staticmethod
     def _enrich_metadata(metadata: Dict[str, Any], document: str, item_id: str = "") -> Dict[str, Any]:
         enriched = dict(metadata)
-        match = _STRUCTURE_RE.search(document or "")
+        match = _NEW_STRUCTURE_RE.search(document or "") or _OLD_STRUCTURE_RE.search(document or "")
         if match:
             values = match.groupdict()
-            for field in ("chapter_id", "chapter", "section_id", "section", "parent_id", "table_id", "figure_id", "page_type", "ocr_status"):
-                value = values.get(field)
+            for source, target in (("chapter_id", "chapter_id"), ("chapter", "chapter"), ("section_id", "section_id"), ("section", "section"), ("parent_id", "parent_id")):
+                value = values.get(source)
                 if value:
-                    enriched[field] = value
-            try:
-                enriched["quality_score"] = float(values.get("quality") or 0.0)
-            except (TypeError, ValueError):
-                pass
+                    enriched[target] = value
+            quality = values.get("quality")
+            if quality:
+                try:
+                    enriched["quality_score"] = float(quality)
+                except (TypeError, ValueError):
+                    pass
+            if values.get("ocr") and not enriched.get("ocr_status"):
+                enriched["ocr_status"] = values["ocr"]
+            if values.get("ocr_status") and not enriched.get("ocr_status"):
+                enriched["ocr_status"] = values["ocr_status"]
+            if values.get("page_type"):
+                enriched["page_type"] = values["page_type"]
         if "[TABLE]" in (document or "") and not enriched.get("table_id"):
             enriched["table_id"] = f"{enriched.get('document_id', 'document')}:table:{item_id}"
             enriched["representation_type"] = "table"
@@ -72,6 +89,7 @@ class EnhancedVectorStore(VectorStore):
             enriched["evidence_types"] = ["figure"]
         enriched.setdefault("record_type", "chunk")
         enriched.setdefault("hierarchy_level", "chunk")
+        enriched.setdefault("structure_version", 3)
         return _clean_metadata(enriched)
 
     def add_documents(self, documents: Sequence[str], metadatas: Sequence[Dict[str, Any]], embeddings: Sequence[Sequence[float]], ids: Sequence[str]) -> None:
