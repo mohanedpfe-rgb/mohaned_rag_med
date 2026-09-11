@@ -31,7 +31,26 @@ def _stable_id(value: str) -> str:
 
 
 def _unit_mean(vectors: Sequence[Sequence[float]]) -> list[float]:
-    usable = [list(map(float, vector)) for vector in vectors if vector]
+    """Return the L2-normalized mean without relying on truth-testing arrays.
+
+    Chroma may materialize embeddings as NumPy arrays.  Expressions such as
+    ``if vector`` are invalid for multi-element arrays because their boolean
+    value is ambiguous.  Normalize by explicit length checks instead so this
+    function accepts both regular Python sequences and array-like vectors.
+    """
+    usable: list[list[float]] = []
+    for vector in vectors:
+        if vector is None:
+            continue
+        try:
+            if len(vector) == 0:
+                continue
+            normalized = list(map(float, vector))
+        except (TypeError, ValueError):
+            continue
+        if normalized:
+            usable.append(normalized)
+
     if not usable:
         return []
     dimension = len(usable[0])
