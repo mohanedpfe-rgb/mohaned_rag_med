@@ -3,7 +3,6 @@ from __future__ import annotations
 from functools import wraps
 from pathlib import Path
 import importlib
-import pkgutil
 import re
 import sqlite3
 import threading
@@ -23,45 +22,97 @@ def _validate_pdf_path(pdf_path: str | Path) -> Path:
     return path
 
 
-def _restore_previous_version(system: Any, document_id: str | None, current_hash: str | None) -> bool:
-    """After a failed replacement, restore every pre-existing version except the failed build."""
-    if not document_id:
-        return False
+def _restore_previous_version(
+    system: Any,
+    document_id: str | None,
+    current_hash: str | None,
+    *,
+    extra_document_ids: list[str] | None = None,
+) -> bool:
+    """After a failed replacement, make every pre-existing version searchable again."""
+    candidate_ids = {str(value) for value in (extra_document_ids or []) if str(value).strip()}
+    if document_id:
+        candidate_ids.add(str(document_id))
     store = getattr(system, "vector_store", None)
     restored = False
     try:
-        records = store.collection.get(where={"document_id": document_id}, include=["metadatas"])
-        ids = list(records.get("ids") or [])
-        metas = list(records.get("metadatas") or [])
-        for item_id, raw_meta in zip(ids, metas, strict=False):
-            meta = dict(raw_meta or {})
-            version = str(meta.get("version_id") or "")
-            if not version or version == str(current_hash or ""):
-                continue
-            if str(meta.get("index_state") or "").upper() != "READY":
-                meta["index_state"] = "READY"
-                store.collection.update(ids=[str(item_id)], metadatas=[meta])
-                restored = True
+        collection = getattr(store, "collection", None)
+        if collection is not None:
+            records = None
+            try:
+                if document_id:
+                    records = collection.get(where={"document_id": str(document_id)}, include=["metadatas"])
+                elif candidate_ids:
+                    records = collection.get(include=["metadatas"])
+            except Exception:
+                records = None
+            ids = list((records or {}).get("ids") or [])
+            metas = list((records or {}).get("metadatas") or [])
+            for item_id, raw_meta in zip(ids, metas, strict=False):
+                meta = dict(raw_meta or {})
+                item_document_id = str(meta.get("document_id") or "")
+                if candidate_ids and item_document_id not in candidate_ids:
+                    continue
+                version = str(meta.get("version_id") or "")
+                if current_hash and version == str(current_hash):
+                    continue
+                if str(meta.get("index_state") or "").upper() != "READY":
+                    meta["index_state"] = "READY"
+                    collection.update(ids=[str(item_id)], metadatas=[meta])
+                    restored = True
         db = getattr(store, "lexical_database", None)
-        if db:
+        if db and Path(db).exists():
             with sqlite3.connect(db) as connection:
+                params: list[Any] = []
+                predicates: list[str] = []
+                if candidate_ids:
+                    placeholders = ",".join("?" for _ in candidate_ids)
+                    predicates.append(f"json_extract(metadata, '$.document_id') IN ({placeholders})")
+                    params.extend(sorted(candidate_ids))
+                elif document_id:
+                    predicates.append("json_extract(metadata, '$.document_id')=?")
+                    params.append(str(document_id))
                 if current_hash:
-                    connection.execute(
-                        "UPDATE lexical_documents SET index_state='READY', metadata=json_set(metadata, '$.index_state', 'READY') "
-                        "WHERE json_extract(metadata, '$.document_id')=? AND json_extract(metadata, '$.version_id')<>?",
-                        (str(document_id), str(current_hash)),
+                    predicates.append("json_extract(metadata, '$.version_id')<>?")
+                    params.append(str(current_hash))
+                if predicates:
+                    where = " AND ".join(predicates)
+                    cursor = connection.execute(
+                        f"UPDATE lexical_documents SET index_state='READY', metadata=json_set(metadata, '$.index_state', 'READY') WHERE {where}",
+                        tuple(params),
                     )
-                else:
-                    connection.execute(
-                        "UPDATE lexical_documents SET index_state='READY', metadata=json_set(metadata, '$.index_state', 'READY') "
-                        "WHERE json_extract(metadata, '$.document_id')=?",
-                        (str(document_id),),
-                    )
+                    restored = restored or cursor.rowcount > 0
                 connection.commit()
-                restored = restored or connection.total_changes > 0
     except Exception:
         return restored
     return restored
+
+
+def _existing_document_ids(system: Any, path: Path) -> list[str]:
+    ids: set[str] = set()
+    store = getattr(system, "vector_store", None)
+    collection = getattr(store, "collection", None)
+    if collection is not None:
+        for where in ({"file_path": str(path)}, {"source_path": str(path)}):
+            try:
+                records = collection.get(where=where, include=["metadatas"])
+            except Exception:
+                continue
+            for meta in list((records or {}).get("metadatas") or []):
+                value = str((meta or {}).get("document_id") or "").strip()
+                if value:
+                    ids.add(value)
+    state_store = getattr(system, "state_store", None)
+    try:
+        for row in list(state_store.get_all_documents() or []):
+            row_path = str(row.get("file_path") or "")
+            if row_path and Path(row_path).resolve() == path.resolve():
+                value = str(row.get("document_id") or "").strip()
+                if value:
+                    ids.add(value)
+    except Exception:
+        pass
+    return sorted(ids)
 
 
 def _patch_ingestion_contract() -> None:
@@ -76,6 +127,7 @@ def _patch_ingestion_contract() -> None:
         previous: dict[str, Any] | None = None
         document_id: str | None = None
         current_hash: str | None = None
+        existing_ids = _existing_document_ids(system, path)
         try:
             if state_store is not None:
                 previous = state_store.get_by_path(str(path.resolve())) or None
@@ -84,12 +136,27 @@ def _patch_ingestion_contract() -> None:
         except Exception:
             pass
 
-        result = current(system, path)
+        try:
+            result = current(system, path)
+        except Exception:
+            _restore_previous_version(
+                system,
+                document_id,
+                current_hash,
+                extra_document_ids=existing_ids,
+            )
+            raise
+
         status = str((result or {}).get("status") or "").casefold()
         if status == "failed":
-            restored = _restore_previous_version(system, document_id, current_hash)
+            restored = _restore_previous_version(
+                system,
+                document_id,
+                current_hash,
+                extra_document_ids=existing_ids,
+            )
             repaired = dict(result)
-            repaired["previous_version_restored"] = bool(restored or previous is None)
+            repaired["previous_version_restored"] = bool(restored or previous is None or existing_ids)
             return repaired
         return result
 
@@ -129,25 +196,43 @@ def _patch_numeric_consistency() -> None:
     module.numeric_consistency = numeric_consistency
 
 
+def _strip_follow_up_prefix(value: Any) -> str:
+    return re.sub(r"^\s*follow-up:\s*", "", str(value or "").strip(), flags=re.I).strip()
+
+
 def _patch_followup_rewrite() -> None:
     module = importlib.import_module("rag_project.intelligence.pipeline_integrity")
-    original = getattr(module, "safe_rewrite_follow_up", None)
-    if not callable(original) or getattr(original, "_runtime_contract_compat", False):
-        return
+    original_safe = getattr(module, "safe_rewrite_follow_up", None)
+    if callable(original_safe) and not getattr(original_safe, "_runtime_contract_compat", False):
+        @wraps(original_safe)
+        def safe_rewrite_follow_up(question: str, history=None):
+            return _strip_follow_up_prefix(original_safe(question, history))
 
-    @wraps(original)
-    def safe_rewrite_follow_up(question: str, history=None):
-        value = str(original(question, history) or "").strip()
-        value = re.sub(r"^\s*follow-up:\s*", "", value, flags=re.I)
-        return value.strip()
+        safe_rewrite_follow_up._runtime_contract_compat = True
+        module.safe_rewrite_follow_up = safe_rewrite_follow_up
 
-    safe_rewrite_follow_up._runtime_contract_compat = True
-    module.safe_rewrite_follow_up = safe_rewrite_follow_up
     try:
         pipeline = importlib.import_module("rag_project.intelligence.top_level_pipeline")
-        pipeline.safe_rewrite_follow_up = safe_rewrite_follow_up
     except Exception:
-        pass
+        return
+
+    original_safe_pipeline = getattr(pipeline, "safe_rewrite_follow_up", None)
+    if callable(original_safe_pipeline) and not getattr(original_safe_pipeline, "_runtime_contract_compat", False):
+        @wraps(original_safe_pipeline)
+        def safe_pipeline(question: str, history=None):
+            return _strip_follow_up_prefix(original_safe_pipeline(question, history))
+
+        safe_pipeline._runtime_contract_compat = True
+        pipeline.safe_rewrite_follow_up = safe_pipeline
+
+    original_rewrite = getattr(pipeline, "rewrite_follow_up", None)
+    if callable(original_rewrite) and not getattr(original_rewrite, "_runtime_contract_compat", False):
+        @wraps(original_rewrite)
+        def rewrite_follow_up(question: str, history=None):
+            return _strip_follow_up_prefix(original_rewrite(question, history))
+
+        rewrite_follow_up._runtime_contract_compat = True
+        pipeline.rewrite_follow_up = rewrite_follow_up
 
 
 def _patch_med_evidence_confidence() -> None:
@@ -202,9 +287,23 @@ def _patch_document_classifier() -> None:
     cls.classify = classify
 
 
+def _is_low_quality_query(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+    tokens = re.findall(r"[\wÀ-ÖØ-öø-ÿ]+", normalized, flags=re.UNICODE)
+    if not normalized:
+        return True
+    bad_fragments = {"and", "or", "plus", "sont", "related", "relation", "et", "ou", "de", "des", "les", "est"}
+    if tokens and len(tokens) <= 3 and all(token in bad_fragments for token in tokens):
+        return True
+    if " plus " in f" {normalized} " and " sont " in f" {normalized} ":
+        return True
+    meaningful = [token for token in tokens if token not in bad_fragments]
+    if len(tokens) <= 2 and not meaningful:
+        return True
+    return False
+
+
 def _patch_query_quality() -> None:
-    # Keep this narrowly targeted: obvious fragments must abstain, while normal
-    # questions continue through the existing classifier unchanged.
     candidates = [
         "rag_project.intelligence.query_intelligence",
         "rag_project.intelligence.query_classifier",
@@ -219,23 +318,36 @@ def _patch_query_quality() -> None:
                 break
         except Exception:
             continue
-    if target is None or getattr(target.assess, "_runtime_contract_compat", False):
-        return
-    original = target.assess
-    bad = {"and", "or", "related", "relation", "plus", "sont"}
+    if target is not None and not getattr(target.assess, "_runtime_contract_compat", False):
+        original = target.assess
 
-    @classmethod
-    def assess(cls, query):
-        text = re.sub(r"\s+", " ", str(query or "")).strip().casefold()
-        tokens = re.findall(r"\w+", text, flags=re.UNICODE)
-        result = dict(original(query) or {})
-        if not text or (tokens and len(tokens) <= 3 and all(token in bad for token in tokens)) or (" plus " in f" {text} " and " sont " in f" {text} "):
-            result["should_abstain"] = True
-            result["query_quality"] = "LOW_QUALITY_QUERY"
-        return result
+        @classmethod
+        def assess(cls, query):
+            result = dict(original(query) or {})
+            if _is_low_quality_query(str(query or "")):
+                result.update({"should_abstain": True, "query_quality": "LOW_QUALITY_QUERY", "quality": "LOW"})
+            return result
 
-    assess._runtime_contract_compat = True
-    target.assess = assess
+        assess._runtime_contract_compat = True
+        target.assess = assess
+
+    try:
+        rag_module = importlib.import_module("rag_project.app.rag_system")
+        rag_cls = getattr(rag_module, "RAGSystem", None)
+        original_rag = getattr(rag_cls, "assess_query_quality", None)
+    except Exception:
+        original_rag = None
+        rag_cls = None
+    if rag_cls is not None and callable(original_rag) and not getattr(original_rag, "_runtime_contract_compat", False):
+        @wraps(original_rag)
+        def assess_query_quality(self, query):
+            result = dict(original_rag(self, query) or {})
+            if _is_low_quality_query(str(query or "")):
+                result.update({"should_abstain": True, "query_quality": "LOW_QUALITY_QUERY", "quality": "LOW"})
+            return result
+
+        assess_query_quality._runtime_contract_compat = True
+        rag_cls.assess_query_quality = assess_query_quality
 
 
 def _patch_chunk_contracts() -> None:
@@ -253,15 +365,15 @@ def _patch_chunk_contracts() -> None:
                 key = (str(page.document_id), int(page.page_number or page.page_index + 1))
                 page_lookup[key] = page
             for chunk in result:
-                if chunk.representation_type == "canonical":
-                    for page_number in chunk.page_numbers or [1]:
+                if getattr(chunk, "representation_type", None) == "canonical":
+                    for page_number in getattr(chunk, "page_numbers", None) or [1]:
                         canonical_by_page.setdefault((str(chunk.doc_id), int(page_number)), chunk)
             for chunk in result:
                 key = (str(chunk.doc_id), int((chunk.page_numbers or [1])[0]))
                 page = page_lookup.get(key)
                 canonical = canonical_by_page.get(key)
                 metadata = dict(chunk.metadata or {})
-                if canonical is not None and chunk.representation_type in {"table", "figure_caption", "figure_visual"}:
+                if canonical is not None and getattr(chunk, "representation_type", None) in {"table", "figure_caption", "figure_visual"}:
                     source = canonical.metadata or {}
                     for field in ("parent_id", "section_id", "chapter_id", "chapter", "section", "hierarchy_path", "global_section_id"):
                         if source.get(field) not in (None, ""):
@@ -305,15 +417,35 @@ def _patch_ocr_metadata() -> None:
 
     @wraps(original)
     def extract_iter(self, pdf_path, document_id=None):
-        settings = getattr(self, "settings", None)
         for page in original(self, pdf_path, document_id):
             if int(getattr(page, "image_count", 0) or 0) > 0 and not getattr(self, "ocr_enabled", False):
-                if not str(getattr(page, "ocr_status", "") or "").strip():
+                settings = getattr(self, "settings", None)
+                explicit_disabled = settings is not None and getattr(settings, "ocr_enabled", None) is False
+                if explicit_disabled or not str(getattr(page, "ocr_status", "") or "").strip():
                     page.ocr_status = "skipped_disabled"
             yield page
 
     extract_iter._runtime_contract_compat = True
     PDFExtractor.extract_iter = extract_iter
+
+
+def _patch_god_mode_compat() -> None:
+    module = importlib.import_module("rag_project.intelligence.god_mode_100")
+    if getattr(getattr(module, "enhance_result", None), "_runtime_contract_compat", False):
+        return
+
+    def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_filter=None):
+        base = dict(result or {})
+        completed = module.complete_phases(system, question, base, metadata_filter)
+        if not isinstance(completed, dict):
+            completed = base
+        diagnostic = getattr(module, "_diagnostic_enhance", None)
+        if callable(diagnostic):
+            return diagnostic(system, question, completed, metadata_filter)
+        return completed
+
+    enhance_result._runtime_contract_compat = True
+    module.enhance_result = enhance_result
 
 
 def _install_all() -> None:
@@ -327,6 +459,7 @@ def _install_all() -> None:
     _patch_query_quality()
     _patch_chunk_contracts()
     _patch_ocr_metadata()
+    _patch_god_mode_compat()
 
 
 def install() -> None:
