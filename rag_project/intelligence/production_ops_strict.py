@@ -7,12 +7,12 @@ import math
 import sqlite3
 import statistics
 import time
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
 from .production_ops import ABTestManager as _ABTestManager, BackupManager as _BackupManager, CircuitBreaker, OperationsStore, RetryPolicy, ResilientCall
+from .retraining_pipeline import TrainingReport, train_configured_tasks
 
 
 class MetricsService:
@@ -109,4 +109,20 @@ class VerifiedBackupManager(_BackupManager):
         with sqlite3.connect(db_path) as db: return str(db.execute("PRAGMA integrity_check").fetchone()[0]).lower()=="ok"
 
 
-__all__=["OperationsStore","MetricsService","ABTestManager","VerifiedBackupManager","CircuitBreaker","RetryPolicy","ResilientCall","two_proportion_z_test","SignificanceResult"]
+class ExecutableRetrainingManager:
+    """Connect feedback-triggered retraining manifests to an actual trainer."""
+    def __init__(self, artifact_dir: str | Path):
+        self.artifact_dir = Path(artifact_dir)
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    def train(self, datasets: dict[str, str | Path]) -> list[TrainingReport]:
+        if not datasets:
+            raise ValueError("at least one task dataset is required")
+        return train_configured_tasks({str(task): str(path) for task, path in datasets.items()}, self.artifact_dir)
+
+    @staticmethod
+    def meets_target(report: TrainingReport, minimum_accuracy: float = 0.80) -> bool:
+        return report.holdout >= 1 and report.accuracy >= float(minimum_accuracy)
+
+
+__all__=["OperationsStore","MetricsService","ABTestManager","VerifiedBackupManager","ExecutableRetrainingManager","CircuitBreaker","RetryPolicy","ResilientCall","two_proportion_z_test","SignificanceResult"]
