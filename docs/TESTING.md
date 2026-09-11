@@ -1,62 +1,104 @@
-# Intelligent Testing and Failure Diagnosis
+# Intelligent Testing and Failure Localization
 
-The project now has a fast diagnostic layer in addition to the full pytest suite.
+The project now has a layered test system designed to find the first broken subsystem before the expensive full suite runs.
 
-## 1. Fastest command
+## 1. One command: smart diagnosis
 
 From the repository root:
 
 ```powershell
-python scripts/test_doctor.py
+python scripts/test_doctor.py --smart
 ```
 
-This performs two actions:
+Smart mode runs, in order:
 
-1. Audits the runtime installer stack and reports the first installer that mutates each hot public symbol.
-2. Runs a small set of deterministic failure probes and groups recognized failures by root-cause class.
+```text
+1. static Python parse check
+2. runtime mutation map
+3. pytest collection health
+4. runtime installer provenance
+5. focused contract/storage probes
+6. fast contract gate
+7. optional full suite
+```
 
-## 2. Runtime provenance only
+For every failing layer it reports the test failure family and the first project-owned traceback frame, for example:
+
+```text
+[lexical-persistence] SQLite lexical mirror was not queryable after reopen
+rag_project/storage/vector_store.py:412
+```
+
+The important distinction is that it reports both the **symptom** and the **owning source location**.
+
+## 2. Runtime provenance
 
 ```powershell
 python scripts/test_doctor.py --audit-runtime
 ```
 
-This is the most important command when a regression looks like a mysterious monkeypatch or compatibility failure. It reports:
+This walks every runtime installer in a fresh process and tracks hot public symbols after each installer. It reports:
 
-- module and qualified symbol name;
+- baseline owner;
+- every mutation point;
+- first bad owner;
+- final owner;
 - source file and line;
-- current signature;
-- `_runtime_*` provenance flags;
-- first installer that changed the symbol.
+- signature and runtime provenance flags.
 
-The audit is executed in a fresh Python process and calls installers one by one, so it can identify the **first mutation point**, not merely the final broken state.
+This is specifically designed for the project's historical runtime monkeypatch/compatibility stack.
 
-## 3. Fast reproduction probes
+## 3. Fast focused probes
 
 ```powershell
 python scripts/test_doctor.py --probe
 ```
 
-The probe set intentionally contains one representative test for each high-risk contract family:
+The probe set covers the highest-risk contract families:
 
 - follow-up rewriting;
-- numeric diagnostics;
+- structured numeric diagnostics;
 - answer-engine enhancer signature;
-- document replacement;
-- lexical persistence;
-- repair consistency.
+- document replacement/version retirement;
+- lexical persistence after reopen;
+- lexical repair against the authoritative vector record.
 
-Use this before `pytest -q` when debugging a new regression.
+## 4. Parallel subsystem matrix
 
-## 4. Contract sentinels
+```powershell
+python scripts/test_matrix.py
+```
+
+This launches several fast lanes with limited parallelism:
+
+```text
+contracts
+runtime-diagnostics
+storage
+intelligence
+ingestion
+regression
+```
+
+A failed lane prints its marker expression and first project-owned traceback frame. This is the quickest way to see which subsystem is currently unhealthy.
+
+## 5. Contract gate
+
+```powershell
+python scripts/test_doctor.py --contracts
+```
+
+or:
 
 ```powershell
 pytest -q -m "fast and contract"
 ```
 
-These tests are intentionally small and deterministic. They validate public return shapes, function signatures, cross-module identity, and protocol-text boundaries.
+These tests validate public return shapes, signatures, cross-module contracts, and protocol boundaries.
 
-## 5. Full suite
+## 6. Full suite
+
+Only after the fast layers are clean:
 
 ```powershell
 python scripts/test_doctor.py --full
@@ -68,20 +110,43 @@ or:
 pytest -q
 ```
 
-The full suite remains the release gate. The diagnostic layer is not a replacement for it; it is the fast path for finding the first broken contract before spending many minutes on the entire suite.
+The full suite remains the release gate. The diagnostic tools are the fast localization layer before that gate.
 
-## Diagnostic rule
+## 7. Automatic test categorisation
 
-When a failure appears in the full suite:
+Tests no longer have to be manually marked one by one for the main subsystem groups. `tests/conftest.py` classifies tests from their path/name into categories such as:
+
+- unit
+- contract
+- diagnostic
+- regression
+- ingestion
+- retrieval
+- intelligence
+- generation
+- storage
+- integration
+- slow
+- requires_ollama
+
+This prevents new tests from silently disappearing from subsystem checks.
+
+## Recommended workflow
 
 ```text
-full pytest
-   -> fast probe
-   -> runtime provenance audit
-   -> first mutating installer
-   -> source-level fix
-   -> contract sentinels
-   -> full pytest
+New failure
+   ↓
+python scripts/test_doctor.py --smart
+   ↓
+first failing subsystem + first project source frame
+   ↓
+python scripts/test_doctor.py --audit-runtime   (when runtime mutation is involved)
+   ↓
+fix the owning production layer
+   ↓
+python scripts/test_matrix.py
+   ↓
+python scripts/test_doctor.py --full
 ```
 
-Do not add another runtime monkeypatch until the provenance audit identifies the exact owner of the behavior.
+Do not create another runtime compatibility patch until the provenance audit proves that the current owner is the correct place to change.
