@@ -9,6 +9,8 @@ def install() -> None:
     if _INSTALLED:
         return
     from rag_project.runtime_canonical_contract_guard import install as canonical_guard
+    from rag_project.runtime_storage_contract_fix import install as storage_guard
 
     canonical_guard()
+    storage_guard()
     _INSTALLED = True
