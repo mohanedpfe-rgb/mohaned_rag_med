@@ -76,13 +76,19 @@ def _compatible(a,b):
     return math.isclose(af*sa[1]/sb[1],bf,rel_tol=0,abs_tol=1e-6)
 
 def _measurement_compatible(a,b):return _compatible(a,b)
-def numeric_consistency(claim,evidence):
+
+def numeric_consistency_details(claim,evidence):
     cv,ev=extract_measurements(claim),extract_measurements(evidence)
     bad=[x for x in cv if not any(_compatible(x,y) for y in ev)] if cv else []
     return {'checked':bool(cv),'mismatch':bool(bad),'claim_values':[f'{v} {u}' for v,u in cv],'evidence_values':[f'{v} {u}' for v,u in ev],'unsupported_numeric':[f'{v} {u}' for v,u in bad]}
 
+def numeric_consistency(claim,evidence):
+    """Public compatibility predicate: True when all stated measurements are supported."""
+    details=numeric_consistency_details(claim,evidence)
+    return not details['mismatch']
+
 def _polarity(t):return -1 if NEG.search(t or '') else 1
-def _score_text(claim:str)->str:return re.sub(r'\[S\d+\]','',claim or '').strip()
+def _score_text(t):return re.sub(r'\[S\d+\]','',t or '').strip()
 def _remove_measurements(text:str)->str:return MEASURE.sub(' ',text or '')
 
 def semantic_support(claim,evidence):
@@ -95,17 +101,14 @@ def semantic_support(claim,evidence):
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct={t for t in ct if t not in framing} or ct
     shared=ct&et
-    if len(shared)<=2 and (ct-shared) and (et-shared):
-        # A small shared concept core is not enough to prove two distinct medical predicates.
-        # Example: “Diabetes causes pneumonia” must not be supported by “Diabetes is chronic”.
-        return 0.0
+    if len(shared)<=2 and (ct-shared) and (et-shared):return 0.0
     coverage=len(shared)/len(ct)
     if coverage < .50:return 0.0
     char=keyword_overlap_score(nclaim,nevidence)
     jac=len(shared)/max(1,len(ct|et));polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
     return max(0.,min(1.,.50*coverage+.25*jac+.25*char-polarity_penalty))
 
-def detect_contradiction(claim,evidence_blocks:Sequence[str])->bool:
+def detect_contradiction(claim,evidence_blocks):
     cl=_score_text(claim).casefold();blocks=[evidence_blocks] if isinstance(evidence_blocks,str) else list(evidence_blocks or ());cl_tokens=set(meaningful_tokens(cl));generic={'patient','the','is','has','with','present','presence','absent','absence','not','no'}
     for ev in blocks:
         el=str(ev or '').casefold();shared=(cl_tokens&set(meaningful_tokens(el)))-generic;explicit=any(re.search(a,cl,re.I) and re.search(b,el,re.I) for a,b in OPPOSITES);polarity=bool(NEG.search(cl))!=bool(NEG.search(el)) and bool(shared)
@@ -119,7 +122,7 @@ def _best_support(claim,blocks,ids):
 def verify_claims(answer,evidence_blocks:Sequence[str],source_ids:Sequence[str])->list[ClaimCheck]:
     checks=[];joined='\n'.join(evidence_blocks)
     for claim in split_claims(answer):
-        best,sources=_best_support(claim,evidence_blocks,source_ids);num=numeric_consistency(claim,joined);contra=detect_contradiction(claim,evidence_blocks);numeric_bridge=max((semantic_support(_remove_measurements(claim),_remove_measurements(block)) for block in evidence_blocks),default=0.0) if num['checked'] and not num['mismatch'] else 0.0
+        best,sources=_best_support(claim,evidence_blocks,source_ids);num=numeric_consistency_details(claim,joined);contra=detect_contradiction(claim,evidence_blocks);numeric_bridge=max((semantic_support(_remove_measurements(claim),_remove_measurements(block)) for block in evidence_blocks),default=0.0) if num['checked'] and not num['mismatch'] else 0.0
         if contra:status,reason='CONTRADICTED','A source conflicts with the claim polarity or safety meaning.'
         elif num['mismatch']:status,reason='NUMERIC_MISMATCH','The stated measurement is not supported by a compatible evidence value.'
         elif best>=.62 or numeric_bridge>=.35:status,reason='SUPPORTED','Strong evidence support.'
