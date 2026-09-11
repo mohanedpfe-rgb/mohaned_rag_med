@@ -1,0 +1,9 @@
+# Optional MedEvidence Pro API/analysis stack.
+# The production runtime stays stdlib-compatible; install these only for the
+# optional HTTP/advanced NLP/monitoring deployments described in the plan.
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+spacy>=3.7,<4.0
+transformers>=4.40,<5.0
+hypothesis>=6.100,<7.0
+prometheus-client>=0.20,<1.0
