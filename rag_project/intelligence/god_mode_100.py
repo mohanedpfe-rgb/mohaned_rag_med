@@ -126,15 +126,7 @@ def _diagnostic_enhance(system: Any, question: str, result: dict[str, Any], meta
         matrix = build_claim_evidence_matrix(claims, hits, [f"S{i + 1}" for i in range(len(hits))]) if claims and hits else ()
         hierarchy = build_evidence_hierarchy(hits)
         grounding = _safe_dict(result.get("grounding")); contradiction = _safe_dict(result.get("contradiction_report")); retrieval_meta = _safe_dict(result.get("retrieval_quality"))
-        calibration = calibrate_confidence(
-            retrieval=max((float(getattr(h, "score", 0.0) or 0.0) for h in hits), default=0.0),
-            rerank=max((float(getattr(h, "score", 0.0) or 0.0) for h in hits), default=0.0),
-            entailment=float(grounding.get("supported_ratio", 0.0) or 0.0),
-            entity_coverage=float(_safe_dict(result.get("entity_coverage")).get("coverage", 1.0) or 1.0),
-            source_agreement=float(contradiction.get("agreement", 1.0) or 1.0),
-            contradiction=1.0 if contradiction.get("has_contradiction") else 0.0,
-            safety_conflict=float(_safe_dict(result.get("advanced_reasoning")).get("safety_conflict", 0.0) or 0.0),
-        ).to_dict()
+        calibration = calibrate_confidence(retrieval=max((float(getattr(h, "score", 0.0) or 0.0) for h in hits), default=0.0), rerank=max((float(getattr(h, "score", 0.0) or 0.0) for h in hits), default=0.0), entailment=float(grounding.get("supported_ratio", 0.0) or 0.0), entity_coverage=float(_safe_dict(result.get("entity_coverage")).get("coverage", 1.0) or 1.0), source_agreement=float(contradiction.get("agreement", 1.0) or 1.0), contradiction=1.0 if contradiction.get("has_contradiction") else 0.0, safety_conflict=float(_safe_dict(result.get("advanced_reasoning")).get("safety_conflict", 0.0) or 0.0)).to_dict()
         calibration["coverage"] = float(retrieval_meta.get("evidence_coverage", 0.0) or 0.0)
         answer = str(result.get("answer") or "")
         final_verification = verify_final_answer(answer, hits) if answer and hits else {"checked": True, "allow": False, "claim_count": 0, "blocked_claims": 0, "supported_ratio": 0.0, "evidence_claim_matrix": []}
@@ -157,53 +149,91 @@ def _diagnostic_enhance(system: Any, question: str, result: dict[str, Any], meta
 
 def _runtime_phase_implementation(result: dict[str, Any], hits: list[Any], final_matrix_or_checks: Any) -> dict[str, Any]:
     """Stable five-phase telemetry projection used by the UI and regression suite."""
-    raw = result if isinstance(result, dict) else {}; phases = raw.get("phases") if isinstance(raw.get("phases"), dict) else {}
+    raw = result if isinstance(result, dict) else {}
+    phases = raw.get("phases") if isinstance(raw.get("phases"), dict) else {}
     verification = final_matrix_or_checks if isinstance(final_matrix_or_checks, dict) else {}
     matrix = final_matrix_or_checks if isinstance(final_matrix_or_checks, list) else verification.get("evidence_claim_matrix", []) or verification.get("claim_checks", []) or []
-    claim_count = int(verification.get("claim_count", len(matrix)) or len(matrix)) if isinstance(verification, dict) else len(matrix)
-    blocked = int(verification.get("blocked_claims", 0) or 0) if isinstance(verification, dict) else 0; checked = bool(verification.get("checked", True)) if isinstance(verification, dict) else True
-    return {"phase_1_query_understanding": {"status": phases.get("phase_1_query_understanding", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY}, "phase_2_retrieval_precision": {"status": phases.get("phase_2_retrieval_precision", "complete"), "hits": len(hits or []), "authority": LEGACY_TELEMETRY_AUTHORITY}, "phase_3_two_stage_generation": {"status": phases.get("phase_3_two_stage_generation", "complete"), "generation_path": raw.get("generation_path", "deterministic_extractive"), "authority": LEGACY_TELEMETRY_AUTHORITY}, "phase_4_verification": {"status": phases.get("phase_4_verification", "complete"), "checked": checked, "final_answer_checked": checked, "claim_count": claim_count, "blocked_claims": blocked, "authority": LEGACY_TELEMETRY_AUTHORITY}, "phase_5_intelligence_visibility": {"status": phases.get("phase_5_intelligence_visibility", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY, "canonical_answer_authority": LEGACY_TELEMETRY_AUTHORITY, "implementation": IMPLEMENTATION_AUTHORITY}}
+    if isinstance(final_matrix_or_checks, list):
+        claim_count = len(matrix)
+    else:
+        claim_count = int(verification.get("claim_count", 0) or len(matrix) or (len(hits) if verification else 0))
+    blocked = int(verification.get("blocked_claims", 0) or 0) if isinstance(verification, dict) else 0
+    checked = bool(verification.get("checked", True)) if isinstance(verification, dict) else True
+    phase5_signals = bool(raw.get("ui_signals_present", raw.get("signals_present", False)))
+    canonical_executed = bool(raw.get("canonical_pipeline_executed", False))
+    return {
+        "phase_1_query_understanding": {"status": phases.get("phase_1_query_understanding", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_2_retrieval_precision": {"status": phases.get("phase_2_retrieval_precision", "complete"), "hits": len(hits or []), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_3_two_stage_generation": {"status": phases.get("phase_3_two_stage_generation", "complete"), "generation_path": raw.get("generation_path", "deterministic_extractive"), "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_4_verification": {"status": phases.get("phase_4_verification", "complete"), "checked": checked, "final_answer_checked": checked, "claim_count": claim_count, "blocked_claims": blocked, "authority": LEGACY_TELEMETRY_AUTHORITY},
+        "phase_5_intelligence_visibility": {"status": phases.get("phase_5_intelligence_visibility", "complete"), "authority": LEGACY_TELEMETRY_AUTHORITY, "canonical_answer_authority": LEGACY_TELEMETRY_AUTHORITY, "implementation": IMPLEMENTATION_AUTHORITY, "signals_present": phase5_signals, "canonical_executed": canonical_executed},
+    }
 
 
 def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     """Document-aware production implementation used by the canonical service."""
     started = time.perf_counter(); clean_question = re.sub(r"\s+", " ", str(question or "")).strip()[:3500]
-    if not clean_question: return {"status":"LOW_QUALITY_QUERY","answer":"Please provide a precise question.","citations":[],"hits":[],"confidence":{"level":"none","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY}
-    settings = getattr(self, "settings", None); top_k = max(4, min(12, int(getattr(settings, "top_k", 8)))) if settings is not None else 8
+    if not clean_question:
+        return {"status":"LOW_QUALITY_QUERY","answer":"Please provide a precise question.","citations":[],"hits":[],"confidence":{"level":"none","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY}
+    settings = getattr(self, "settings", None)
+    top_k = max(4, min(12, int(getattr(settings, "top_k", 8)))) if settings is not None else 8
     hits, retrieval_state = retrieve_document_aware(self, clean_question, metadata_filter, top_k=top_k)
     route = _safe_dict(retrieval_state.get("route")); coverage = _safe_dict(retrieval_state.get("coverage")); answer_plan = build_answer_plan(clean_question, route_query_from_state(route), coverage)
-    if not hits: return {"status":"NOT_SUPPORTED","answer":"I could not find sufficient evidence in the indexed documents to answer this question.","citations":[],"hits":[],"confidence":{"level":"none","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"not_attempted"},"verification":{"status":"not_attempted"}}}
+    if not hits:
+        return {"status":"NOT_SUPPORTED","answer":"I could not find sufficient evidence in the indexed documents to answer this question.","citations":[],"hits":[],"confidence":{"level":"none","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"not_attempted"},"verification":{"status":"not_attempted"}}}
     answer, provenance_claims = _extractive_answer(clean_question, hits, route, 10 if route.get("summary") else 8)
-    if not answer: return {"status":"NOT_SUPPORTED","answer":"Relevant chunks were retrieved, but no usable evidence sentence could be selected.","citations":[],"hits":hits,"confidence":{"level":"low","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY}
-    generation_path = "deterministic_extractive"; evidence_bundle = "\n".join(f"[S{i + 1}] {str(getattr(hit,'text','') or '')[:2600]}" for i, hit in enumerate(hits[:max(top_k*3,12)]))
+    if not answer:
+        return {"status":"NOT_SUPPORTED","answer":"Relevant chunks were retrieved, but no usable evidence sentence could be selected.","citations":[],"hits":hits,"confidence":{"level":"low","evidence_confidence":0.0},"pipeline_authority":PIPELINE_AUTHORITY}
+    generation_path = "deterministic_extractive"
+    evidence_bundle = "\n".join(f"[S{i + 1}] {str(getattr(hit,'text','') or '')[:2600]}" for i, hit in enumerate(hits[:max(top_k*3,12)]))
     synthesized = _synthesize_from_evidence(self, clean_question, evidence_bundle)
     if synthesized:
         try:
             from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
-            candidate_hits = hits[:max(top_k*3,12)]; checks = list(verify_claims(synthesized, [str(getattr(h,'text','') or '') for h in candidate_hits], [f"S{i+1}" for i in range(len(candidate_hits))])); ground = grounding_decision(checks, min_supported_ratio=0.70) if checks else {"allow":False,"supported_ratio":0.0}; markers = re.findall(r"\[S\d+\]", synthesized); all_cited = bool(markers) and len(markers) >= max(1, len(_sentence_units(synthesized)))
-            if checks and ground.get("allow") and all_cited: answer=synthesized; provenance_claims=[c.to_dict() for c in checks]; generation_path="local_llm_grounded"
-        except Exception: pass
+            candidate_hits = hits[:max(top_k*3,12)]
+            blocks = [str(getattr(h,'text','') or '') for h in candidate_hits]
+            checks = list(verify_claims(synthesized, blocks, [f"S{i+1}" for i in range(len(candidate_hits))]))
+            ground = grounding_decision(checks, min_supported_ratio=0.70) if checks else {"allow":False,"supported_ratio":0.0}
+            markers = re.findall(r"\[S(\d+)\]", synthesized)
+            sentences = _sentence_units(synthesized)
+            cited_sources = {int(x) for x in markers}
+            all_cited = bool(markers) and bool(sentences) and all(any(int(src) in cited_sources for src in re.findall(r"\[S(\d+)\]", sentence)) for sentence in sentences)
+            source_numbers_valid = all(1 <= n <= len(candidate_hits) for n in cited_sources)
+            if checks and ground.get("allow") and all_cited and source_numbers_valid:
+                answer=synthesized
+                provenance_claims=[c.to_dict() for c in checks]
+                generation_path="local_llm_grounded"
+        except Exception:
+            pass
     selected = hits[:max(top_k*3,12)]; citations=[]
     try:
         built=self.citation_manager.build(selected) or []; citations=self.citation_manager.validate(built,selected) or []
-    except Exception: pass
+    except Exception:
+        pass
     if generation_path == "deterministic_extractive":
         verified=_exact_provenance(answer,selected); grounding={"allow":bool(verified.get("allow")),"supported_ratio":float(verified.get("supported_ratio",0.0) or 0.0),"method":"exact_retrieved_sentence_provenance","verified_items":verified.get("items",[])}
     else:
         try:
             from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
             checks=list(verify_claims(answer,[str(getattr(h,'text','') or '') for h in selected],[f"S{i+1}" for i in range(len(selected))])); grounding=dict(grounding_decision(checks,min_supported_ratio=0.70) if checks else {"allow":False,"supported_ratio":0.0}); grounding["method"]="semantic_claim_verification"; provenance_claims=[c.to_dict() for c in checks] if checks else provenance_claims
-        except Exception: grounding={"allow":False,"supported_ratio":0.0,"method":"verification_error"}
+        except Exception:
+            grounding={"allow":False,"supported_ratio":0.0,"method":"verification_error"}
     final_verification=_final_verification(answer,selected,grounding,provenance_claims,citations)
     if not bool(final_verification.get("allow",grounding.get("allow"))):
-        if generation_path == "deterministic_extractive" and grounding.get("allow"): final_verification["allow"]=True; final_verification["blocked_claims"]=0
-        else: return {"status":"ANSWER_UNAVAILABLE","answer":"The evidence was retrieved, but the answer could not be certified as sufficiently grounded.","citations":[],"hits":selected,"confidence":{"level":"low","evidence_confidence":float(grounding.get("supported_ratio",0.0) or 0.0)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.0) or 0.0)},"answer_plan":answer_plan,"pipeline_authority":PIPELINE_AUTHORITY}
-    try: phase_plan=__import__("rag_project.intelligence.top_level_pipeline",fromlist=["deterministic_phase1"]).deterministic_phase1(clean_question,conversation_context="").to_dict()
-    except Exception: phase_plan={"intent":route.get("kind","factual"),"entities":list(route.get("entities") or ())}
-    try: entity_report=score_entity_coverage(clean_question,selected,planned_entities=phase_plan.get("entities") or ())
-    except Exception: entity_report={"coverage":1.0,"covered":[],"missing":[],"query_entities":[]}
+        if generation_path == "deterministic_extractive" and grounding.get("allow"):
+            final_verification["allow"]=True; final_verification["blocked_claims"]=0
+        else:
+            return {"status":"ANSWER_UNAVAILABLE","answer":"The evidence was retrieved, but the answer could not be certified as sufficiently grounded.","citations":[],"hits":selected,"confidence":{"level":"low","evidence_confidence":float(grounding.get("supported_ratio",0.0) or 0.0)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.0) or 0.0)},"answer_plan":answer_plan,"pipeline_authority":PIPELINE_AUTHORITY}
+    try:
+        phase_plan=__import__("rag_project.intelligence.top_level_pipeline",fromlist=["deterministic_phase1"]).deterministic_phase1(clean_question,conversation_context="").to_dict()
+    except Exception:
+        phase_plan={"intent":route.get("kind","factual"),"entities":list(route.get("entities") or ())}
+    try:
+        entity_report=score_entity_coverage(clean_question,selected,planned_entities=phase_plan.get("entities") or ())
+    except Exception:
+        entity_report={"coverage":1.0,"covered":[],"missing":[],"query_entities":[]}
     contradiction_report=retrieval_state.get("contradiction") or {"has_contradiction":False,"conflicts":[]}; status="SUCCESS_WITH_WARNINGS" if contradiction_report.get("has_contradiction") or not citations else "SUCCESS"
-    result={"query_id":f"bookrag-{int(time.time()*1000)}","status":status,"answer":answer,"citations":citations,"hits":selected,"confidence":{"level":"high" if grounding.get("supported_ratio",0.0)>=0.85 else "medium","evidence_confidence":float(grounding.get("supported_ratio",0.0) or 0.0)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"query_analysis":phase_plan,"rewritten_question":clean_question,"phase_plan":phase_plan,"answer_plan":answer_plan,"entity_coverage":entity_report,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.0) or 0.0),"entity_coverage":float(coverage.get("entity_coverage",0.0) or 0.0),"candidate_count":int(retrieval_state.get("candidates",0) or 0),"final_hits":int(retrieval_state.get("final_hits",len(selected)) or len(selected)),"self_corrections":int(retrieval_state.get("self_corrections",0) or 0)},"contradiction_report":contradiction_report,"generation_path":generation_path,"god_mode":True,"god_mode_100":True,"evidence_first":True,"document_aware":True,"pipeline_authority":PIPELINE_AUTHORITY,"implementation_authority":IMPLEMENTATION_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"completed","path":generation_path},"verification":{"status":"completed","method":grounding.get("method"),"supported_ratio":grounding.get("supported_ratio",0.0)},"timings_ms":{"total":round((time.perf_counter()-started)*1000,2)}}}
+    result={"query_id":f"bookrag-{int(time.time()*1000)}","status":status,"answer":answer,"citations":citations,"hits":selected,"confidence":{"level":"high" if grounding.get("supported_ratio",0.0)>=0.85 else "medium","evidence_confidence":float(grounding.get("supported_ratio",0.0) or 0.0)},"grounding":grounding,"claims":provenance_claims,"final_verification":final_verification,"query_analysis":phase_plan,"rewritten_question":clean_question,"phase_plan":phase_plan,"answer_plan":answer_plan,"entity_coverage":entity_report,"retrieval_quality":{"evidence_coverage":float(coverage.get("overall",0.0) or 0.0),"entity_coverage":float(coverage.get("entity_coverage",0.0) or 0.0),"candidate_count":int(retrieval_state.get("candidates",0) or 0),"final_hits":int(retrieval_state.get("final_hits",len(selected)) or len(selected)),"self_corrections":int(retrieval_state.get("self_corrections",0) or 0)},"contradiction_report":contradiction_report,"generation_path":generation_path,"god_mode":True,"god_mode_100":True,"evidence_first":True,"document_aware":True,"canonical_pipeline_executed":True,"pipeline_authority":PIPELINE_AUTHORITY,"implementation_authority":IMPLEMENTATION_AUTHORITY,"query_trace":{"mode":"document_aware","question":clean_question,"routing":route,"retrieval":retrieval_state,"generation":{"status":"completed","path":generation_path},"verification":{"status":"completed","method":grounding.get("method"),"supported_ratio":grounding.get("supported_ratio",0.0)},"timings_ms":{"total":round((time.perf_counter()-started)*1000,2)}}
     result["phase_implementation"]=_runtime_phase_implementation(result,selected,final_verification)
     result=_diagnostic_enhance(self,clean_question,result,metadata_filter)
     result["phase_implementation"]=_runtime_phase_implementation(result,selected,result.get("final_verification") or final_verification)
@@ -218,11 +248,7 @@ def route_query_from_state(state: dict[str, Any]):
 
 
 def enhance_result(system: Any, question: str, result: dict[str, Any] | None = None, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Backward-compatible public entry point.
-
-    A preliminary result is enriched and certified. Without a preliminary result,
-    the same symbol delegates to the real document-aware answer implementation.
-    """
+    """Backward-compatible public entry point."""
     if isinstance(result, dict) and any(k in result for k in ("status", "answer", "hits", "citations")):
         return _diagnostic_enhance(system, question, result, metadata_filter)
     effective_filter = result if isinstance(result, dict) else metadata_filter
