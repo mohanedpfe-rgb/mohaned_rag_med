@@ -102,7 +102,7 @@ def _safe_resolve_dimension(self: Any, embeddings: Any = None) -> int:
     stored = self._collection_dim()
     if stored > 0:
         return stored
-    return 32
+    return 0
 
 
 def _safe_search(self: Any, embedding: Any, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -146,6 +146,5 @@ def install() -> None:
 
             bookrag_ui._evidence = safe_evidence
         except Exception:
-            # UI hardening is optional; backend hardening above remains authoritative.
             pass
         _INSTALLED = True
