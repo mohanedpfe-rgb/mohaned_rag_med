@@ -204,7 +204,7 @@ def quick_index_health(system: Any, document_id: str | None = None) -> dict[str,
 
 
 def repair_index_consistency(system: Any, document_id: str | None = None) -> dict[str, Any]:
-    """Rebuild only the lexical mirror from the authoritative vector records."""
+    """Rebuild the lexical mirror directly from authoritative vector records and verify every row."""
     vector_store = system.vector_store
     audit = audit_index_consistency(system, document_id)
     scope = str(document_id) if document_id else None
@@ -225,18 +225,22 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
             else {}
         )
         document = vector_docs[index] if index < len(vector_docs) else ""
-        expected[str(raw_id)] = (str(document), dict(metadata))
+        normalized = dict(metadata)
+        normalized.setdefault("chunk_id", str(raw_id))
+        normalized.setdefault("document_id", scope or "unknown")
+        normalized.setdefault("version_id", normalized.get("document_id", "legacy"))
+        normalized["index_state"] = str(normalized.get("index_state", "READY") or "READY").upper()
+        expected[str(raw_id)] = (str(document), normalized)
 
-    with _sqlite_connect(vector_store.lexical_database) as connection:
+    database = Path(vector_store.lexical_database)
+    with _sqlite_connect(database) as connection:
         if scope:
             rows = connection.execute(
                 "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
                 (scope,),
             ).fetchall()
         else:
-            rows = connection.execute(
-                "SELECT id, metadata FROM lexical_documents"
-            ).fetchall()
+            rows = connection.execute("SELECT id, metadata FROM lexical_documents").fetchall()
         delete_ids: list[str] = []
         for raw_id, metadata_json in rows:
             try:
@@ -253,15 +257,39 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
                 [(item_id,) for item_id in delete_ids],
             )
 
-    source_docs: list[str] = []
-    source_meta: list[dict[str, Any]] = []
-    source_ids: list[str] = []
-    for item_id, (document, metadata) in expected.items():
-        source_ids.append(item_id)
-        source_docs.append(document)
-        source_meta.append(metadata)
-    if source_ids:
-        vector_store._upsert_lexical_records(source_docs, source_meta, source_ids)
+        if expected:
+            connection.executemany(
+                """INSERT INTO lexical_documents(id, document, metadata, index_state, tokens)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    document=excluded.document,
+                    metadata=excluded.metadata,
+                    index_state=excluded.index_state,
+                    tokens=excluded.tokens""",
+                [
+                    (
+                        item_id,
+                        document,
+                        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                        metadata["index_state"],
+                        json.dumps(__import__("re").findall(r"\\w+", document.casefold()), ensure_ascii=False),
+                    )
+                    for item_id, (document, metadata) in expected.items()
+                ],
+            )
+        connection.commit()
+
+        for item_id in expected:
+            row = connection.execute(
+                "SELECT document, metadata, index_state FROM lexical_documents WHERE id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"Lexical repair failed to persist row {item_id!r}")
+            persisted_meta = json.loads(row[1] or "{}")
+            expected_document, expected_meta = expected[item_id]
+            if row[0] != expected_document or persisted_meta.get("version_id") != expected_meta.get("version_id"):
+                raise RuntimeError(f"Lexical repair verification failed for row {item_id!r}")
 
     final = audit_index_consistency(system, document_id)
     return {
