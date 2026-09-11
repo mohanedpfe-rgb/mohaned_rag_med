@@ -50,15 +50,7 @@ def _normalized_rows(documents: Any, metadatas: Any, ids: Any) -> list[tuple[str
         metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
         metadata["index_state"] = str(metadata.get("index_state", "READY") or "READY").upper()
         text = str(document or "")
-        rows.append(
-            (
-                item_id,
-                text,
-                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
-                metadata["index_state"],
-                json.dumps(_tokens(text), ensure_ascii=False),
-            )
-        )
+        rows.append((item_id, text, json.dumps(metadata, ensure_ascii=False, sort_keys=True), metadata["index_state"], json.dumps(_tokens(text), ensure_ascii=False)))
     return rows
 
 
@@ -69,12 +61,7 @@ def _remember_authoritative_records(self: Any, rows: list[tuple[str, str, str, s
         self._storage_contract_authoritative_records = registry
     for item_id, document, metadata_json, index_state, _tokens_json in rows:
         metadata = json.loads(metadata_json)
-        registry[item_id] = {
-            "id": item_id,
-            "document": document,
-            "metadata": metadata,
-            "index_state": index_state,
-        }
+        registry[item_id] = {"id": item_id, "document": document, "metadata": metadata, "index_state": index_state}
 
 
 def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
@@ -96,11 +83,7 @@ def _upsert(self: Any, documents: Any, metadatas: Any, ids: Any) -> None:
             rows,
         )
         db.commit()
-        missing = [
-            row[0]
-            for row in rows
-            if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (row[0],)).fetchone() is None
-        ]
+        missing = [row[0] for row in rows if db.execute("SELECT 1 FROM lexical_documents WHERE id = ?", (row[0],)).fetchone() is None]
         if missing:
             raise RuntimeError(f"Lexical persistence verification failed for ids: {missing!r}")
 
@@ -119,9 +102,7 @@ def _read_ready_rows(self: Any, where: dict[str, Any] | None = None) -> list[tup
     database = Path(self.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
-        rows = db.execute(
-            "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
-        ).fetchall()
+        rows = db.execute("SELECT id, document, metadata, index_state, tokens FROM lexical_documents").fetchall()
     ready: list[tuple[str, str, dict[str, Any]]] = []
     for row_id, document, metadata_json, state, _tokens_json in rows:
         try:
@@ -145,9 +126,7 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
     database = Path(self.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
-        rows = db.execute(
-            "SELECT id, document, metadata, index_state, tokens FROM lexical_documents"
-        ).fetchall()
+        rows = db.execute("SELECT id, document, metadata, index_state, tokens FROM lexical_documents").fetchall()
     scored: list[tuple[float, str, str, dict[str, Any]]] = []
     for row_id, document, metadata_json, state, tokens_json in rows:
         try:
@@ -171,30 +150,32 @@ def _search(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | N
         scored.append((score, str(row_id), str(document), metadata))
     scored.sort(key=lambda item: (-item[0], item[1]))
     selected = scored[: max(1, int(n_results))]
-    return {
-        "ids": [[item[1] for item in selected]],
-        "documents": [[item[2] for item in selected]],
-        "metadatas": [[item[3] for item in selected]],
-        "distances": [[1.0 / (1.0 + item[0]) for item in selected]],
-    }
+    return {"ids": [[item[1] for item in selected]], "documents": [[item[2] for item in selected]], "metadatas": [[item[3] for item in selected]], "distances": [[1.0 / (1.0 + item[0]) for item in selected]]}
 
 
 def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    # The lexical mirror is the authoritative text/version view because it is
+    # updated transactionally by the storage contract wrapper and explicitly
+    # retires stale versions. Chroma can temporarily expose a non-empty but
+    # stale snapshot during replacement, so never prefer that snapshot merely
+    # because it contains documents.
+    rows = _read_ready_rows(self, where)
+    if rows:
+        return {
+            "ids": [item[0] for item in rows],
+            "documents": [item[1] for item in rows],
+            "metadatas": [item[2] for item in rows],
+        }
+
     original = getattr(self, "_storage_contract_original_get_documents", None)
     if callable(original):
         try:
             result = original(self, where)
-            documents = result.get("documents") if isinstance(result, dict) else None
-            if documents:
+            if isinstance(result, dict):
                 return result
         except Exception:
             pass
-    rows = _read_ready_rows(self, where)
-    return {
-        "ids": [item[0] for item in rows],
-        "documents": [item[1] for item in rows],
-        "metadatas": [item[2] for item in rows],
-    }
+    return {"ids": [], "documents": [], "metadatas": []}
 
 
 def _wrap_write_method(name: str):
@@ -226,10 +207,7 @@ def _retire(system: Any, document_id: str, current_version: str) -> None:
     database = Path(store.lexical_database)
     _ensure_schema(database)
     with _connect(database) as db:
-        db.execute(
-            "DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ? AND json_extract(metadata, '$.version_id') <> ?",
-            (document_id, current_version),
-        )
+        db.execute("DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ? AND json_extract(metadata, '$.version_id') <> ?", (document_id, current_version))
         db.commit()
     collection = getattr(store, "collection", None)
     if collection is None:
@@ -256,9 +234,6 @@ def _prepare_explicit_test_embedding_mode(system: Any) -> None:
     service.test_mode = True
     service.provider = "deterministic-test"
     service.last_error = None
-    # Do not call discover_dimension here: runtime_stability_v3 deliberately
-    # guards that method behind an Ollama health probe. Deterministic test
-    # embeddings are local and their dimension is known from the test generator.
     service.dimension = len(service._test_embedding("__rag_dimension_probe__"))
     system.embedding_startup_error = None
 
