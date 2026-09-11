@@ -104,9 +104,12 @@ class SemanticRetrievalCache:
             return None
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
-            stale_before = now - self.ttl_seconds if self.ttl_seconds > 0 else None
-            if stale_before is not None:
-                db.execute("DELETE FROM semantic_retrieval_cache WHERE created < ?", (stale_before,))
+            if self.ttl_seconds <= 0:
+                db.execute("DELETE FROM semantic_retrieval_cache")
+                db.commit()
+                return None
+            stale_before = now - self.ttl_seconds
+            db.execute("DELETE FROM semantic_retrieval_cache WHERE created < ?", (stale_before,))
             rows = db.execute("SELECT cache_id, embedding, dimension, payload, created, accessed, hits FROM semantic_retrieval_cache").fetchall()
             best: tuple[float, tuple[Any, ...]] | None = None
             for row in rows:
@@ -130,15 +133,12 @@ class SemanticRetrievalCache:
 
     def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
         vector = self._query_embedding(query)
-        if vector is None:
+        if vector is None or self.ttl_seconds <= 0:
             return False
         payload = [{"doc_id": hit.doc_id, "text": hit.text, "metadata": hit.metadata, "score": float(hit.score), "vector_score": float(hit.vector_score), "lexical_score": float(hit.lexical_score)} for hit in list(hits)[:24]]
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
             db.execute("INSERT INTO semantic_retrieval_cache (query,embedding,dimension,payload,created,accessed,hits) VALUES(?,?,?,?,?,?,0)", (str(query)[:3000], self._pack(vector), len(vector), json.dumps(payload, ensure_ascii=False), now, now))
-            # Keep the newest max_entries entries.  Ordering DESC before OFFSET is
-            # essential: the previous ASC/OFFSET formulation deleted the newest
-            # record under a small cache, leaving the oldest query alive.
             overflow = db.execute(
                 "SELECT cache_id FROM semantic_retrieval_cache "
                 "ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?",
