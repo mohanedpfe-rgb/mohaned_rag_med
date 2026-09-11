@@ -1,0 +1,5 @@
+{"id":"en_def_01","question":"What is diabetes mellitus?","language":"en","expected_path":"extractive","must_contain":["diabetes","metabolic"],"must_cite":true,"max_latency_s":5.0,"must_not_call_llm":true}
+{"id":"en_numeric_01","question":"What numeric information is stated about HbA1c?","language":"en","expected_path":"retrieval","must_contain":["HbA1c"],"must_cite":true,"max_latency_s":7.0,"must_not_call_llm":false}
+{"id":"fr_def_01","question":"Qu'est-ce que le diabète ?","language":"fr","expected_path":"retrieval","must_contain":["diabète"],"must_cite":true,"max_latency_s":7.0,"must_not_call_llm":false}
+{"id":"ar_def_01","question":"ما هو داء السكري؟","language":"ar","expected_path":"retrieval","must_contain":["السكري"],"must_cite":true,"max_latency_s":7.0,"must_not_call_llm":false}
+{"id":"unsupported_01","question":"What is the cure for a fictional disease called xylomediasis?","language":"en","expected_path":"abstain","must_cite":false,"max_latency_s":7.0,"must_not_call_llm":true}
