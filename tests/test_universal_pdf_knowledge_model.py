@@ -26,6 +26,7 @@ def test_chunker_emits_durable_structure_context() -> None:
     assert chunks
     first = chunks[0]
     assert "[RAG-STRUCTURE" in first.text
+    assert first.metadata["chapter_id"]
     assert first.metadata["section_id"]
     assert first.metadata["parent_id"]
     assert first.metadata["quality_score"] == 0.91
