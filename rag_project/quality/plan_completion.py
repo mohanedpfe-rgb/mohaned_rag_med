@@ -40,6 +40,7 @@ class TwoPlanCompletionAudit:
         required = (
             "scripts/run_medevidence_load_test.py",
             "scripts/run_memory_stability.py",
+            "scripts/run_kpi_benchmark.py",
             "scripts/validate_backup_restore.py",
         )
         return all(self._exists(path) for path in required)
@@ -54,7 +55,7 @@ class TwoPlanCompletionAudit:
             CompletionCheck("high_level_gold_set", self._exists("tests/support/gold_sets/core.jsonl"), "present" if self._exists("tests/support/gold_sets/core.jsonl") else "missing"),
             CompletionCheck("controlled_pdf_generator", self._pdf_fixture_generator_ready(), "text/scanned/empty/large deterministic fixtures present" if self._pdf_fixture_generator_ready() else "controlled fixture generators incomplete"),
             CompletionCheck("test_inventory_checker", self._exists("scripts/validate_test_inventory.py"), "present" if self._exists("scripts/validate_test_inventory.py") else "missing"),
-            CompletionCheck("evidence_harnesses", self._evidence_harnesses_ready(), "load/memory/backup evidence runners present" if self._evidence_harnesses_ready() else "one or more evidence runners missing"),
+            CompletionCheck("evidence_harnesses", self._evidence_harnesses_ready(), "load/KPI/memory/backup evidence runners present" if self._evidence_harnesses_ready() else "one or more evidence runners missing"),
         ])
 
         semantic = self.root / "rag_project/intelligence/semantic_cache.py"
