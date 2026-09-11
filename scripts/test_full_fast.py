@@ -1,15 +1,10 @@
 """Bounded local fast-gate runner for the RAG test suite.
 
-The project has an intentionally layered test architecture.  This command is
+The project has an intentionally layered test architecture. This command is
 for the deterministic local gate only: it excludes tests that are explicitly
-marked slow, integration, or requires_ollama.  The complete release suite is
+marked slow, integration, or requires_ollama. The complete release suite is
 still available through pytest directly/CI and is never misreported as a
 120-second local gate.
-
-The runner collects once, partitions by test file to avoid Windows command-line
-limits, streams worker output into temporary files, and enforces a hard
-wall-clock budget.  A timeout is reported as TIMEOUT, while an actual pytest
-failure is reported as TEST_FAILURE with the worker's last output.
 """
 from __future__ import annotations
 
@@ -20,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +24,6 @@ DEFAULT_MARK = "not slow and not integration and not requires_ollama"
 
 def _environment() -> dict[str, str]:
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    # Match the repository's deterministic local/CI mode.  Do not require a
-    # live Ollama service merely to run the fast gate.
     env.setdefault("DEVICE_MODE", "i5_16gb")
     env.setdefault("OCR_ENABLED", "false")
     env.setdefault("EMBEDDING_TEST_MODE", "true")
@@ -64,9 +58,6 @@ def collect_test_files(marker: str) -> tuple[list[str], int]:
     if match:
         total_tests = int(match.group(1))
 
-    # Collecting with -m still prints node ids for the selected tests; reduce
-    # those node ids to unique files so Windows never receives thousands of
-    # command-line arguments.
     files: list[str] = []
     seen: set[str] = set()
     for raw in output.splitlines():
@@ -83,27 +74,48 @@ def collect_test_files(marker: str) -> tuple[list[str], int]:
     return files, total_tests
 
 
-def _terminate_process(proc: subprocess.Popen[str]) -> None:
-    """Terminate a worker and its descendants on Windows without waiting long."""
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-            cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-        )
-    else:
-        proc.kill()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
         try:
-            proc.kill()
-        except OSError:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=1.5,
+            )
+            return
+        except (OSError, subprocess.TimeoutExpired):
             pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _kill_all(processes: dict[int, subprocess.Popen[str]]) -> None:
+    live = [(index, proc) for index, proc in processes.items() if proc.poll() is None]
+    if not live:
+        return
+    # Kill process trees concurrently so cleanup time is bounded by the slowest
+    # single taskkill rather than N * taskkill timeout.
+    with ThreadPoolExecutor(max_workers=len(live)) as executor:
+        futures = [executor.submit(_terminate_process_tree, proc) for _, proc in live]
+        for future in futures:
+            try:
+                future.result(timeout=2.0)
+            except Exception:
+                pass
+    for _, proc in live:
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
 
 
 def _read_output(path: Path) -> str:
@@ -182,9 +194,10 @@ def main() -> int:
     while processes:
         now = time.perf_counter()
         if now >= deadline:
-            for index, proc in list(processes.items()):
-                _terminate_process(proc)
-                results[index] = ("TIMEOUT", 124, now - started)
+            _kill_all(processes)
+            finished_at = time.perf_counter()
+            for index in list(processes):
+                results[index] = ("TIMEOUT", 124, finished_at - started)
                 processes.pop(index, None)
             break
 
@@ -201,25 +214,23 @@ def main() -> int:
                 continue
 
             if now - started >= worker_timeout:
-                _terminate_process(proc)
-                results[index] = ("TIMEOUT", 124, now - started)
+                _terminate_process_tree(proc)
+                results[index] = ("TIMEOUT", 124, time.perf_counter() - started)
                 processes.pop(index, None)
-                print(f"worker {index}: TIMEOUT, {len(buckets[index])} files, {now - started:.1f}s")
+                print(f"worker {index}: TIMEOUT, {len(buckets[index])} files, {time.perf_counter() - started:.1f}s")
 
         if processes:
-            # Keep polling frequent enough that the deadline remains genuinely
-            # hard; 50ms is plenty for a local development gate.
-            sleep_for = min(0.05, max(0.0, deadline - time.perf_counter()))
-            if sleep_for:
-                time.sleep(sleep_for)
+            remaining = deadline - time.perf_counter()
+            if remaining > 0:
+                time.sleep(min(0.05, remaining))
 
-    elapsed = min(time.perf_counter() - started, budget)
+    actual_elapsed = time.perf_counter() - started
     failures = [i for i, (status, _, _) in results.items() if status != "PASS"]
     timeouts = [i for i, (status, _, _) in results.items() if status == "TIMEOUT"]
     test_failures = [i for i, (status, _, _) in results.items() if status == "TEST_FAILURE"]
 
     print("=== FAST GATE RESULT ===")
-    print(f"Elapsed: {elapsed:.2f}s")
+    print(f"Elapsed: {actual_elapsed:.2f}s")
     print(f"Selected: {total_tests}")
     print(f"Workers completed: {len(results)}/{len(buckets)}")
     print(f"Test-failure workers: {test_failures}")
@@ -232,16 +243,15 @@ def main() -> int:
     except OSError:
         pass
 
+    if actual_elapsed > budget:
+        print("FAIL: hard wall-clock budget exceeded")
+        return 124
     if failures:
         if timeouts:
-            print("FAIL: fast local gate exceeded its hard time budget")
-        elif test_failures:
+            print("FAIL: fast local gate exceeded its worker time budget")
+        else:
             print("FAIL: one or more fast-gate workers reported pytest failures")
         return 1
-
-    if time.perf_counter() > deadline + 0.25:
-        print("FAIL: wall-clock budget was exceeded")
-        return 124
 
     print("PASS: deterministic fast gate completed within budget")
     return 0
