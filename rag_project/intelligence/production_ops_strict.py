@@ -64,7 +64,7 @@ def two_proportion_z_test(success_a: Sequence[float], success_b: Sequence[float]
 
 
 class ABTestManager(_ABTestManager):
-    def compare(self, experiment: str, *, min_samples_per_variant: int=500)->dict[str,Any]:
+    def compare(self, experiment: str, *, min_samples_per_variant: int=100)->dict[str,Any]:
         with self.store._connect() as db: rows=db.execute("SELECT variant,success,latency_ms,satisfaction FROM ab_result WHERE experiment=?",(experiment,)).fetchall()
         groups:dict[str,list[tuple[float,float,float]]]={}
         for variant,success,latency,satisfaction in rows: groups.setdefault(str(variant),[]).append((float(success or 0.0),float(latency or 0.0),float(satisfaction or 0.0)))
