@@ -53,7 +53,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     previous_version = previous.get("content_hash") if previous and previous.get("content_hash") != content_hash else None
     current_chunking_config = json.dumps({"size": system.settings.chunk_size, "overlap": system.settings.chunk_overlap}, sort_keys=True)
     current_ocr_config = json.dumps({"engine": "rapidocr", "scale": 2}, sort_keys=True)
-    current_version_id = system._ingestion_version_id(content_hash=content_hash, parser_version="pdf-extractor-v2", ocr_config=current_ocr_config, chunking_config=current_chunking_config, embedding_model=system.settings.embedding_model, embedding_profile=None, embedding_dimension=None)
+    current_version_id = system._ingestion_version_id(content_hash=content_hash, parser_version="pdf-extractor-v3", ocr_config=current_ocr_config, chunking_config=current_chunking_config, embedding_model=system.settings.embedding_model, embedding_profile=None, embedding_dimension=None)
 
     if existing and system.state_store.is_ready_status(existing.get("status")) and existing.get("version_id") == current_version_id:
         validation = system.vector_store.validate_document_index(existing["document_id"], content_hash)
@@ -67,7 +67,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         "file_name": file_path.name, "file_size": stat.st_size, "created_at": utc_now(),
         "modified_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(), "ingestion_started_at": utc_now(),
         "current_stage": "DISCOVERED", "current_page": 0, "total_pages": 0, "status": "RUNNING",
-        "parser_version": "pdf-extractor-v2", "ocr_config": current_ocr_config,
+        "parser_version": "pdf-extractor-v3", "ocr_config": current_ocr_config,
         "chunking_config": current_chunking_config, "embedding_model": system.settings.embedding_model,
         "version_id": current_version_id, "index_state": "PENDING",
     }
@@ -119,7 +119,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
 
         system.state_store.transition_document_state(document_id, "EXTRACTING", current_page=0, total_pages=total_pages)
         system.state_store.record_event(document_id, stage="EXTRACTING", status="RUNNING", event_type="extract", message=f"Reading {total_pages} PDF pages one by one", details={"file_path": str(file_path)}, current_page=0, total_pages=total_pages, file_name=file_path.name)
-        extractor = PDFExtractor(system.state_store, ocr_enabled=getattr(system.settings, "ocr_enabled", False), ocr_confidence_threshold=getattr(system.settings, "ocr_confidence_threshold", 0.55), ocr_min_char_density=getattr(system.settings, "ocr_min_char_density", 0.001), ocr_image_coverage_threshold=getattr(system.settings, "ocr_image_coverage_threshold", 0.55))
+        extractor = PDFExtractor(system.state_store, ocr_enabled=getattr(system.settings, "ocr_enabled", True), ocr_confidence_threshold=getattr(system.settings, "ocr_confidence_threshold", 0.55), ocr_min_char_density=getattr(system.settings, "ocr_min_char_density", 0.001), ocr_image_coverage_threshold=getattr(system.settings, "ocr_image_coverage_threshold", 0.55))
         pages = extractor.extract_iter(file_path, document_id)
         chunker = SemanticChunker(system.settings.chunk_size, system.settings.chunk_overlap)
         chunk_batches = chunker.chunk_page_batches(pages, batch_size=system.settings.page_batch_size)
@@ -163,7 +163,42 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 chunk.chunk_index = global_index
                 chunk_id = f"{document_id}-{content_hash[:12]}-{global_index}"
                 ids.append(chunk_id)
-                metadatas.append({"document_id": chunk.doc_id, "chunk_id": chunk_id, "file_name": chunk.file_name, "page_numbers": chunk.page_numbers, "chunk_index": global_index, "document_type": classification.get("document_type", "unknown"), "language": document_language, "evidence_types": chunk.metadata.get("evidence_types", ["text"]), "index_state": "BUILDING", "version_id": content_hash})
+
+                structure = dict(chunk.metadata or {})
+                structure.pop("parent_text", None)
+                for key in ("entities", "headings", "number_forms"):
+                    value = structure.get(key)
+                    if isinstance(value, (dict, list, tuple)):
+                        structure[key] = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                structure.update(
+                    {
+                        "document_id": chunk.doc_id,
+                        "chunk_id": chunk_id,
+                        "file_name": chunk.file_name,
+                        "page_numbers": chunk.page_numbers,
+                        "chunk_index": global_index,
+                        "document_type": classification.get("document_type", "unknown"),
+                        "language": document_language,
+                        "evidence_types": chunk.metadata.get("evidence_types", ["text"]),
+                        "index_state": "BUILDING",
+                        "version_id": content_hash,
+                        "structure_version": 2,
+                        "representation_type": chunk.representation_type,
+                        "parent_id": chunk.parent_id,
+                        "section_id": chunk.section_id,
+                        "table_id": chunk.table_id,
+                        "figure_id": chunk.figure_id,
+                        "chapter": chunk.metadata.get("chapter"),
+                        "section": chunk.metadata.get("section"),
+                        "child_index": int(chunk.metadata.get("child_index", chunk.chunk_index)),
+                        "page_type": chunk.metadata.get("page_type", "unknown"),
+                        "quality_score": float(chunk.metadata.get("quality_score", 0.0) or 0.0),
+                        "ocr_status": chunk.metadata.get("ocr_status", "not_required"),
+                        "routing_decision": chunk.metadata.get("routing_decision", "native"),
+                    }
+                )
+                metadatas.append({key: value for key, value in structure.items() if value is not None})
+
             embedding_started = time.perf_counter()
             try:
                 vectors = system.embedding_service.embed_texts(documents)
