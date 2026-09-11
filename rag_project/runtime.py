@@ -38,6 +38,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_final_contracts_v4 import install as runtime_final_contracts_v4
     from rag_project.runtime_final_contracts_v5 import install as runtime_final_contracts_v5
     from rag_project.runtime_final_contracts_v6 import install as runtime_final_contracts_v6
+    from rag_project.runtime_final_contracts_v7 import install as runtime_final_contracts_v7
 
     return (
         vector_store,
@@ -68,6 +69,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         runtime_final_contracts_v4,
         runtime_final_contracts_v5,
         runtime_final_contracts_v6,
+        runtime_final_contracts_v7,
     )
 
 
