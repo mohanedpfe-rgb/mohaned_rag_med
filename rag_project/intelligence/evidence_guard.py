@@ -2,7 +2,6 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import asdict, dataclass
-from difflib import SequenceMatcher
 from typing import Any, Iterable, Sequence
 from rag_project.utils.text_utils import keyword_overlap_score, meaningful_tokens
 
@@ -95,12 +94,10 @@ def semantic_support(claim,evidence):
     if not ct or not et:return 0.
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct={t for t in ct if t not in framing} or ct;shared=ct&et
-    coverage=len(shared)/len(ct);char=keyword_overlap_score(nclaim,nevidence)
+    coverage=len(shared)/len(ct)
     if coverage < .50:
-        compact_claim=re.sub(r'[^a-z0-9à-ÿ]+','',nclaim);compact_evidence=re.sub(r'[^a-z0-9à-ÿ]+','',nevidence)
-        cross_lingual=SequenceMatcher(None,compact_claim,compact_evidence).ratio()
-        if cross_lingual < .55:return 0.0
-        char=max(char,0.15*cross_lingual)
+        return 0.0
+    char=keyword_overlap_score(nclaim,nevidence)
     jac=len(shared)/max(1,len(ct|et));polarity_penalty=.35 if _polarity(nclaim)!=_polarity(nevidence) else 0
     return max(0.,min(1.,.50*coverage+.25*jac+.25*char-polarity_penalty))
 
