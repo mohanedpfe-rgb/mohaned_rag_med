@@ -17,14 +17,21 @@ CREATE INDEX IF NOT EXISTS idx_guidelines_condition ON guidelines(condition);
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
     path = Path(db_path); path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path); db.execute("PRAGMA journal_mode=WAL"); db.executescript(SCHEMA_SQL); return db
+    db = sqlite3.connect(path); db.execute("PRAGMA journal_mode=WAL"); db.execute("PRAGMA busy_timeout=10000"); db.executescript(SCHEMA_SQL); return db
 
 def initialize(db_path: str | Path) -> dict[str, int]:
-    with connect(db_path) as db:
+    db = connect(db_path)
+    try:
         db.execute("INSERT OR REPLACE INTO knowledge_meta(key,value) VALUES('schema_version','1')")
         db.commit()
+    finally:
+        db.close()
     return counts(db_path)
 
 def counts(db_path: str | Path) -> dict[str, int]:
     tables = ('drugs','interactions','guidelines','contraindications','disease_graph')
-    with connect(db_path) as db: return {t: int(db.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]) for t in tables}
+    db = connect(db_path)
+    try:
+        return {t: int(db.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]) for t in tables}
+    finally:
+        db.close()
