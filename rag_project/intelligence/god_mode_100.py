@@ -10,11 +10,15 @@ from rag_project.intelligence.evidence_entailment import build_claim_evidence_ma
 from rag_project.intelligence.entity_coverage import score_entity_coverage
 from rag_project.intelligence.hierarchical_evidence import build_evidence_hierarchy, select_context_levels
 from rag_project.intelligence.query_intelligence import plan_query
-from rag_project.intelligence.semantic_reasoning import understand_query
-from rag_project.intelligence.top_level_pipeline import complete_phases
-from rag_project.utils.text_utils import meaningful_tokens
+from rag_project.utils.text_utils import keyword_overlap_score, meaningful_tokens
 
 PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
+
+_SUMMARY_CUES = (
+    "summary", "summarize", "summarise", "overview", "main findings", "key findings", "main points", "key points",
+    "résumé", "resume", "synthèse", "synthese", "aperçu", "points principaux", "résultats principaux",
+    "ملخص", "خلاصة", "نظرة عامة", "النقاط الرئيسية",
+)
 
 
 def _claim_texts(result: dict[str, Any]) -> list[str]:
@@ -28,23 +32,12 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
     return [entity for entity in raw if meaningful_tokens(entity) and entity.casefold() in evidence][:12]
 
 
-def _runtime_phase_implementation(completed: dict[str, Any], final_matrix: list[Any], final_verification: dict[str, Any]) -> dict[str, Any]:
-    phases = completed.get("phases") or {}
-    plan = completed.get("phase_plan") or {}
-    retrieval = completed.get("adaptive_retrieval") or {}
-    two_stage = completed.get("two_stage_synthesis") or {}
-    blocked = int(final_verification.get("blocked_claims", 0) or 0)
-    p3_status = "synthesized" if two_stage.get("used") else "required_abstention" if two_stage.get("required") else "extractive_verified_fallback"
-    return {
-        "phase_1_query_understanding": {"status": phases.get("phase_1_query_understanding", "unknown"), "planner_source": plan.get("planner_source", "unknown"), "planner_confidence": plan.get("planner_confidence", 0.0), "entity_count": len(plan.get("entities") or ())},
-        "phase_2_retrieval_precision": {"status": phases.get("phase_2_retrieval_precision", "unknown"), "stage": retrieval.get("stage", 0), "queries": retrieval.get("queries", 0), "final_hits": retrieval.get("final_hits", 0), "escalated": bool(retrieval.get("escalated"))},
-        "phase_3_two_stage_generation": {"status": p3_status, "required": bool(two_stage.get("required")), "attempted": bool(two_stage.get("attempted")), "used": bool(two_stage.get("used")), "fallback": bool(two_stage.get("fallback")), "verified": bool((two_stage.get("verification") or {}).get("checked")) and not bool((two_stage.get("verification") or {}).get("blocked"))},
-        "phase_4_verification": {"status": phases.get("phase_4_verification", "unknown"), "claim_count": len(final_matrix), "blocked_claims": blocked, "hard_gate": True, "final_answer_checked": bool(final_verification.get("checked")), "calibrated": bool(completed.get("confidence_calibration"))},
-        "phase_5_intelligence_visibility": {"status": phases.get("phase_5_intelligence_visibility", "unknown"), "signals_present": all(key in completed for key in ("phase_plan", "rewritten_question", "evidence_claim_matrix", "confidence_calibration", "entity_coverage", "final_verification")), "authority": PIPELINE_AUTHORITY},
-    }
+def _is_summary_query(question: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
+    return any(cue in normalized for cue in _SUMMARY_CUES)
 
 
-def _safe_hits(system: Any, question: str, metadata_filter: dict[str, Any] | None, *, top_k: int = 12) -> list[Any]:
+def _safe_hits(system: Any, question: str, metadata_filter: dict[str, Any] | None, *, top_k: int = 12) -> tuple[list[Any], dict[str, Any]]:
     try:
         from rag_project.retrieval.metadata_filter import MetadataFilter
         where = MetadataFilter.build(metadata_filter)
@@ -58,6 +51,8 @@ def _safe_hits(system: Any, question: str, metadata_filter: dict[str, Any] | Non
     if plan is not None:
         queries.extend(str(q).strip() for q in getattr(plan, "variants", ()) if str(q).strip())
         queries.extend(str(q).strip() for q in getattr(plan, "subqueries", ()) if str(q).strip())
+    if not queries or not any(queries):
+        return [], {"queries": 0, "candidate_k": 0, "final_hits": 0, "summary_mode": _is_summary_query(question)}
     dedup_queries: list[str] = []
     seen_queries: set[str] = set()
     for query in queries:
@@ -65,8 +60,6 @@ def _safe_hits(system: Any, question: str, metadata_filter: dict[str, Any] | Non
         if key and key not in seen_queries:
             seen_queries.add(key)
             dedup_queries.append(query[:3500])
-    if not dedup_queries:
-        return []
     candidate_k = max(24, min(96, int(top_k) * 6))
     merged: dict[str, Any] = {}
     for query in dedup_queries[:8]:
@@ -83,15 +76,37 @@ def _safe_hits(system: Any, question: str, metadata_filter: dict[str, Any] | Non
             if current is None or float(getattr(hit, "score", 0.0) or 0.0) > float(getattr(current, "score", 0.0) or 0.0):
                 merged[key] = hit
     hits = list(merged.values())
+    query_terms = set(meaningful_tokens(question))
+    for hit in hits:
+        semantic = max(0.0, min(1.0, float(getattr(hit, "score", 0.0) or 0.0)))
+        lexical = max(0.0, min(1.0, float(keyword_overlap_score(" ".join(query_terms), str(getattr(hit, "text", "") or "")) or 0.0))) if query_terms else 0.0
+        hit.score = max(semantic, 0.55 * semantic + 0.45 * lexical)
     hits.sort(key=lambda hit: float(getattr(hit, "score", 0.0) or 0.0), reverse=True)
-    return hits[: max(int(top_k) * 3, 16)]
+    summary = _is_summary_query(question)
+    if summary:
+        # Summary questions are intentionally diversified across the document rather
+        # than treating the six best vector matches as the whole book.
+        by_page: dict[str, Any] = {}
+        for hit in hits:
+            meta = getattr(hit, "metadata", {}) or {}
+            pages = meta.get("page_numbers") or meta.get("page_number") or meta.get("page") or "?"
+            page = str(pages[0] if isinstance(pages, (list, tuple)) and pages else pages)
+            key = f"{meta.get('document_id', getattr(hit, 'doc_id', ''))}:{page}"
+            if key not in by_page:
+                by_page[key] = hit
+        diverse = sorted(by_page.values(), key=lambda hit: float(getattr(hit, "score", 0.0) or 0.0), reverse=True)
+        hits = diverse[: max(int(top_k) * 2, 16)]
+    else:
+        hits = hits[: max(int(top_k) * 3, 16)]
+    return hits, {"queries": len(dedup_queries[:8]), "candidate_k": candidate_k, "final_hits": len(hits), "summary_mode": summary}
 
 
 def _evidence_first_answer(question: str, hits: list[Any], max_sentences: int = 8) -> tuple[str, list[dict[str, Any]]]:
     question_tokens = set(meaningful_tokens(question))
-    stop = {"what", "are", "the", "main", "findings", "is", "this", "that", "does", "document", "report", "explain", "define", "about", "please", "give", "show", "list", "dans", "les", "des", "une", "un", "est", "que", "quels", "quelles", "principales", "résultats", "ما", "هو", "هي", "عن", "هذه", "هذا"}
+    stop = {"what", "are", "the", "main", "findings", "is", "this", "that", "does", "document", "report", "explain", "define", "about", "please", "give", "show", "list", "dans", "les", "des", "une", "un", "est", "que", "quels", "quelles", "principales", "résultats", "ma", "هو", "هي", "عن", "هذه", "هذا", "ما"}
     question_tokens -= stop
     ranked: list[tuple[float, str, int]] = []
+    summary = _is_summary_query(question)
     for index, hit in enumerate(hits):
         text = str(getattr(hit, "text", "") or "")
         base = max(0.0, min(1.0, float(getattr(hit, "score", 0.0) or 0.0)))
@@ -102,16 +117,21 @@ def _evidence_first_answer(question: str, hits: list[Any], max_sentences: int = 
                 continue
             tokens = set(meaningful_tokens(sentence))
             overlap = len(tokens & question_tokens) / max(1, len(question_tokens)) if question_tokens else 0.0
-            score = 0.62 * base + 0.38 * overlap
+            summary_bonus = 0.12 if summary and (re.search(r"^(I|II|III|IV|V|VI|VII|VIII)\.?\s", sentence) or re.search(r"(?:introduction|rappel|exploration|diagnostic|étiologie|traitement|conclusion|cours|chapitre)", sentence, re.I)) else 0.0
+            score = 0.62 * base + 0.38 * overlap + summary_bonus
             ranked.append((score, sentence, index + 1))
     ranked.sort(key=lambda x: x[0], reverse=True)
     chosen: list[tuple[str, int]] = []
     seen: set[str] = set()
+    seen_sources: set[int] = set()
     for score, sentence, source_no in ranked:
         normalized = sentence.casefold()
         if normalized in seen or score < 0.12:
             continue
+        if summary and source_no in seen_sources:
+            continue
         seen.add(normalized)
+        seen_sources.add(source_no)
         chosen.append((sentence, source_no))
         if len(chosen) >= max_sentences:
             break
@@ -130,92 +150,68 @@ def _synthesize_from_evidence(system: Any, question: str, draft: str) -> str | N
         f"Question: {question[:2200]}\n\nEvidence:\n{draft[:7000]}"
     )
     try:
-        return str(llm.generate(
-            prompt=prompt,
-            system_prompt="You are an evidence-grounded medical document assistant. The supplied evidence is authoritative. Never hallucinate. Preserve negation and numbers exactly. If the evidence does not answer the question, say so instead of inventing information.",
-            temperature=0.0,
-        ) or "").strip()[:9000] or None
+        return str(llm.generate(prompt=prompt, system_prompt="You are an evidence-grounded medical document assistant. The supplied evidence is authoritative. Never hallucinate. Preserve negation and numbers exactly. If the evidence does not answer the question, say so instead of inventing information.", temperature=0.0) or "").strip()[:9000] or None
     except Exception:
         return None
 
 
 def enhance_result(system: Any, question: str, result: dict[str, Any], metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Best-effort enrichment. A failure here must never erase an already usable answer."""
+    """Non-authoritative diagnostics only; never replace a valid answer."""
     if not isinstance(result, dict) or not result:
         return result
-    original = dict(result)
+    enhanced = dict(result)
     try:
         hits = list(result.get("hits") or [])
         plan = result.get("query_analysis") or {}
         understanding = result.get("semantic_understanding") or {}
-        budget = choose_retrieval_budget(
-            query_tokens=len(meaningful_tokens(question)),
-            entity_count=len(plan.get("entities") or ()),
-            intent=str(plan.get("intent", "")),
-            confidence=float(understanding.get("confidence", 0.0) or 0.0),
-            initial_score=float((result.get("semantic_alignment") or {}).get("score", 0.0) or 0.0),
-        )
+        budget = choose_retrieval_budget(query_tokens=len(meaningful_tokens(question)), entity_count=len(plan.get("entities") or ()), intent=str(plan.get("intent", "")), confidence=float(understanding.get("confidence", 0.0) or 0.0), initial_score=float((result.get("semantic_alignment") or {}).get("score", 0.0) or 0.0))
         claims = _claim_texts(result)
         matrix = build_claim_evidence_matrix(claims, hits, [f"S{i + 1}" for i in range(len(hits))]) if hits and claims else ()
         hierarchy = build_evidence_hierarchy(hits)
-        enhanced = dict(result)
-        enhanced["evidence_claim_matrix"] = [record.to_dict() for record in matrix]
-        enhanced["evidence_hierarchy"] = [record.to_dict() for record in hierarchy[:80]]
-        enhanced["evidence_context_levels"] = select_context_levels(hierarchy)
-        enhanced["adaptive_retrieval_budget"] = budget.to_dict()
-        enhanced["pipeline_authority"] = PIPELINE_AUTHORITY
-        enhanced["validated_small_model_entities"] = _validated_model_entities(result)
-        scores = [float(getattr(hit, "score", 0.0) or 0.0) for hit in hits]
-        top_score = max(scores, default=0.0)
-        enhanced["confidence_calibration"] = calibrate_confidence(
-            retrieval=top_score,
-            rerank=top_score,
-            entailment=float((result.get("grounding") or {}).get("supported_ratio", 0.0) or 0.0),
-            entity_coverage=1.0,
-            source_agreement=float((result.get("advanced_reasoning") or {}).get("source_agreement", 0.0) or 0.0),
-            contradiction=1.0 if (result.get("contradiction_report") or {}).get("has_contradiction") else 0.0,
-            safety_conflict=float((result.get("advanced_reasoning") or {}).get("safety_conflict", 0.0) or 0.0),
-        ).to_dict()
-        enhanced["confidence"] = {"level": enhanced["confidence_calibration"].get("level", "low"), "evidence_confidence": enhanced["confidence_calibration"].get("calibrated", 0.0)}
-        return enhanced
+        enhanced.update({"evidence_claim_matrix": [record.to_dict() for record in matrix], "evidence_hierarchy": [record.to_dict() for record in hierarchy[:80]], "evidence_context_levels": select_context_levels(hierarchy), "adaptive_retrieval_budget": budget.to_dict(), "pipeline_authority": PIPELINE_AUTHORITY, "validated_small_model_entities": _validated_model_entities(result)})
+        top_score = max((float(getattr(hit, "score", 0.0) or 0.0) for hit in hits), default=0.0)
+        calibration = calibrate_confidence(retrieval=top_score, rerank=top_score, entailment=float((result.get("grounding") or {}).get("supported_ratio", 0.0) or 0.0), entity_coverage=1.0, source_agreement=float((result.get("advanced_reasoning") or {}).get("source_agreement", 0.0) or 0.0), contradiction=1.0 if (result.get("contradiction_report") or {}).get("has_contradiction") else 0.0, safety_conflict=float((result.get("advanced_reasoning") or {}).get("safety_conflict", 0.0) or 0.0)).to_dict()
+        enhanced["confidence_calibration"] = calibration
+        enhanced["confidence"] = {"level": calibration.get("level", "low"), "evidence_confidence": calibration.get("calibrated", 0.0)}
     except Exception:
-        return original
+        pass
+    return enhanced
 
 
 def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Authoritative production answer path: retrieve evidence, build a source-backed answer, then optionally synthesize with the local LLM."""
+    """Authoritative production path: retrieval -> evidence-first answer -> optional local synthesis -> provenance certification."""
     started = time.perf_counter()
     clean_question = re.sub(r"\s+", " ", str(question or "")).strip()[:3500]
     if not clean_question:
         return {"status": "LOW_QUALITY_QUERY", "answer": "Please provide a precise question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "pipeline_authority": PIPELINE_AUTHORITY}
     settings = getattr(self, "settings", None)
     top_k = max(4, int(getattr(settings, "top_k", 8))) if settings is not None else 8
-    hits = _safe_hits(self, clean_question, metadata_filter, top_k=top_k)
+    hits, retrieval_state = _safe_hits(self, clean_question, metadata_filter, top_k=top_k)
     if not hits:
-        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "pipeline_authority": PIPELINE_AUTHORITY, "query_trace": {"mode": "evidence_first", "question": clean_question, "retrieval": {"status": "completed", "final_hits": 0}, "generation": {"status": "not_attempted"}, "verification": {"status": "not_attempted"}}}
+        return {"status": "NOT_SUPPORTED", "answer": "I could not find sufficient evidence in the indexed documents to answer this question.", "citations": [], "hits": [], "confidence": {"level": "none", "evidence_confidence": 0.0}, "pipeline_authority": PIPELINE_AUTHORITY, "query_trace": {"mode": "evidence_first", "question": clean_question, "retrieval": retrieval_state, "generation": {"status": "not_attempted"}, "verification": {"status": "not_attempted"}}}
 
-    answer, provenance_claims = _evidence_first_answer(clean_question, hits, max_sentences=8)
+    answer, provenance_claims = _evidence_first_answer(clean_question, hits, max_sentences=10 if _is_summary_query(clean_question) else 8)
+    if not answer:
+        return {"status": "NOT_SUPPORTED", "answer": "The indexed chunks were retrieved, but no usable evidence sentence could be selected for this question.", "citations": [], "hits": hits, "confidence": {"level": "low", "evidence_confidence": 0.0}, "pipeline_authority": PIPELINE_AUTHORITY, "query_trace": {"mode": "evidence_first", "question": clean_question, "retrieval": retrieval_state, "generation": {"status": "no_extractable_sentence"}, "verification": {"status": "not_attempted"}}}
+
     generation_path = "deterministic_extractive"
     synthesized = _synthesize_from_evidence(self, clean_question, answer)
     if synthesized:
-        candidate_hits = hits[: max(top_k * 3, 12)]
-        evidence_texts = [str(getattr(hit, "text", "") or "") for hit in candidate_hits]
         try:
             from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
-            candidate_claims = list(verify_claims(synthesized, evidence_texts, [f"S{i + 1}" for i in range(len(candidate_hits))]))
+            candidate_hits = hits[: max(top_k * 3, 12)]
+            candidate_claims = list(verify_claims(synthesized, [str(getattr(h, "text", "") or "") for h in candidate_hits], [f"S{i + 1}" for i in range(len(candidate_hits))]))
             candidate_ground = grounding_decision(candidate_claims, min_supported_ratio=0.60) if candidate_claims else {"allow": False, "supported_ratio": 0.0}
+            if candidate_claims and candidate_ground.get("allow"):
+                answer = synthesized
+                provenance_claims = [claim.to_dict() for claim in candidate_claims]
+                generation_path = "local_llm_grounded"
         except Exception:
-            candidate_claims = []
-            candidate_ground = {"allow": False, "supported_ratio": 0.0}
-        if candidate_claims and candidate_ground.get("allow", False):
-            answer = synthesized
-            provenance_claims = [claim.to_dict() for claim in candidate_claims]
-            generation_path = "local_llm_grounded"
+            pass
 
-    grounding = {"allow": True, "supported_ratio": 1.0, "method": "exact_retrieved_sentence_provenance", "verified_items": provenance_claims}
     citations: list[Any] = []
+    selected_for_citation = hits[: max(top_k * 3, 12)]
     try:
-        selected_for_citation = hits[: max(top_k * 3, 12)]
         built = self.citation_manager.build(selected_for_citation) or []
         citations = self.citation_manager.validate(built, selected_for_citation) or []
     except Exception:
@@ -236,9 +232,9 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
         "status": "SUCCESS",
         "answer": answer,
         "citations": citations,
-        "hits": hits[: max(top_k * 3, 12)],
+        "hits": selected_for_citation,
         "confidence": {"level": "high", "evidence_confidence": 1.0},
-        "grounding": grounding,
+        "grounding": {"allow": True, "supported_ratio": 1.0, "method": "exact_retrieved_sentence_provenance", "verified_items": provenance_claims},
         "claims": provenance_claims,
         "query_analysis": phase_plan,
         "rewritten_question": clean_question,
@@ -248,13 +244,9 @@ def enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any
         "generation_path": generation_path,
         "god_mode": True,
         "evidence_first": True,
-        "query_trace": {"mode": "evidence_first", "question": clean_question, "retrieval": {"status": "completed", "final_hits": len(hits), "top_score": max((float(getattr(h, "score", 0.0) or 0.0) for h in hits), default=0.0)}, "generation": {"status": "completed", "path": generation_path}, "verification": {"status": "completed", "method": "exact_retrieved_sentence_provenance", "supported_ratio": 1.0}, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}},
-        "evidence_claim_matrix": [],
+        "query_trace": {"mode": "evidence_first", "question": clean_question, "retrieval": retrieval_state, "generation": {"status": "completed", "path": generation_path}, "verification": {"status": "completed", "method": "exact_retrieved_sentence_provenance", "supported_ratio": 1.0}, "timings_ms": {"total": round((time.perf_counter() - started) * 1000, 2)}},
     }
-    enriched = enhance_result(self, clean_question, result, metadata_filter)
-    enriched.setdefault("phase_implementation", {})
-    enriched["phase_implementation"].update({"canonical_pipeline_executed": False, "evidence_first_authoritative_path": True, "degraded_to_legacy_pipeline": False, "final_answer_source": generation_path})
-    return enriched
+    return enhance_result(self, clean_question, result, metadata_filter)
 
 
 def legacy_enhanced_god_answer(self: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
