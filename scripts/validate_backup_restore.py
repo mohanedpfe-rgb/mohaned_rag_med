@@ -16,7 +16,10 @@ from rag_project.intelligence.production_ops_strict import VerifiedBackupManager
 
 
 def run(output: Path) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="medevidence-backup-") as raw:
+    # Windows can transiently retain a file handle on SQLite copies after a
+    # successful backup/verification cycle. Cleanup of this disposable harness
+    # workspace must not turn a passed integrity validation into a false failure.
+    with tempfile.TemporaryDirectory(prefix="medevidence-backup-", ignore_cleanup_errors=True) as raw:
         root = Path(raw)
         source_dir = root / "source"
         backup_dir = root / "backups"
