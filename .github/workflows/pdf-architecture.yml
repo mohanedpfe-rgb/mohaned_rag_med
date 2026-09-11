@@ -1,0 +1,32 @@
+name: PDF Architecture Gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  pdf-architecture:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+      - name: Compile source
+        run: python -m compileall -q rag_project app.py run_dev.py scripts
+      - name: Run 45-point PDF architecture contract
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "true"
+          EMBEDDING_TEST_MODE: "true"
+        run: python -m pytest -q tests/test_pdf_45_contract.py tests/test_deep_pdf_architecture.py tests/test_universal_pdf_knowledge_model.py
