@@ -118,11 +118,12 @@ def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entit
 def _looks_like_followup(question:str,history:Sequence[tuple[str,str]])->bool:
     cleaned=_normalize(question)
     if not cleaned or not history:return False
-    if re.search(r"\b(it|this|that|they|them|those|these|what about|how about|the latter|the former|ça|cela|celui|celle|et le|et la|و|هذا|هذه|ذلك|تلك|ثم)\b",cleaned,re.I|re.UNICODE):return True
-    return bool(re.search(r"^(and|also|then|et|puis|و|ثم)\b",cleaned,re.I|re.UNICODE))
+    english_or_french=re.search(r"\b(it|this|that|they|them|those|these|what about|how about|the latter|the former|ça|cela|celui|celle|et le|et la|also|then|puis)\b",cleaned,re.I|re.UNICODE)
+    arabic=re.match(r"^(و|ثم)\s*",cleaned,re.UNICODE) or cleaned.startswith(("و", "ثم"))
+    return bool(english_or_french or arabic)
 
 def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
-    """Resolve actual follow-ups using bounded clinical context, without protocol labels."""
+    """Resolve actual follow-ups using bounded clinical context and an explicit stable label."""
     cleaned=re.sub(r"\s+"," ",str(question or "")).strip()
     if not cleaned or not history or not _looks_like_followup(cleaned,history):return cleaned
     recent=list(history[-3:]);anchor_question=next((str(q).strip() for q,_ in reversed(recent) if str(q or "").strip()),"")
@@ -138,7 +139,30 @@ def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=No
         if term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
     context=" ".join(context_terms[:6])
     candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
-    return re.sub(r"\s+"," ",candidate)[:3500]
+    return "Follow-up: " + re.sub(r"\s+"," ",candidate)[:3470]
+
+def _safe_simple_extractive_answer(question:str,selected_hits:Sequence[Any],max_sentences:int=6)->str:
+    question_terms=set(re.findall(r"[\wÀ-ÿ-]{3,}",str(question or "").casefold()))
+    question_terms-={"what","are","the","main","findings","is","this","that","does","document","report","explain","define","list","show","about","principal","biais"}
+    candidates=[]
+    for index,hit in enumerate(selected_hits or ()):
+        if hit is None:continue
+        raw=str(getattr(hit,"text","") or "")
+        raw=re.sub(r"\[(?:section|source|file|page|document|metadata|citation|reference)\s*:\s*.*?\]\s*"," ",raw,flags=re.I|re.S)
+        for sentence in re.split(r"(?<=[.!?؟])\s+|\n+",raw):
+            sentence=re.sub(r"\s+"," ",sentence).strip()
+            if not sentence or len(sentence)<12:continue
+            tokens=set(re.findall(r"[\wÀ-ÿ-]{3,}",sentence.casefold()))
+            overlap=len(tokens&question_terms)/max(1,len(question_terms)) if question_terms else 0.0
+            score=.60*float(getattr(hit,"score",0.0) or 0.0)+.40*overlap
+            candidates.append((score,f"{sentence} [S{index+1}]") )
+    candidates.sort(key=lambda row:row[0],reverse=True);chosen=[];seen=set()
+    for score,sentence in candidates:
+        normalized=re.sub(r"\[S\d+\]", "", sentence).casefold()
+        if normalized in seen or score<.18:continue
+        seen.add(normalized);chosen.append(sentence)
+        if len(chosen)>=max_sentences:break
+    return "\n".join(f"- {sentence}" for sentence in chosen)
 
 def is_control_message(text:str)->bool:
     """Return True only for non-empty operational abstention/error messages."""
@@ -162,11 +186,10 @@ def safe_verify_final_answer(answer:str,hits:Sequence[Any],*,require_entailment:
 
 def install()->None:
     from rag_project.intelligence import top_level_pipeline,entity_coverage,final_answer_contract,god_mode_100
-    # Always bind the canonical callables directly. This prevents stale wrappers
-    # left by test doubles or previous runtime installations from surviving a new
-    # application composition cycle.
     top_level_pipeline.rewrite_follow_up=safe_rewrite_follow_up;top_level_pipeline._production_integrity_rewrite_installed=True
     entity_coverage.extract_query_entities=safe_extract_query_entities;entity_coverage.score_entity_coverage=safe_score_entity_coverage;entity_coverage._production_integrity_entities_installed=True
-    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer;final_answer_contract.verify_final_answer=safe_verify_final_answer
+    god_mode_100.score_entity_coverage=safe_score_entity_coverage;god_mode_100.verify_final_answer=safe_verify_final_answer
+    god_mode_100._simple_extractive_answer=_safe_simple_extractive_answer
+    final_answer_contract.verify_final_answer=safe_verify_final_answer
 
 __all__=["safe_extract_query_entities","safe_score_entity_coverage","safe_rewrite_follow_up","safe_verify_final_answer","is_control_message","install"]
