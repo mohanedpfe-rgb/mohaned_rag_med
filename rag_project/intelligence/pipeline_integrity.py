@@ -1,9 +1,4 @@
-"""Production integrity fixes for query contamination and answer-gate failures.
-
-This module is intentionally small and policy-focused. It is installed from the
-application composition root so the existing ingestion, vector store and retrieval
-implementations remain untouched while their contracts are made safer.
-"""
+"""Production integrity fixes for query contamination and answer-gate failures."""
 from __future__ import annotations
 
 import re
@@ -94,7 +89,7 @@ def _evidence_entities(text:str)->list[str]:
 def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entities:Iterable[str]=())->dict[str,Any]:
     planned_items=tuple(str(item or "") for item in planned_entities);query_entities=safe_extract_query_entities(question,planned_items);evidence_entities=[];planned_norms={_normalize(x) for x in planned_items if _normalize(x)}
     for index,hit in enumerate(evidence):
-        text=str(getattr(hit,"text","") or "")
+        text=str(getattr(hit,"text"," ") or "")
         for entity in _evidence_entities(text):evidence_entities.append((entity,f"S{index+1}"))
         for planned in planned_norms:
             if re.search(rf"(?<![\w-]){re.escape(planned)}(?![\w-])",text,re.I):evidence_entities.append((planned,f"S{index+1}"))
@@ -109,8 +104,8 @@ def safe_score_entity_coverage(question:str,evidence:Sequence[Any],planned_entit
 def _looks_like_followup(question:str,history:Sequence[tuple[str,str]])->bool:
     cleaned=_normalize(question)
     if not cleaned or not history:return False
-    english_or_french=re.search(r"\b(it|this|that|they|them|those|these|what about|how about|the latter|the former|ça|cela|celui|celle|et le|et la|also|then|puis)\b",cleaned,re.I|re.UNICODE)
-    arabic=re.match(r"^(و|ثم)\s*",cleaned,re.UNICODE) or cleaned.startswith(("و","ثم"))
+    english_or_french=re.search(r"\b(and|also|then|it|this|that|they|them|those|these|what about|how about|the latter|the former|et|puis|ça|cela|celui|celle|et le|et la)\b",cleaned,re.I|re.UNICODE)
+    arabic=cleaned.startswith(("و","ثم","هذا","هذه","ذلك","تلك"))
     return bool(english_or_french or arabic)
 
 def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=None)->str:
@@ -127,7 +122,7 @@ def safe_rewrite_follow_up(question:str,history:Sequence[tuple[str,str]]|None=No
     for term in _open_set_medical_terms(anchor_answer):
         if term not in context_terms and not _contains_internal_label(term):context_terms.append(term)
     context=" ".join(context_terms[:6]);candidate=" ".join(part for part in (anchor_question,context,cleaned) if part).strip()
-    return "Follow-up: " + re.sub(r"\s+"," ",candidate)[:3470]
+    return re.sub(r"\s+"," ",candidate)[:3500]
 
 def _safe_simple_extractive_answer(question:str,selected_hits:Sequence[Any],max_sentences:int=6)->str:
     question_terms=set(re.findall(r"[\wÀ-ÿ-]{3,}",str(question or "").casefold()));question_terms-={"what","are","the","main","findings","is","this","that","does","document","report","explain","define","list","show","about","principal","biais"};candidates=[]
@@ -168,8 +163,7 @@ def _install_legacy_extractive_guard()->None:
     try:
         from rag_project.intelligence import god_mode as legacy_god_mode
         legacy_god_mode._simple_extractive_answer=_safe_simple_extractive_answer
-    except Exception:
-        pass
+    except Exception:pass
 
 _install_legacy_extractive_guard()
 
