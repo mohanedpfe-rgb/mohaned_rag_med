@@ -1,0 +1,16 @@
+[Unit]
+Description=MedEvidence Pro API
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/medevidence
+Environment=MEDEVIDENCE_CLOUD_ENABLED=false
+ExecStart=/usr/bin/python3 -m uvicorn rag_project.api.med_evidence_api:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
