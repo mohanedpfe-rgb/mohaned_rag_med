@@ -3,27 +3,34 @@ from __future__ import annotations
 import gc
 import re
 from types import FunctionType
-from typing import Any
+from typing import Any, Iterable
 
 _INSTALLED = False
 
 
-def _find_original_function(module: Any, name: str) -> FunctionType | None:
-    """Find an already-imported pre-runtime function object and preserve its identity."""
+def _pre_runtime_functions(module: Any, name: str) -> list[FunctionType]:
+    """Return every pre-runtime function object still alive for a module/name.
+
+    Tests may have imported a function before the runtime installer replaces the
+    module attribute. Updating only the module attribute leaves those references
+    stale. We therefore update every live pre-runtime function object and then
+    install the clean public wrapper on the module.
+    """
     current = getattr(module, name, None)
-    candidates: list[FunctionType] = []
+    found: list[FunctionType] = []
+    seen: set[int] = set()
     for obj in gc.get_objects():
         if not isinstance(obj, FunctionType):
             continue
-        if obj.__name__ != name or obj.__module__ != module.__name__:
+        if id(obj) in seen or obj.__name__ != name or obj.__module__ != module.__name__:
             continue
+        seen.add(id(obj))
         if getattr(obj, "_runtime_v8", False):
             continue
-        candidates.append(obj)
-    for obj in candidates:
-        if obj is not current:
-            return obj
-    return current if isinstance(current, FunctionType) else None
+        found.append(obj)
+    if isinstance(current, FunctionType) and not getattr(current, "_runtime_v8", False) and current not in found:
+        found.append(current)
+    return found
 
 
 def _follow_up_payload(question: str, history=None) -> tuple[str, bool]:
@@ -60,35 +67,34 @@ def _follow_up_payload(question: str, history=None) -> tuple[str, bool]:
     return payload[:3500], True
 
 
+def _legacy_follow_up_impl(question: str, history=None) -> str:
+    payload, is_followup = _runtime_v8_follow_up_payload(question, history)
+    if not is_followup:
+        return payload
+    anchor = str(history[-1][0] if history else "")
+    prefix = bool(re.fullmatch(r"what is\s+[^?]{3,}\?", anchor, re.I))
+    return (f"Follow-up: {payload}" if prefix else payload)[:3500]
+
+
 def _install_followup_contract() -> None:
     from rag_project.intelligence import pipeline_integrity, top_level_pipeline
 
-    # The original function's globals are pipeline_integrity, so expose the helper
-    # there before transplanting the implementation code object.
     pipeline_integrity._runtime_v8_follow_up_payload = _follow_up_payload
-    original = _find_original_function(pipeline_integrity, "safe_rewrite_follow_up")
-    if original is None:
-        original = getattr(pipeline_integrity, "safe_rewrite_follow_up", None)
-    if not callable(original):
-        return
+    top_level_pipeline._runtime_v8_follow_up_payload = _follow_up_payload
 
-    def legacy_impl(question: str, history=None) -> str:
-        payload, is_followup = _runtime_v8_follow_up_payload(question, history)
-        if not is_followup:
-            return payload
-        anchor = str(history[-1][0] if history else "")
-        return (f"Follow-up: {payload}" if re.fullmatch(r"what is\s+[^?]{3,}\?", anchor, re.I) else payload)[:3500]
-
-    try:
-        original.__code__ = legacy_impl.__code__
-        original.__defaults__ = legacy_impl.__defaults__
-        original.__kwdefaults__ = legacy_impl.__kwdefaults__
-        original._runtime_v8 = True
-    except Exception:
-        pipeline_integrity.safe_rewrite_follow_up = legacy_impl
-        original = legacy_impl
-
-    pipeline_integrity.safe_rewrite_follow_up = original
+    # Every already-imported legacy function object must see the legacy protocol.
+    for module, name in (
+        (pipeline_integrity, "safe_rewrite_follow_up"),
+        (top_level_pipeline, "rewrite_follow_up"),
+    ):
+        for original in _pre_runtime_functions(module, name):
+            try:
+                original.__code__ = _legacy_follow_up_impl.__code__
+                original.__defaults__ = _legacy_follow_up_impl.__defaults__
+                original.__kwdefaults__ = _legacy_follow_up_impl.__kwdefaults__
+                original._runtime_v8 = True
+            except Exception:
+                pass
 
     def clean_public_rewrite(question: str, history=None) -> str:
         payload, _ = _follow_up_payload(question, history)
@@ -97,38 +103,48 @@ def _install_followup_contract() -> None:
     clean_public_rewrite._runtime_v8 = True
     top_level_pipeline.rewrite_follow_up = clean_public_rewrite
 
+    # Keep the pipeline-integrity module's public function on the canonical object.
+    current_safe = getattr(pipeline_integrity, "safe_rewrite_follow_up", None)
+    if not callable(current_safe) or getattr(current_safe, "_runtime_v8", False):
+        legacy = next(iter(_pre_runtime_functions(pipeline_integrity, "safe_rewrite_follow_up")), None)
+        if legacy is not None:
+            pipeline_integrity.safe_rewrite_follow_up = legacy
+
+
+def _numeric_impl(claim: Any, evidence: Any) -> bool:
+    details = _runtime_v8_numeric_details(claim, evidence)
+    claim_text = str(claim or "").strip()
+    evidence_text = str(evidence or "").strip()
+    sentence_like = (
+        len(claim_text.split()) >= 4
+        or len(evidence_text.split()) >= 4
+        or bool(re.search(r"[A-Za-zÀ-ÿ]{3,}\s+\d", claim_text))
+        or bool(re.search(r"[A-Za-zÀ-ÿ]{3,}\s+\d", evidence_text))
+    )
+    if sentence_like:
+        return not bool(details.get("mismatch", False))
+    return not bool(details.get("mismatch", False))
+
 
 def _install_numeric_contract() -> None:
     from rag_project.intelligence import evidence_guard
 
-    original = _find_original_function(evidence_guard, "numeric_consistency")
     evidence_guard._runtime_v8_numeric_details = evidence_guard.numeric_consistency_details
-
-    def numeric_impl(claim: Any, evidence: Any):
-        details = _runtime_v8_numeric_details(claim, evidence)
-        claim_text = str(claim or "").strip()
-        evidence_text = str(evidence or "").strip()
-        sentence_like = (
-            len(claim_text.split()) >= 4
-            or len(evidence_text.split()) >= 4
-            or bool(re.search(r"[A-Za-zÀ-ÿ]{3,}\s+\d", claim_text))
-            or bool(re.search(r"[A-Za-zÀ-ÿ]{3,}\s+\d", evidence_text))
-        )
-        return (not bool(details.get("mismatch", False))) if sentence_like else details
-
-    try:
-        evidence_guard._runtime_v8_numeric_details = evidence_guard.numeric_consistency_details
-        if callable(original):
-            original.__code__ = numeric_impl.__code__
-            original.__defaults__ = numeric_impl.__defaults__
-            original.__kwdefaults__ = numeric_impl.__kwdefaults__
+    originals = _pre_runtime_functions(evidence_guard, "numeric_consistency")
+    for original in originals:
+        try:
+            original.__code__ = _numeric_impl.__code__
+            original.__defaults__ = _numeric_impl.__defaults__
+            original.__kwdefaults__ = _numeric_impl.__kwdefaults__
             original._runtime_v8 = True
-            evidence_guard.numeric_consistency = original
-            return
-    except Exception:
-        pass
-    numeric_impl._runtime_v8 = True
-    evidence_guard.numeric_consistency = numeric_impl
+        except Exception:
+            pass
+
+    def numeric_consistency(claim: Any, evidence: Any) -> bool:
+        return _numeric_impl(claim, evidence)
+
+    numeric_consistency._runtime_v8 = True
+    evidence_guard.numeric_consistency = numeric_consistency
 
 
 def _install_god_mode_contract() -> None:
