@@ -64,6 +64,23 @@ def test_runtime_recovery_returns_grounded_extractive_answer():
     assert result["recovery"]["grounded_extractive_fallback"] is True
 
 
+def test_runtime_recovery_accepts_exact_source_provenance_even_when_semantic_checker_would_be_strict(monkeypatch):
+    from rag_project.app import production_rag
+
+    hit = _hit()
+    system = _bare_system([hit])
+    monkeypatch.setattr(
+        production_rag,
+        "_verify_extractive_provenance",
+        lambda answer, hits: {"allow": True, "supported_ratio": 1.0, "method": "exact_extractive_provenance", "matched": 1, "total": 1, "details": [{"source": 1, "matched": True}]},
+    )
+    result = system._recovery_answer("What is diabetes?", None, RuntimeError("enhancement failure"))
+    assert result["status"] == "SUCCESS_WITH_WARNINGS"
+    assert result["grounding"]["method"] == "exact_extractive_provenance"
+    assert result["confidence"]["evidence_confidence"] == 1.0
+    assert result["query_trace"]["generation"]["method"] == "exact_extractive_provenance"
+
+
 def test_runtime_answer_catches_certified_pipeline_failure_and_uses_recovery(monkeypatch):
     from rag_project.app import production_rag
 
