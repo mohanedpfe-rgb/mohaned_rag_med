@@ -95,8 +95,8 @@ def semantic_support(claim,evidence):
     framing={'the','a','an','main','findings','finding','include','includes','included','reported','reports','observed','shows','show','identified','described','key','primary','principales','conséquences','biologiques','sont','les','des'}
     ct={t for t in ct if t not in framing} or ct
     shared=ct&et
-    if len(shared)==1 and (ct-shared) and (et-shared):
-        # A single shared concept is not enough to prove two distinct medical predicates.
+    if len(shared)<=2 and (ct-shared) and (et-shared):
+        # A small shared concept core is not enough to prove two distinct medical predicates.
         # Example: “Diabetes causes pneumonia” must not be supported by “Diabetes is chronic”.
         return 0.0
     coverage=len(shared)/len(ct)
