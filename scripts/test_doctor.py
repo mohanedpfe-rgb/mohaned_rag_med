@@ -5,6 +5,7 @@ The doctor is intentionally independent from the full pytest run. It answers:
 * Does the diagnostic tool itself bootstrap correctly?
 * Which runtime installer first changes a hot public symbol?
 * What source file, line, signature and runtime flag owns that symbol?
+* Which runtime files statically assign the hot symbol?
 * Which focused regression probe reproduces the contract failure?
 
 Windows examples::
@@ -13,12 +14,14 @@ Windows examples::
     python scripts/test_doctor.py --audit-runtime
     python scripts/test_doctor.py --probe
     python scripts/test_doctor.py --contracts
+    python scripts/test_doctor.py --static-map
     python scripts/test_doctor.py --full
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import inspect
 import os
 import subprocess
@@ -42,62 +45,28 @@ class SymbolSpec:
 
 
 HOT_SYMBOLS = (
-    SymbolSpec(
-        "public follow-up",
-        "rag_project.intelligence.top_level_pipeline",
-        "rewrite_follow_up",
-        "clean-contextual-text",
-    ),
-    SymbolSpec(
-        "integrity follow-up",
-        "rag_project.intelligence.pipeline_integrity",
-        "safe_rewrite_follow_up",
-        "clean-contextual-text",
-    ),
-    SymbolSpec(
-        "numeric consistency",
-        "rag_project.intelligence.evidence_guard",
-        "numeric_consistency",
-        "structured-dict",
-    ),
-    SymbolSpec(
-        "god-mode enhancer",
-        "rag_project.intelligence.god_mode_100",
-        "enhance_result",
-        "4-arg-entrypoint",
-    ),
+    SymbolSpec("public follow-up", "rag_project.intelligence.top_level_pipeline", "rewrite_follow_up", "clean-contextual-text"),
+    SymbolSpec("integrity follow-up", "rag_project.intelligence.pipeline_integrity", "safe_rewrite_follow_up", "clean-contextual-text"),
+    SymbolSpec("numeric consistency", "rag_project.intelligence.evidence_guard", "numeric_consistency", "structured-dict"),
+    SymbolSpec("god-mode enhancer", "rag_project.intelligence.god_mode_100", "enhance_result", "4-arg-entrypoint"),
 )
 
 PROBES = (
-    (
-        "follow-up public contract",
-        "tests/test_intelligence_adversarial_extra.py::test_top_level_rewrite_follow_up_is_contextual",
-    ),
-    (
-        "follow-up integrity contract",
-        "tests/test_pipeline_integrity.py::test_real_followup_is_rewritten_without_protocol_metadata",
-    ),
-    (
-        "numeric structured contract",
-        "tests/test_full_44_intelligence.py::test_numeric_consistency_rejects_unsupported_measurement",
-    ),
-    (
-        "enhancer call contract",
-        "tests/test_answer_system_orchestration_deep.py::test_enhance_result_accepts_grounded_final_answer[Diabetes is chronic.]",
-    ),
-    (
-        "document replacement",
-        "tests/test_hardening.py::test_modified_document_replaces_old_indexed_content",
-    ),
-    (
-        "lexical persistence",
-        "tests/test_index_consistency.py::test_lexical_index_is_persistent_and_returns_matching_chunks",
-    ),
-    (
-        "repair consistency",
-        "tests/test_quality_gate.py::test_repaired_lexical_content_matches_authoritative_vector_record",
-    ),
+    ("follow-up public contract", "tests/test_intelligence_adversarial_extra.py::test_top_level_rewrite_follow_up_is_contextual"),
+    ("follow-up integrity contract", "tests/test_pipeline_integrity.py::test_real_followup_is_rewritten_without_protocol_metadata"),
+    ("numeric structured contract", "tests/test_full_44_intelligence.py::test_numeric_consistency_rejects_unsupported_measurement"),
+    ("enhancer call contract", "tests/test_answer_system_orchestration_deep.py::test_enhance_result_accepts_grounded_final_answer[Diabetes is chronic.]"),
+    ("document replacement", "tests/test_hardening.py::test_modified_document_replaces_old_indexed_content"),
+    ("lexical persistence", "tests/test_index_consistency.py::test_lexical_index_is_persistent_and_returns_matching_chunks"),
+    ("repair consistency", "tests/test_quality_gate.py::test_repaired_lexical_content_matches_authoritative_vector_record"),
 )
+
+TARGET_ASSIGNMENTS = {
+    "top_level_pipeline.rewrite_follow_up": HOT_SYMBOLS[0],
+    "pipeline_integrity.safe_rewrite_follow_up": HOT_SYMBOLS[1],
+    "evidence_guard.numeric_consistency": HOT_SYMBOLS[2],
+    "god_mode_100.enhance_result": HOT_SYMBOLS[3],
+}
 
 
 @dataclass(frozen=True)
@@ -141,10 +110,8 @@ def _snapshot(spec: SymbolSpec) -> Snapshot:
 
 def _format_snapshot(snapshot: Snapshot) -> str:
     return (
-        f"{snapshot.module}.{snapshot.qualname} | "
-        f"{snapshot.source}:{snapshot.line or '?'} | "
-        f"signature={snapshot.signature} | "
-        f"flags={','.join(snapshot.flags) or '-'}"
+        f"{snapshot.module}.{snapshot.qualname} | {snapshot.source}:{snapshot.line or '?'} | "
+        f"signature={snapshot.signature} | flags={','.join(snapshot.flags) or '-'}"
     )
 
 
@@ -152,19 +119,59 @@ def _expected_contract(snapshot: Snapshot, spec: SymbolSpec) -> str:
     source = snapshot.source.casefold()
     signature = snapshot.signature
     if spec.expected == "4-arg-entrypoint":
-        if signature.count(",") >= 2:
-            return "OK: accepts the production 4-argument entrypoint shape"
-        return "BAD: enhancer signature is not the expected production entrypoint"
+        return "OK: accepts production entrypoint shape" if signature.count(",") >= 2 else "BAD: enhancer signature drift"
     if spec.expected == "structured-dict":
-        return "OK: structured contract" if "evidence_guard" in source and "numeric_consistency" in snapshot.qualname else "CHECK: inspect numeric return-shape owner"
+        return "OK: authoritative evidence_guard owner" if "evidence_guard.py" in source else "BAD: structured API replaced by runtime shim"
     if spec.expected == "clean-contextual-text":
-        return "WARN: legacy formatter owner" if "runtime_final_contracts_v" in source else "OK: clean-contextual implementation owner"
+        return "BAD: runtime compatibility layer owns clean public API" if "runtime_final_contracts_v" in source else "OK: clean public implementation"
     return "UNKNOWN CONTRACT"
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
     runtime = import_module("rag_project.runtime")
     return runtime._load_installers()
+
+
+def _attribute_chain(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def static_mutation_map() -> int:
+    print("\n=== RAG TEST DOCTOR: STATIC RUNTIME MUTATION MAP ===")
+    runtime_dirs = [ROOT / "rag_project"]
+    matches: list[tuple[str, int, str, str]] = []
+    for root in runtime_dirs:
+        for path in root.rglob("*.py"):
+            if not (path.name.startswith("runtime_") or "contract" in path.name or path.name == "runtime.py"):
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except (OSError, SyntaxError):
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    chain = _attribute_chain(target)
+                    if chain in TARGET_ASSIGNMENTS:
+                        spec = TARGET_ASSIGNMENTS[chain]
+                        matches.append((str(path.relative_to(ROOT)), getattr(node, "lineno", 0), chain, spec.expected))
+    if not matches:
+        print("No runtime hot-symbol assignments found.")
+        return 0
+    for path, line, chain, expected in sorted(matches):
+        print(f"  {chain:<48} {path}:{line}  expected={expected}")
+    print(f"\nFound {len(matches)} direct runtime assignments. These are the first static locations to inspect when provenance changes.")
+    return 0
 
 
 def audit_runtime() -> int:
@@ -192,12 +199,7 @@ def audit_runtime() -> int:
         for spec in HOT_SYMBOLS:
             after = _snapshot(spec)
             previous = current[spec.label]
-            changed = (
-                after.identity != previous.identity
-                or after.source != previous.source
-                or after.line != previous.line
-                or after.signature != previous.signature
-            )
+            changed = after.identity != previous.identity or after.source != previous.source or after.line != previous.line or after.signature != previous.signature
             if changed and spec.label not in first_change:
                 first_change[spec.label] = (name, previous, after)
                 print(f"\nFIRST MUTATION: {spec.label}")
@@ -217,55 +219,20 @@ def audit_runtime() -> int:
     print("\nFIRST-MUTATOR MAP:")
     for spec in HOT_SYMBOLS:
         change = first_change.get(spec.label)
-        if change:
-            print(f"  {spec.label}: {change[0]}")
-        else:
-            print(f"  {spec.label}: no installer mutation")
+        print(f"  {spec.label}: {change[0] if change else 'no installer mutation'}")
     return 0
 
 
 def classify_output(text: str) -> list[tuple[str, str]]:
     rules = (
-        (
-            "signature drift",
-            "takes from 2 to 3 positional arguments but 4 were given",
-            "god-mode enhancer is being replaced by a legacy 2/3-argument callable",
-        ),
-        (
-            "structured-return drift",
-            "object is not subscriptable",
-            "a structured diagnostic API returned a scalar; inspect the exact numeric_consistency owner",
-        ),
-        (
-            "follow-up protocol leak",
-            "Follow-up:' not in",
-            "clean follow-up API received the legacy protocol marker",
-        ),
-        (
-            "stale-index failure",
-            "OLD_CONTENT_UNIQUE",
-            "replacement ingestion left old vector records; trace document/version deletion before reinsertion",
-        ),
-        (
-            "lexical persistence failure",
-            "assert [] == ['vec-a']",
-            "lexical write/query path did not persist or tokenise the inserted record",
-        ),
-        (
-            "repair-record failure",
-            "NoneType' object is not subscriptable",
-            "repair validation says the index is valid but the authoritative lexical row is absent",
-        ),
-        (
-            "module-resolution failure",
-            "No module named 'rag_project'",
-            "diagnostic subprocess is not running with repository root on sys.path",
-        ),
-        (
-            "name-resolution failure",
-            "NameError",
-            "runtime patch references a helper outside its defining module namespace",
-        ),
+        ("signature drift", "takes from 2 to 3 positional arguments but 4 were given", "god-mode enhancer was replaced by a legacy 2/3-argument callable"),
+        ("structured-return drift", "object is not subscriptable", "structured diagnostic API returned a scalar; inspect numeric_consistency provenance"),
+        ("follow-up protocol leak", "Follow-up:' not in", "clean follow-up API received the legacy protocol marker"),
+        ("stale-index failure", "OLD_CONTENT_UNIQUE", "replacement ingestion left old vector records"),
+        ("lexical persistence failure", "assert [] == ['vec-a']", "lexical write/query persistence is broken or tokenisation is not updated"),
+        ("repair-record failure", "NoneType' object is not subscriptable", "repair path reports valid state but authoritative lexical row is absent"),
+        ("module-resolution failure", "No module named 'rag_project'", "diagnostic process was launched outside the repository import root"),
+        ("name-resolution failure", "NameError", "runtime patch references a helper outside its defining module namespace"),
     )
     return [(label, hint) for label, needle, hint in rules if needle in text]
 
@@ -274,15 +241,7 @@ def run_probes(maxfail: int) -> int:
     print("\n=== RAG TEST DOCTOR: FAST FAILURE PROBES ===")
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-        "--tb=short",
-        f"--maxfail={maxfail}",
-        *(nodeid for _, nodeid in PROBES),
-    ]
+    command = [sys.executable, "-m", "pytest", "-q", "--tb=short", f"--maxfail={maxfail}", *(nodeid for _, nodeid in PROBES)]
     print("$", " ".join(command))
     proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, env=env)
     if proc.stdout:
@@ -318,8 +277,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Fast RAG runtime/test diagnosis")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--audit-runtime", action="store_true", help="trace the first installer that mutates hot runtime symbols")
-    group.add_argument("--probe", action="store_true", help="run the focused failure probes")
+    group.add_argument("--probe", action="store_true", help="run focused failure probes")
     group.add_argument("--contracts", action="store_true", help="run the fast contract gate")
+    group.add_argument("--static-map", action="store_true", help="list direct runtime assignments to hot symbols")
     group.add_argument("--full", action="store_true", help="run the entire pytest suite")
     parser.add_argument("--maxfail", type=int, default=7, help="pytest maxfail for probe/full modes")
     args = parser.parse_args()
@@ -330,9 +290,12 @@ def main() -> int:
         return run_probes(args.maxfail)
     if args.contracts:
         return run_contracts()
+    if args.static_map:
+        return static_mutation_map()
     if args.full:
         return run_full(args.maxfail)
 
+    static_mutation_map()
     result = audit_runtime()
     if result:
         return result
