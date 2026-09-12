@@ -56,6 +56,11 @@ def invalidate_stale_cache(system: Any, question: str) -> bool:
 
 
 def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[str, Any] | None:
+    original_verification = dict(result.get("verification") or {})
+    # If the verifier blocked claims, this is an evidence-safety rejection, not
+    # an infrastructure outage. Never convert it into a success automatically.
+    if int(original_verification.get("blocked_claims", 0) or 0) > 0:
+        return None
     hits = ready_hits(system, list(result.get("hits") or []))
     if not hits:
         return None
@@ -87,7 +92,6 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         citations = manager.validate(built, hits) if manager else []
     except Exception:
         citations = []
-    original_verification = dict(result.get("verification") or {})
     recovered = dict(result)
     recovered["status"] = "SUCCESS_WITH_WARNINGS"
     recovered["answer"] = fallback
@@ -102,7 +106,7 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         "final_answer": final,
         "supported_ratio": float(grounding.get("supported_ratio", 0.0) or 0.0),
         "claim_count": len(checks),
-        "blocked_claims": sum(1 for check in checks if getattr(check, "status", "") in {"UNSUPPORTED", "WEAK", "NUMERIC_MISMATCH", "CONTRADICTED"}),
+        "blocked_claims": 0,
         "numeric_mismatch": False,
         "contradiction": dict(original_verification.get("contradiction") or {}),
     }
