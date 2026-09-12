@@ -13,15 +13,16 @@ from .advanced_phases import (
     cross_layer_invariants,
     diagnostic_chain,
     golden_benchmark,
-    information_loss,
+    information_loss as legacy_information_loss,
     metamorphic,
     mutation_detection,
     performance,
     rag_causality,
     resources,
-    retrieval_microscope,
+    retrieval_microscope as legacy_retrieval_microscope,
     root_cause_phase,
 )
+from .robust_probes import information_loss, retrieval_microscope
 
 
 PHASES = tuple(
