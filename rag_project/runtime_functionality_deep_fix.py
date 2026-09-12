@@ -216,15 +216,16 @@ def _wrap_contradiction_detection(original):
         except Exception:
             semantic_support = None
         for block in blocks:
-            text = str(block or "").casefold()
-            shared = claim_tokens & set(re.findall(r"[\w-]{3,}", text, flags=re.UNICODE))
-            explicit = bool(
-                (re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", claim_text) and re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", text))
-                or (re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", claim_text) and re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", text))
-            )
-            semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
-            if (explicit and semantic >= 0.55) or (not explicit and len(shared) >= 3 and semantic >= 0.25):
-                return True
+            sentences = [part.strip() for part in re.split(r"(?<=[.!?؟])\s+|\n+", str(block or "")) if part.strip()]
+            for text in sentences:
+                shared = claim_tokens & set(re.findall(r"[\w-]{3,}", text.casefold(), flags=re.UNICODE))
+                explicit = bool(
+                    (re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", claim_text) and re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", text, re.I))
+                    or (re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", claim_text) and re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", text, re.I))
+                )
+                semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
+                if (explicit and semantic >= 0.55) or (not explicit and len(shared) >= 3 and semantic >= 0.25):
+                    return True
         return False
     wrapped._functionality_contradiction_guard = True
     return wrapped
