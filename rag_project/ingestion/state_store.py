@@ -296,6 +296,17 @@ class IngestionStateStore:
             raise RuntimeError(f"Invalid terminal state regression: {current_stage} -> {new_stage_value}.")
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:
+            total_pages = int(values.get("total_pages", record.get("total_pages") or 0) or 0)
+            current_page = int(values.get("current_page", record.get("current_page") or 0) or 0)
+            content_hash = str(values.get("content_hash", record.get("content_hash") or "") or "")
+            index_state = str(values.get("index_state", record.get("index_state") or "") or "").upper()
+            if total_pages <= 0 or current_page != total_pages:
+                raise RuntimeError(
+                    f"READY publication requires complete page progress: current_page={current_page}, total_pages={total_pages}."
+                )
+            if not content_hash:
+                raise RuntimeError("READY publication requires a non-empty content_hash.")
+            values.setdefault("content_hash", content_hash)
             values.setdefault("status", "READY")
             values.setdefault("index_state", "READY")
         elif new_stage_value.startswith("FAILED") or new_stage_value == "DEGRADED_LEXICAL":
