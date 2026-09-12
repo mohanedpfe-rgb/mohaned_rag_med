@@ -25,7 +25,7 @@ def test_mixed_success_and_failure_is_not_reported_as_fully_successful():
     assert (completed, failed, status) == (1, 1, "COMPLETED_WITH_FAILURES")
 
 
-def test_unknown_status_is_not_silently_marked_failed():
+def test_unknown_status_is_not_silently_marked_successful():
     completed, failed, status = summarize_ingestion_results([{"status": "RUNNING"}])
 
-    assert (completed, failed, status) == (0, 0, "COMPLETED")
+    assert (completed, failed, status) == (0, 0, "UNKNOWN")
