@@ -120,53 +120,38 @@ def _strict_semantic_wrapper(original):
         except Exception as exc:
             extra.append({"phase": 17, "reason": "implementation ownership contract could not be evaluated", "exception": type(exc).__name__, "message": str(exc)})
 
-        p2 = results.get(2)
-        d2 = p2.details if p2 else {}
+        p2 = results.get(2); d2 = p2.details if p2 else {}
         if p2 is None or p2.status != "PASS" or d2.get("evidence_level") != "strict_fast_runtime_health" or not d2.get("checks", {}).get("production_import_smoke_exit_zero") or not d2.get("checks", {}).get("compileall_exit_zero"):
             extra.append({"phase": 2, "reason": "strict Phase 2 runtime health evidence missing"})
-        p7 = results.get(7)
-        d7 = p7.details if p7 else {}
+        p6 = results.get(6); d6 = p6.details if p6 else {}
+        if p6 is None or d6.get("authoritative_implementation") != "strict_information_loss" or not d6.get("baseline_healthy_fixture_pass") or not d6.get("fault_sensitivity_verified") or int(d6.get("fault_probe_count") or 0) < 2:
+            extra.append({"phase": 6, "reason": "fault-sensitive information-loss evidence incomplete"})
+        p7 = results.get(7); d7 = p7.details if p7 else {}
         if p7 is None or int(d7.get("variant_count") or 0) < 5 or not d7.get("variant_results") or not all(bool(v) for v in d7.get("variant_results", {}).values()):
             extra.append({"phase": 7, "reason": "five-way adversarial PDF variant evidence incomplete"})
-        p8 = results.get(8)
-        d8 = p8.details if p8 else {}
-        checks8 = d8.get("checks") or {}
+        p8 = results.get(8); d8 = p8.details if p8 else {}; checks8 = d8.get("checks") or {}
         if p8 is None or len(checks8) < 8 or not all(bool(v) for v in checks8.values()) or not d8.get("ollama_protocol_path_executed"):
             extra.append({"phase": 8, "reason": "end-to-end metamorphic matrix incomplete"})
-        p10 = results.get(10)
-        d10 = p10.details if p10 else {}
+        p10 = results.get(10); d10 = p10.details if p10 else {}
         if p10 is None or d10.get("generation_client") != "OllamaLLMClient" or not d10.get("ollama_protocol_roundtrip_verified"):
             extra.append({"phase": 10, "reason": "production Ollama client roundtrip evidence incomplete"})
-        p14 = results.get(14)
-        d14 = p14.details if p14 else {}
+        p14 = results.get(14); d14 = p14.details if p14 else {}
         baseline_path = ROOT / "tests" / "support" / "performance_baseline.json"
-        baseline_contract_ok = False
-        baseline_failure = None
+        baseline_contract_ok = False; baseline_failure = None
         try:
             baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
             expected_stages = {"canonical_ingestion", "post_ingestion_validation", "lexical_retrieval", "semantic_retrieval"}
-            baseline_contract_ok = (
-                baseline.get("schema_version") == 2
-                and baseline.get("baseline_type") == "certification_ceiling"
-                and baseline.get("historical_measurement") is False
-                and expected_stages.issubset(baseline.keys())
-                and baseline.get("canonical_stage_keys") == sorted(expected_stages)
-                and all(isinstance(baseline.get(stage, {}).get("p95_ms"), (int, float)) for stage in expected_stages)
-            )
+            baseline_contract_ok = (baseline.get("schema_version") == 2 and baseline.get("baseline_type") == "certification_ceiling" and baseline.get("historical_measurement") is False and expected_stages.issubset(baseline.keys()) and baseline.get("canonical_stage_keys") == sorted(expected_stages) and all(isinstance(baseline.get(stage, {}).get("p95_ms"), (int, float)) for stage in expected_stages))
         except Exception as exc:
             baseline_failure = {"exception": type(exc).__name__, "message": str(exc)}
         if p14 is None or not d14.get("stage_metrics") or not d14.get("regression_comparisons") or not d14.get("regression_pass") or not baseline_contract_ok:
             extra.append({"phase": 14, "reason": "performance benchmark/regression evidence or baseline provenance incomplete", "baseline_failure": baseline_failure})
         else:
-            d14["baseline_contract_verified"] = True
-            d14["baseline_type"] = "certification_ceiling"
-            d14["historical_baseline_available"] = False
-        p15 = results.get(15)
-        d15 = p15.details if p15 else {}
+            d14["baseline_contract_verified"] = True; d14["baseline_type"] = "certification_ceiling"; d14["historical_baseline_available"] = False
+        p15 = results.get(15); d15 = p15.details if p15 else {}
         if p15 is None or not d15.get("rss_trend_ok") or not d15.get("fd_leak_ok") or d15.get("evidence_level") != "real_subprocess_resource_observation":
             extra.append({"phase": 15, "reason": "trend-aware resource evidence incomplete"})
-        p16 = results.get(16)
-        d16 = p16.details if p16 else {}
+        p16 = results.get(16); d16 = p16.details if p16 else {}
         if p16 is None or float(d16.get("evidence_grounding_case_rate") or 0) < 0.8 or float(d16.get("evidence_term_recall") or 0) < 0.8:
             extra.append({"phase": 16, "reason": "evidence-grounding benchmark below threshold"})
         return failures + extra
@@ -177,10 +162,12 @@ def install() -> None:
     from rag_project.testing import runner, production_diagnostic_probes
     from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
     from rag_project.testing.full_mutation_probes import run_full_mutation_suite
+    from rag_project.testing.strict_information_loss import strict_information_loss
     runner.phase15_resource_stability = strict_resource_stability
     runner.UnifiedDiagnosticEngine._execute.__globals__["phase15_resource_stability"] = strict_resource_stability
     runner.UnifiedDiagnosticEngine._execute.__globals__["metamorphic"] = run_full_metamorphic_suite
     runner.UnifiedDiagnosticEngine._execute.__globals__["_hardened_mutation_phase"] = run_full_mutation_suite
+    runner.UnifiedDiagnosticEngine._execute.__globals__["information_loss"] = strict_information_loss
     runner._hardened_mutation_phase = run_full_mutation_suite
     original_phase17 = runner.UnifiedDiagnosticEngine._execute.__globals__.get("phase17_strict_completion")
     if original_phase17 is not None and not getattr(original_phase17, "_provenance_wrapped", False):
