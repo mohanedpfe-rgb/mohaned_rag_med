@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
+from tests.high_level.helpers import assert_citations_valid, assert_grounded, assert_status
 
 
 @pytest.mark.high_level
@@ -19,9 +20,20 @@ def test_e2e_multi_document__library_search_returns_only_relevant_source(clean_s
     assert str(result_b.get("status") or "").upper() == "READY"
 
     result = clean_system.answer("What does DOC_ENDO state about diabetes mellitus?")
-    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
     hits = result.get("hits") or []
     assert hits
     text = " ".join(str(getattr(hit, "text", "")) for hit in hits)
     assert "DOC_ENDO" in text
     assert "DOC_CARDIO" not in text
+    assert_citations_valid(result)
+    assert_grounded(result)
+
+    endocrine_id = str(result_b.get("document_id") or result_b.get("id") or "")
+    assert endocrine_id
+    resolved_docs = {
+        str(getattr(hit, "doc_id", ""))
+        for hit in hits
+        if getattr(hit, "doc_id", None) is not None
+    }
+    assert resolved_docs == {endocrine_id}
