@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import shutil
 import tempfile
@@ -31,7 +32,6 @@ class _OllamaProtocolHandler(http.server.BaseHTTPRequestHandler):
         return
 
     def _json(self, status: int, payload: dict) -> None:
-        import json
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -50,8 +50,26 @@ class _OllamaProtocolHandler(http.server.BaseHTTPRequestHandler):
         if self.path != "/api/chat":
             self._json(404, {"error": "not found"})
             return
-        length = int(self.headers.get("Content-Length", "0"))
-        self.rfile.read(length)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            messages = body.get("messages")
+            model = body.get("model")
+            if model != "diagnostic-protocol:latest":
+                self._json(400, {"error": "unexpected model"})
+                return
+            if not isinstance(messages, list) or not messages:
+                self._json(400, {"error": "messages must be a non-empty list"})
+                return
+            if not all(isinstance(item, dict) and item.get("role") in {"system", "user", "assistant"} and isinstance(item.get("content"), str) and item.get("content", "").strip() for item in messages):
+                self._json(400, {"error": "messages must contain role/content objects"})
+                return
+            if "stream" in body and body["stream"] not in {False, None}:
+                self._json(400, {"error": "streaming is not supported by the deterministic protocol fixture"})
+                return
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+            self._json(400, {"error": "invalid JSON request"})
+            return
         self._json(200, {
             "model": "diagnostic-protocol:latest",
             "created_at": "2026-01-01T00:00:00Z",
