@@ -33,6 +33,9 @@ def test_security__control_characters_are_removed_from_logged_and_model_text():
 
 @pytest.mark.high_level
 def test_security__oversized_model_text_is_explicitly_truncated():
-    result = sanitize_model_text("x" * 100, limit=20)
-    assert len(result) <= 100
-    assert "TRUNCATED_UNTRUSTED_TEXT" in result
+    limit = 20
+    result = sanitize_model_text("x" * 100, limit=limit)
+    marker = "[TRUNCATED_UNTRUSTED_TEXT]"
+    assert marker in result
+    assert result.startswith("x" * limit)
+    assert len(result) == limit + 1 + len(marker)
