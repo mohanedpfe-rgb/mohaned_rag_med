@@ -38,11 +38,14 @@ jobs:
           assert len(phases) == 17, f"expected 17 phase results, got {len(phases)}"
           numbers = sorted(item["number"] for item in phases)
           assert numbers == list(range(1, 18)), numbers
+          non_pass = [item for item in phases if item.get("status") != "PASS"]
+          assert not non_pass, f"every phase must PASS: {non_pass}"
           phase17 = next(item for item in phases if item["number"] == 17)
           details = phase17.get("details", {})
           assert details.get("implementation_coverage") == "17/17", phase17
           assert not details.get("missing_phase_results"), phase17
           assert not details.get("evidence_failures"), phase17
+          assert not details.get("runtime_non_pass_phases"), phase17
           assert phase17.get("status") == "PASS", phase17
           assert report.get("status") == "PASS", report
           print("STRICT 17/17 CERTIFICATION VERIFIED")
