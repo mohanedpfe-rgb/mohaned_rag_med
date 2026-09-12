@@ -43,12 +43,15 @@ def _grounded_spy_response(system, question: str, expected_terms: list[str]) -> 
 
 
 @pytest.mark.high_level
-def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, fake_ollama_fast, gold_case):
+def test_gold_case__matches_exact_status_path_content_language_latency_and_memory_contract(clean_system, fake_ollama_fast, gold_case):
     case = gold_case
     expected_status = str(case["expected_status"]).upper()
     expected_path = str(case["expected_path"]).upper()
+    expected_language = str(case["language"]).lower()
     must_contain = [str(value).casefold() for value in case.get("must_contain", [])]
     must_not_contain = [str(value).casefold() for value in case.get("must_not_contain", [])]
+    memory = clean_system.conversation_memory
+    before_history = list(getattr(memory, "history", []) or [])
 
     if expected_path == "PATH_C_CONSTRAINED_LLM":
         fake_ollama_fast.response = _grounded_spy_response(clean_system, case["question"], [str(v) for v in case.get("must_contain", [])])
@@ -77,7 +80,15 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     max_latency = float(case["max_latency_s"])
     assert wall_clock <= max_latency, f"gold case {case['id']} wall-clock latency {wall_clock:.3f}s exceeded {max_latency:.3f}s"
 
+    route = result.get("route") or {}
+    assert str(route.get("language") or "").lower() == expected_language, (
+        f"gold case {case['id']} expected language {expected_language!r}, got {route!r}"
+    )
+
+    after_history = list(getattr(memory, "history", []) or [])
     if expected_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+        assert len(after_history) == len(before_history) + 1
+        assert case["question"] in str(after_history[-1])
         assert_latency_under(result, max_latency)
         assert_citations_valid(result)
         assert_grounded(result)
@@ -85,6 +96,7 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
         if case.get("must_cite"):
             assert result.get("citations") or "[S" in answer
     else:
+        assert after_history == before_history
         assert result.get("citations") == []
 
     if case.get("must_not_call_llm"):
