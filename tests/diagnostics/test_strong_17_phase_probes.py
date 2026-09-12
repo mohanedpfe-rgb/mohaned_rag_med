@@ -25,10 +25,7 @@ def test_strong_phase_wiring_is_authoritative() -> None:
         16: "strict_phase16_production_ingestion_benchmark",
         17: "phase17_strict_completion",
     }
-    expected_modules = {
-        16: "rag_project.testing.strict_phase16_production",
-        17: "rag_project.testing.strict_phase17_final",
-    }
+    expected_modules = {16: "rag_project.testing.strict_phase16_production", 17: "rag_project.testing.strict_phase17_final"}
     for phase, qualname in expected.items():
         assert rows[phase]["actual_qualname"] == qualname
         assert rows[phase]["status"] == "PASS"
@@ -108,8 +105,8 @@ def test_phase15_authoritative_resource_contract_is_trend_aware() -> None:
 
 
 def test_phase16_benchmark_integrity_negative_controls() -> None:
-    corpus = [{"doc_id": "a", "text": "text"}] * 8
-    gold = [{"id": "case", "question": "question", "expected_doc_ids": ["missing"], "expected_evidence_terms": ["term"]}] * 8
+    corpus = [{"doc_id": chr(97 + index), "text": "text"} for index in range(8)]
+    gold = [{"id": f"case-{index}", "question": "question", "expected_doc_ids": ["missing"], "expected_evidence_terms": ["term"]} for index in range(8)]
     try:
         validate_phase16_benchmark_data(corpus, gold)
     except RuntimeError as exc:
