@@ -34,7 +34,7 @@ def test_abstention__unsupported_question_does_not_invent_claims_or_evidence(cle
 
 
 @pytest.mark.high_level
-def test_recovery__primary_bad_synthesis_falls_to_exact_verified_extractive_path(clean_system, fake_ollama_fast):
+def test_abstention__blocked_llm_synthesis_is_exactly_withheld_after_constrained_generation(clean_system, fake_ollama_fast):
     fake_ollama_fast.response = (
         "Diabetes mellitus is caused by a fictional X-factor and is always cured by one specific drug. [S1]"
     )
@@ -44,18 +44,19 @@ def test_recovery__primary_bad_synthesis_falls_to_exact_verified_extractive_path
         "Explain the mechanism and management implications of diabetes mellitus using the indexed evidence."
     )
 
-    assert_exact_status(result, "SUCCESS")
-    assert_exact_path(result, "PATH_A_VERIFIED_FALLBACK")
+    assert_exact_status(result, "GENERATION_ABSTAIN")
+    assert_exact_path(result, "PATH_C_CONSTRAINED_LLM")
     assert fake_ollama_fast.calls
+    assert_abstained(result)
+    verification = result.get("verification") or {}
+    assert int(verification.get("blocked_claims", 0)) > 0
     answer = str(result.get("answer") or "").casefold()
     assert "fictional x-factor" not in answer
     assert "always cured by one specific drug" not in answer
-    assert_citations_valid(result)
-    assert_grounded(result)
 
 
 @pytest.mark.high_level
-def test_recovery__supported_simple_answer_remains_exact_extractive_success(clean_system):
+def test_recovery__verified_generation_fallback_is_reserved_for_infrastructure_failure(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
 
     assert_exact_status(result, "SUCCESS")
