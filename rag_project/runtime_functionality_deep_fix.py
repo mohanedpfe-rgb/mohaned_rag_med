@@ -157,11 +157,46 @@ def _wrap_route(original):
     return wrapped
 
 
+def _wrap_contradiction_detection(original):
+    """Avoid false contradictions caused by unrelated negation with only a trivial shared token."""
+    def wrapped(claim: Any, evidence_blocks: Any):
+        if isinstance(evidence_blocks, str):
+            blocks = [evidence_blocks]
+        else:
+            blocks = list(evidence_blocks or ())
+        try:
+            from rag_project.intelligence import evidence_guard
+            meaningful = evidence_guard.meaningful_tokens if hasattr(evidence_guard, "meaningful_tokens") else None
+        except Exception:
+            meaningful = None
+        result = bool(original(claim, blocks))
+        if not result:
+            return False
+        claim_text = str(claim or "").casefold()
+        claim_tokens = set(re.findall(r"[\w-]{3,}", claim_text, flags=re.UNICODE))
+        for block in blocks:
+            text = str(block or "").casefold()
+            shared = claim_tokens & set(re.findall(r"[\w-]{3,}", text, flags=re.UNICODE))
+            explicit = bool(
+                (re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", claim_text) and re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", text))
+                or (re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", claim_text) and re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", text))
+            )
+            if explicit or len(shared) >= 2:
+                return True
+        return False
+    wrapped._functionality_contradiction_guard = True
+    return wrapped
+
+
 def install() -> None:
     global _INSTALLED
     with _LOCK:
         if _INSTALLED: return
         from rag_project.intelligence import med_evidence_pro
+        try:
+            from rag_project.intelligence import evidence_guard
+        except Exception:
+            evidence_guard = None
         original_retrieve=med_evidence_pro.MultiTierRetriever.retrieve
         if not getattr(original_retrieve,"_functionality_probe_guard",False):
             med_evidence_pro.MultiTierRetriever.retrieve=_wrap_retrieval_skip_health_probe(original_retrieve)
@@ -186,6 +221,10 @@ def install() -> None:
         original_contradiction=med_evidence_pro.EvidenceCompiler._detect_contradiction
         if not getattr(original_contradiction,"_functionality_unit_contradiction_guard",False):
             med_evidence_pro.EvidenceCompiler._detect_contradiction=staticmethod(_filter_false_numeric_contradictions(original_contradiction))
+        if evidence_guard is not None:
+            original_guard_contradiction = evidence_guard.detect_contradiction
+            if not getattr(original_guard_contradiction,"_functionality_contradiction_guard",False):
+                evidence_guard.detect_contradiction = _wrap_contradiction_detection(original_guard_contradiction)
         _INSTALLED=True
 
-__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_functionality_sentences","_filter_false_numeric_contradictions","_wrap_numeric_verifier"]
+__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_filter_false_numeric_contradictions","_wrap_numeric_verifier","_wrap_contradiction_detection"]
