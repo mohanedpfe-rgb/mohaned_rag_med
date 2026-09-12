@@ -81,12 +81,25 @@ jobs:
         run: python -m compileall -q rag_project app.py run_dev.py scripts
       - name: Validate two-plan test inventory
         run: python scripts/validate_test_inventory.py
-      - name: Run high-level behavior suite (primary gate)
+      - name: Run exact 13-phase high-level plan
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "true"
+          EMBEDDING_TEST_MODE: "true"
+        run: python scripts/run_high_level_plan.py --json artifacts/high-level-13-phase.json
+      - name: Run high-level behavior suite as a collection gate
         env:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
         run: python -m pytest -q tests/high_level -m high_level
+      - name: Publish 13-phase and pytest artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: high-level-13-phase-python-${{ matrix.python-version }}
+          path: artifacts/high-level-13-phase.json
+          if-no-files-found: ignore
 
   regression-suite:
     runs-on: ubuntu-latest
