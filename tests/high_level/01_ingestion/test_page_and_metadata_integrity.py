@@ -5,7 +5,7 @@ import re
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_citations_valid, assert_status
+from tests.high_level.helpers import assert_citations_valid, assert_exact_path, assert_exact_status, assert_grounded
 
 
 @pytest.mark.high_level
@@ -16,7 +16,7 @@ def test_ingestion__persists_page_count_and_per_page_checkpoints(clean_system, t
         "Page three clinical evidence marker.",
     ])
     result = clean_system.ingest_file(pdf)
-    assert_status(result, {"READY"})
+    assert_exact_status(result, "READY")
 
     document_id = str(result.get("document_id") or result.get("id") or "")
     record = clean_system.state_store.get_document(document_id)
@@ -35,10 +35,12 @@ def test_ingestion__persists_page_count_and_per_page_checkpoints(clean_system, t
 
 
 @pytest.mark.high_level
-def test_answer_citations__retain_source_identity_for_ready_document(clean_system):
+def test_answer_citations__retain_source_identity_for_ready_document_on_exact_extractive_path(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
-    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     assert_citations_valid(result)
+    assert_grounded(result)
     hits = result.get("hits") or []
     assert hits
     assert all(getattr(hit, "metadata", {}) for hit in hits)
