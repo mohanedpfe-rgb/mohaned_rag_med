@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.high_level.conftest import write_minimal_pdf
 from tests.high_level.helpers import assert_citations_valid, assert_grounded, assert_llm_called_with_small_context, assert_status
 
 
@@ -46,8 +47,15 @@ def test_hard_question__passes_zero_temperature_to_llm(clean_system, fake_ollama
 
 
 @pytest.mark.high_level
-def test_hard_question__llm_prompt_contains_only_retrieved_evidence_and_not_unretrieved_fixture_text(clean_system, fake_ollama_fast):
-    """The synthesis model must receive a bounded evidence context, not the whole indexed corpus."""
+def test_hard_question__llm_prompt_contains_only_retrieved_evidence_not_unrelated_indexed_document(clean_system, fake_ollama_fast, tmp_path):
+    """The synthesis model must receive bounded retrieved evidence, not unrelated indexed content."""
+    unrelated = write_minimal_pdf(
+        tmp_path / "unrelated_indexed_note.pdf",
+        ["UNRELATED_PRIVATE_FIXTURE_MARKER 8f42a19 veterinary dermatology note."],
+    )
+    ingestion = clean_system.ingest_file(unrelated)
+    assert str(ingestion.get("status") or "").upper() == "READY"
+
     fake_ollama_fast.response = "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. [S1]"
     clean_system.llm = fake_ollama_fast
 
@@ -60,7 +68,7 @@ def test_hard_question__llm_prompt_contains_only_retrieved_evidence_and_not_unre
     prompt = "\n".join(str(call.get("prompt") or "") for call in fake_ollama_fast.calls)
     assert "Evidence" in prompt or "evidence" in prompt
     assert "Diabetes mellitus is a chronic metabolic disorder" in prompt
-    assert "500 mg twice daily" not in prompt, "LLM prompt leaked unrelated corpus evidence"
+    assert "UNRELATED_PRIVATE_FIXTURE_MARKER" not in prompt
     assert_grounded(result)
     assert_citations_valid(result)
 
