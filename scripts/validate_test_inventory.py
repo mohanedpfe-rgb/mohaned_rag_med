@@ -20,6 +20,11 @@ EXPECTED_HIGH_LEVEL_PHASES = (
     "05_grounding_safety", "06_latency_performance", "07_multilingual", "08_storage_index",
     "09_conversation", "10_security_privacy", "11_resilience", "12_production_contracts", "13_end_to_end",
 )
+STATUS_LITERALS = {
+    "SUCCESS", "SUCCESS_WITH_WARNINGS", "READY", "COMPLETED", "FAILED", "FAILED_INDEXING",
+    "NOT_SUPPORTED", "GENERATION_ABSTAIN", "ANSWER_UNAVAILABLE", "BLOCK", "ABSTAIN", "SYSTEM_NOT_READY",
+}
+SUCCESS_LITERALS = {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
 def _decorator_name(node: ast.AST) -> str:
@@ -31,29 +36,94 @@ def _decorator_name(node: ast.AST) -> str:
     return ""
 
 
+def _call_name(node: ast.Call) -> str:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return _decorator_name(node.func)
+
+
 def _uses_assert_one_of_statuses(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Call) and _call_name(child) == "assert_one_of_statuses"
+        for child in ast.walk(node)
+    )
+
+
+def _has_call(node: ast.AST, names: set[str]) -> bool:
+    return any(
+        isinstance(child, ast.Call) and _call_name(child) in names
+        for child in ast.walk(node)
+    )
+
+
+def _calls_answer(node: ast.AST) -> bool:
     for child in ast.walk(node):
         if not isinstance(child, ast.Call):
             continue
-        if _decorator_name(child.func) == "assert_one_of_statuses":
+        if isinstance(child.func, ast.Attribute) and child.func.attr == "answer":
             return True
-        if isinstance(child.func, ast.Name) and child.func.id == "assert_one_of_statuses":
+        if isinstance(child.func, ast.Name) and child.func.id == "answer":
             return True
     return False
 
 
-def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[str]]:
+def _literal_status(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        value = node.value.upper()
+        return value if value in STATUS_LITERALS else None
+    return None
+
+
+def _success_status_expected(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        name = _call_name(child)
+        if name not in {"assert_exact_status", "assert_status"} or len(child.args) < 2:
+            continue
+        status = _literal_status(child.args[1])
+        if status in SUCCESS_LITERALS:
+            return True
+    return False
+
+
+def _multi_status_compare(node: ast.AST) -> list[str]:
+    violations: list[str] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Compare) or not child.comparators:
+            continue
+        if not any(isinstance(op, ast.In) for op in child.ops):
+            continue
+        comparator = child.comparators[0]
+        if not isinstance(comparator, (ast.Set, ast.List, ast.Tuple)):
+            continue
+        values = [
+            str(item.value).upper()
+            for item in comparator.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+        status_values = [value for value in values if value in STATUS_LITERALS]
+        if len(status_values) >= 2:
+            violations.append(f"multi-status comparison accepts {sorted(set(status_values))}")
+    return violations
+
+
+def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[str], list[str]]:
     try:
         source_text = path.read_text(encoding="utf-8")
         tree = ast.parse(source_text, filename=str(path))
     except (OSError, SyntaxError):
-        return 0, 0, 0, [], [], []
+        return 0, 0, 0, [], [], [], []
+
     total = high_level = integration = 0
     invalid_names: list[str] = []
     missing_marks: list[str] = []
     soft_status_assertions: list[str] = []
+    success_contract_violations: list[str] = []
     is_high_level_file = "high_level" in {p.lower() for p in path.parts}
+    is_gold_runner = path.name == "test_gold_regression.py"
     is_integration_path = "/integration/" in str(path).replace("\\", "/")
+
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not node.name.startswith("test"):
             continue
@@ -61,29 +131,61 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
         decorators = {_decorator_name(item) for item in node.decorator_list}
         marked_high_level = "pytest.mark.high_level" in decorators or "high_level" in decorators
         marked_integration = "pytest.mark.integration" in decorators or "integration" in decorators
+
         if is_high_level_file:
             high_level += 1
             if not marked_high_level:
                 missing_marks.append(f"{path}:{node.name}")
+
             for child in ast.walk(node):
                 if not isinstance(child, ast.Call):
                     continue
-                is_assert_status = _decorator_name(child.func) == "assert_status" or (
-                    isinstance(child.func, ast.Name) and child.func.id == "assert_status"
-                )
-                if is_assert_status and len(child.args) > 1:
-                    expected = child.args[1]
-                    if isinstance(expected, (ast.Set, ast.List, ast.Tuple)):
+                if _call_name(child) != "assert_status" or len(child.args) < 2:
+                    continue
+                expected = child.args[1]
+                if not isinstance(expected, ast.Constant) or not isinstance(expected.value, str):
+                    if not is_gold_runner:
                         soft_status_assertions.append(
-                            f"{path}:{node.name}: assert_status requires one literal status string, not {type(expected).__name__}"
+                            f"{path}:{node.name}: assert_status expected value must be one literal status string"
                         )
-            if _uses_assert_one_of_statuses(node) and not ("pytest.mark.multi_outcome" in decorators or "multi_outcome" in decorators):
-                soft_status_assertions.append(f"{path}:{node.name}: assert_one_of_statuses requires @pytest.mark.multi_outcome")
+
+            if _uses_assert_one_of_statuses(node) and not (
+                "pytest.mark.multi_outcome" in decorators or "multi_outcome" in decorators
+            ):
+                soft_status_assertions.append(
+                    f"{path}:{node.name}: assert_one_of_statuses requires @pytest.mark.multi_outcome"
+                )
+
+            comparisons = _multi_status_compare(node)
+            if comparisons and "pytest.mark.multi_outcome" not in decorators and "multi_outcome" not in decorators:
+                for detail in comparisons:
+                    soft_status_assertions.append(f"{path}:{node.name}: {detail}")
+
+            if (
+                not is_gold_runner
+                and "pytest.mark.multi_outcome" not in decorators
+                and _calls_answer(node)
+                and _success_status_expected(node)
+            ):
+                required = {
+                    "assert_exact_status": "exact success status assertion",
+                    "assert_exact_path": "exact generation path assertion",
+                    "assert_citations_valid": "citation validation",
+                    "assert_grounded": "grounding verification",
+                    "assert_pipeline_authority": "pipeline authority verification",
+                }
+                for helper, description in required.items():
+                    if not _has_call(node, {helper}):
+                        success_contract_violations.append(
+                            f"{path}:{node.name}: missing {helper} ({description})"
+                        )
+
         if marked_integration or is_integration_path:
             integration += 1
         if not TEST_NAME_PATTERN.match(node.name):
             invalid_names.append(f"{path}:{node.name}")
-    return total, high_level, integration, invalid_names, missing_marks, soft_status_assertions
+
+    return total, high_level, integration, invalid_names, missing_marks, soft_status_assertions, success_contract_violations
 
 
 def _gold_contract(root: Path) -> dict[str, object]:
@@ -129,15 +231,21 @@ def inspect(root: Path) -> dict[str, object]:
     invalid_names: list[str] = []
     missing_marks: list[str] = []
     soft_status_assertions: list[str] = []
+    success_contract_violations: list[str] = []
     phase_function_counts = {phase: 0 for phase in EXPECTED_HIGH_LEVEL_PHASES}
     missing_phases: list[str] = []
     unexpected_phase_dirs: list[str] = []
 
     for path in tests.rglob("test_*.py"):
         files += 1
-        a, b, c, bad_names, bad_marks, soft_status = _functions(path)
-        total += a; high_level += b; integration += c
-        invalid_names.extend(bad_names); missing_marks.extend(bad_marks); soft_status_assertions.extend(soft_status)
+        a, b, c, bad_names, bad_marks, soft_status, success_contract = _functions(path)
+        total += a
+        high_level += b
+        integration += c
+        invalid_names.extend(bad_names)
+        missing_marks.extend(bad_marks)
+        soft_status_assertions.extend(soft_status)
+        success_contract_violations.extend(success_contract)
         try:
             relative = path.relative_to(high_level_root)
         except ValueError:
@@ -171,6 +279,7 @@ def inspect(root: Path) -> dict[str, object]:
         "invalid_test_names": sorted(invalid_names),
         "missing_high_level_marks": sorted(missing_marks),
         "soft_status_assertions": sorted(soft_status_assertions),
+        "success_contract_violations": sorted(success_contract_violations),
         "meets_total_500": total >= MIN_TOTAL_TEST_FUNCTIONS,
         "meets_integration_150": effective_integration >= MIN_INTEGRATION_TEST_FUNCTIONS,
         "meets_high_level_floor": high_level >= MIN_HIGH_LEVEL_TEST_FUNCTIONS,
@@ -178,13 +287,19 @@ def inspect(root: Path) -> dict[str, object]:
         "meets_test_naming_contract": not invalid_names,
         "meets_high_level_marker_contract": not missing_marks,
         "meets_exact_status_contract": not soft_status_assertions,
+        "meets_success_answer_contract": not success_contract_violations,
         "gold_set": gold,
         "meets_gold_contract": bool(gold["ready"]),
     }
     result["ready"] = bool(
-        result["meets_total_500"] and result["meets_integration_150"] and result["meets_high_level_floor"]
-        and result["meets_13_phase_plan"] and result["meets_test_naming_contract"]
-        and result["meets_high_level_marker_contract"] and result["meets_exact_status_contract"]
+        result["meets_total_500"]
+        and result["meets_integration_150"]
+        and result["meets_high_level_floor"]
+        and result["meets_13_phase_plan"]
+        and result["meets_test_naming_contract"]
+        and result["meets_high_level_marker_contract"]
+        and result["meets_exact_status_contract"]
+        and result["meets_success_answer_contract"]
         and result["meets_gold_contract"]
     )
     return result
