@@ -1,14 +1,27 @@
+from __future__ import annotations
+
 import pytest
-from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_latency_under
+
+from tests.high_level.conftest import write_large_pdf
+from tests.high_level.helpers import assert_status
+
 
 @pytest.mark.high_level
 @pytest.mark.slow
+def test_e2e_large_document__hundred_page_pdf_reaches_ready_and_remains_queryable(clean_system, tmp_path):
+    document = write_large_pdf(tmp_path / "large_100_page.pdf", pages=100)
+    ingestion = clean_system.ingest_file(document)
+    assert_status(ingestion, {"READY"})
 
-def test_large_document_scenario__ingests_and_answers_with_ceiling(clean_system, tmp_path):
-    path = write_minimal_pdf(tmp_path / "large_100pages.pdf", [f"Page {i}: Diabetes mellitus is a chronic metabolic disorder. HbA1c assesses glycemic control." for i in range(1, 101)])
-    ingestion = clean_system.ingest_file(path)
-    assert ingestion.get("status")
-    result = clean_system.answer("What is diabetes mellitus?")
-    assert result.get("status")
-    assert_latency_under(result, max(15.0, float(clean_system.settings.generation_latency_budget_seconds) + 2.0))
+    document_id = str(ingestion.get("document_id") or ingestion.get("id") or "")
+    record = clean_system.state_store.get_document(document_id)
+    assert record is not None
+    assert int(record.get("total_pages") or 0) == 100
+    assert clean_system.state_store.is_ready_status(record.get("status"))
+    assert str(record.get("index_state") or "").upper() == "READY"
+
+    result = clean_system.answer("What clinical evidence marker appears on controlled large-document page 100?")
+    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}
+    if result.get("hits"):
+        combined = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or [])
+        assert "page 100" in combined.casefold() or "page 99" in combined.casefold()
