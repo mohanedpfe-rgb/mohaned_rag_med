@@ -236,7 +236,37 @@ def install() -> None:
     original_phase17 = globals_map.get("phase17_strict_completion")
     if original_phase17 is not None and not getattr(original_phase17, "_provenance_wrapped", False):
         def wrapped_phase17(phase, results):
-            return _with_provenance(original_phase17, phase, results)
+            from rag_project.testing import full_metamorphic_probes, full_mutation_probes
+            canonical_phase8 = runner.PHASES[7]
+            canonical_phase11 = runner.PHASES[10]
+            original_metamorphic = full_metamorphic_probes.run_full_metamorphic_suite
+            original_mutation = full_mutation_probes.run_full_mutation_suite
+
+            def recheck_metamorphic(_phase):
+                return original_metamorphic(canonical_phase8)
+
+            def recheck_mutation(_phase):
+                return original_mutation(canonical_phase11)
+
+            full_metamorphic_probes.run_full_metamorphic_suite = recheck_metamorphic
+            full_mutation_probes.run_full_mutation_probes = original_mutation if not hasattr(full_mutation_probes, "run_full_mutation_probes") else full_mutation_probes.run_full_mutation_probes
+            full_mutation_probes.run_full_mutation_suite = recheck_mutation
+            try:
+                result = _with_provenance(original_phase17, phase, results)
+                identity_failures = []
+                for expected_number in (8, 11):
+                    checked = results.get(expected_number)
+                    if checked is None or checked.number != expected_number:
+                        identity_failures.append({"phase": expected_number, "reason": "Phase 17 authoritative recheck produced mismatched phase identity", "observed_number": getattr(checked, "number", None)})
+                if identity_failures:
+                    result.status = "FAIL"
+                    result.score = 0.0
+                    result.failures.extend({"location": "phase 17 recheck identity contract", "exception": "PhaseIdentityIntegrityFailure", "message": str(item)} for item in identity_failures)
+                result.details["authoritative_recheck_phase_identity"] = {"phase_8_number": getattr(results.get(8), "number", None), "phase_11_number": getattr(results.get(11), "number", None), "verified": not identity_failures}
+                return result
+            finally:
+                full_metamorphic_probes.run_full_metamorphic_suite = original_metamorphic
+                full_mutation_probes.run_full_mutation_suite = original_mutation
         wrapped_phase17._provenance_wrapped = True
         globals_map["phase17_strict_completion"] = wrapped_phase17
 
