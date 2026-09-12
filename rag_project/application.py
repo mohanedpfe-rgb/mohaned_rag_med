@@ -15,6 +15,7 @@ from rag_project.intelligence.production_contract_v2 import install as install_p
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract, INGESTION_CONTRACT_VERSION
 from rag_project.canonical_runtime import ANSWER_AUTHORITY, install as install_canonical_runtime
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
+from rag_project.intelligence.entity_coverage import score_entity_coverage
 from rag_project.intelligence.production_ops_strict import OperationsStore
 from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
 from rag_project.intelligence.semantic_cache import install as install_semantic_cache
@@ -68,9 +69,16 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     result.setdefault("retrieval_quality", {"tier": retrieval.get("tier"), "candidate_count": retrieval.get("candidate_count", len(result.get("hits") or [])), "final_hits": len(result.get("hits") or []), "early_exit": retrieval.get("early_exit", False), "cache_hit": retrieval.get("cache_hit", False), "evidence_coverage": verification.get("supported_ratio", 0.0), "self_corrections": 0})
     result.setdefault("grounding", verification.get("grounding", {})); result.setdefault("final_verification", verification.get("final_answer", {}))
     result.setdefault("claims", result.get("provenance", {}).get("claims", [])); result.setdefault("contradiction_report", contradiction)
-    result.setdefault("entity_coverage", {"coverage": 1.0, "query_entities": route.get("entities", [])})
-    result.setdefault("confidence_calibration", result.get("confidence", {})); result.setdefault("adaptive_retrieval_budget", {"tier": retrieval.get("tier"), "cache_hit": retrieval.get("cache_hit", False)})
-    result.setdefault("canonical_pipeline_executed", True); result.setdefault("evidence_first", True); result.setdefault("document_aware", True); result.setdefault("god_mode_100", True)
+    if "entity_coverage" not in result:
+        result["entity_coverage"] = score_entity_coverage(str(question or ""), list(result.get("hits") or []), route.get("entities", []) or [])
+    result.setdefault("confidence_calibration", {})
+    result.setdefault("adaptive_retrieval_budget", {"tier": retrieval.get("tier"), "cache_hit": retrieval.get("cache_hit", False)})
+    recovery = result.get("recovery") if isinstance(result.get("recovery"), dict) else {}
+    canonical_executed = not bool(recovery.get("attempted"))
+    result["canonical_pipeline_executed"] = bool(result.get("canonical_pipeline_executed", canonical_executed))
+    result["evidence_first"] = bool(result.get("evidence_first", bool(result.get("hits"))))
+    result["document_aware"] = bool(result.get("document_aware", bool(metadata_filter) or bool((result.get("retrieval") or {}).get("document_aware"))))
+    result["god_mode_100"] = bool(result.get("god_mode_100", False))
     result["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY; result["implementation_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
     phases = result.get("phases") if isinstance(result.get("phases"), dict) else {}
     result["phase_implementation"] = {
@@ -78,9 +86,9 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
         "phase_1_query_understanding": {"status": phases.get("phase_1_query_router", "complete"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_2_retrieval_precision": {"status": phases.get("phase_2a_multi_tier_retrieval", retrieval.get("tier", "complete")), "hits": len(result.get("hits") or []), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_3_two_stage_generation": {"status": phases.get("phase_4_answer_cascade", result.get("generation_path", "complete")), "generation_path": result.get("generation_path"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", True), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", True))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "signals_present": True, "canonical_executed": True},
-        "degraded_to_recovery": bool((result.get("recovery") or {}).get("grounded_extractive_fallback")),
+        "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", False), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", False))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
+        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
+        "degraded_to_recovery": bool(recovery.get("grounded_extractive_fallback")),
     }
     trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
     trace["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY; trace["language"] = detected_language; trace["language_confidence"] = language_confidence
