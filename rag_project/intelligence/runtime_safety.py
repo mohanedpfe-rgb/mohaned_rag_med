@@ -55,6 +55,22 @@ def invalidate_stale_cache(system: Any, question: str) -> bool:
     return True
 
 
+def _normalize_verified_recovery_envelope(result: dict[str, Any]) -> dict[str, Any]:
+    if str(result.get("status") or "").upper() != "SUCCESS_WITH_WARNINGS":
+        return result
+    recovery = result.get("recovery") if isinstance(result.get("recovery"), dict) else {}
+    if not recovery.get("grounded_extractive_fallback"):
+        return result
+    out = dict(result)
+    out.setdefault("generation_path", "PATH_A_VERIFIED_FALLBACK")
+    meta = dict(out.get("generation_meta") or {})
+    meta.setdefault("attempted", True)
+    meta.setdefault("fallback", True)
+    meta.setdefault("recovered", True)
+    out["generation_meta"] = meta
+    return out
+
+
 def _valid_source_markers(answer: str, hits: Sequence[Any]) -> bool:
     markers = re.findall(r"\[S(\d+)\]", str(answer or ""), flags=re.I)
     if not markers:
@@ -185,11 +201,11 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
 
 def execute_with_runtime_safety(system: Any, question: str, answer_fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
     invalidated = invalidate_stale_cache(system, question)
-    result = dict(answer_fn() or {})
+    result = _normalize_verified_recovery_envelope(dict(answer_fn() or {}))
     hits = list(result.get("hits") or [])
     if hits and not cached_result_is_fresh(system, hits):
         invalidate_stale_cache(system, question)
-        result = dict(answer_fn() or {})
+        result = _normalize_verified_recovery_envelope(dict(answer_fn() or {}))
         hits = list(result.get("hits") or [])
     if not cached_result_is_fresh(system, hits):
         result["hits"] = ready_hits(system, hits)
