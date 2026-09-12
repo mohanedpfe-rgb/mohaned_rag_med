@@ -27,7 +27,9 @@ def test_production_contracts__runtime_contract_has_one_composition_root_and_one
 
     contract = runtime_contract()
     assert contract["composition_root"] == "rag_project.application.create_rag_system"
-    assert contract["canonical_service"] == "rag_project.app.production_rag.ProductionRAGSystem"
+    assert contract["canonical_service"] == "rag_project.application.MedEvidenceProductionRAGSystem"
+    assert contract["service"] == "MedEvidenceProductionRAGSystem"
+    assert contract["legacy_service"] == "rag_project.app.production_rag.ProductionRAGSystem"
     assert contract["answer_pipeline"] == "med_evidence_pro"
     assert contract["answer_pipeline_authority"] == ACTIVE_ANSWER_PIPELINE_AUTHORITY
     assert contract["answer_pipeline_execution"] == ACTIVE_ANSWER_PIPELINE_AUTHORITY
