@@ -11,11 +11,8 @@ _install_architecture_contract()
 from . import strict_runtime_contracts as _strict_runtime_contracts
 _strict_runtime_contracts.install()
 
-# Final certification is deliberately a pure boundary: it validates the
-# already-executed 1..16 results and never re-runs phases inside Phase 17.
-from .strict_phase17_final import phase17_strict_completion as _strict_phase17_final
-from .runner import UnifiedDiagnosticEngine as _UnifiedDiagnosticEngine
-_UnifiedDiagnosticEngine._execute.__globals__["phase17_strict_completion"] = _strict_phase17_final
+# Phase 17 is imported directly by runner.py as the sole certification authority.
+# No package-level rebinding or legacy wrapper is permitted here.
 
 __all__ = [
     "PHASES",
