@@ -43,6 +43,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_final_contracts_v9 import install as runtime_final_contracts_v9
     from rag_project.runtime_chroma_metadata_fix import install as chroma_metadata_fix
     from rag_project.runtime_answer_recovery_contract import install as answer_recovery_contract
+    from rag_project.runtime_deep_contract_fix import install as deep_contract_fix
 
     return (
         vector_store,
@@ -78,6 +79,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         runtime_final_contracts_v9,
         chroma_metadata_fix,
         answer_recovery_contract,
+        deep_contract_fix,
     )
 
 
