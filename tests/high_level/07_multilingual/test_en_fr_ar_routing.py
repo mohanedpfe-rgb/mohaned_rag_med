@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_citations_valid, assert_exact_path, assert_exact_status, assert_grounded
+from tests.high_level.helpers import assert_citations_valid, assert_entities_present, assert_exact_path, assert_exact_status, assert_grounded
 
 
 @pytest.mark.high_level
@@ -61,7 +61,24 @@ def test_multilingual__follow_up_preserves_entity_within_french_session(clean_sy
     route = follow_up.get("route") or {}
     assert route.get("language") == "fr"
     assert route.get("is_follow_up") is True
-    rewritten = str((follow_up.get("query_trace") or {}).get("routing", {}).get("query_variants", [""])[0])
-    assert "diab" in rewritten.casefold()
+    rewritten = str(follow_up.get("rewritten_question") or "").casefold()
+    assert "diab" in rewritten
     assert len(getattr(clean_system.conversation_memory, "history", []) or []) == len(history_before) + 1
     assert_grounded(follow_up)
+
+
+@pytest.mark.high_level
+def test_multilingual__arabic_morphology_preserves_diabetes_entity_and_numeric_intent(clean_system):
+    result = clean_system.answer("ما هي جرعة الميتفورمين لمرضى السكري من النوع الثاني؟")
+
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_B_TEMPLATE")
+    route = result.get("route") or {}
+    assert route.get("language") == "ar"
+    assert route.get("numeric_sensitivity") is True
+    assert_entities_present(result, {"metformin"})
+    entities = " ".join(str(item).casefold() for item in route.get("entities", []))
+    assert "سكري" in entities or "diabetes" in entities
+    assert "500 mg" in str(result.get("answer") or "")
+    assert_grounded(result)
+    assert_citations_valid(result)
