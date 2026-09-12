@@ -30,7 +30,7 @@ def _environment() -> dict[str, str]:
     return env
 
 
-def collect_test_files(marker: str) -> tuple[list[str], int]:
+def collect_test_files(marker: str) -> tuple[list[tuple[str, int]], int]:
     command = [sys.executable, "-m", "pytest", "--collect-only", "-q", "--disable-warnings", "-m", marker]
     proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, env=_environment(), timeout=30)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -39,18 +39,20 @@ def collect_test_files(marker: str) -> tuple[list[str], int]:
 
     match = re.search(r"(\d+) tests? collected", output)
     total_tests = int(match.group(1)) if match else 0
-    files: list[str] = []
-    seen: set[str] = set()
+    counts: dict[str, int] = {}
     for raw in output.splitlines():
         line = raw.strip()
         if not line or "::" not in line or line.startswith("="):
             continue
         path = line.split("::", 1)[0].strip()
-        if path and path.endswith(".py") and path not in seen:
-            seen.add(path)
-            files.append(path)
-    if not files:
+        if path and path.endswith(".py"):
+            counts[path] = counts.get(path, 0) + 1
+    if not counts:
         raise RuntimeError("pytest collection produced no selected test files")
+    # Largest files first makes greedy bin-packing substantially more balanced
+    # than round-robin file assignment when a few integration-heavy files are
+    # much slower than the median test file.
+    files = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return files, total_tests
 
 
@@ -128,8 +130,11 @@ def main() -> int:
         return 2
 
     buckets: list[list[str]] = [[] for _ in range(workers)]
-    for index, test_file in enumerate(test_files):
-        buckets[index % workers].append(test_file)
+    bucket_loads = [0] * workers
+    for test_file, test_count in test_files:
+        target = min(range(workers), key=bucket_loads.__getitem__)
+        buckets[target].append(test_file)
+        bucket_loads[target] += test_count
 
     temp_dir = Path(tempfile.mkdtemp(prefix="rag_fast_gate_"))
     processes: dict[int, subprocess.Popen[str]] = {}
@@ -163,7 +168,7 @@ def main() -> int:
                 status = "PASS" if return_code == 0 else "TEST_FAILURE"
                 results[index] = (status, int(return_code), now - started)
                 processes.pop(index, None)
-                print(f"worker {index}: {status}, {len(buckets[index])} files, {now - started:.1f}s")
+                print(f"worker {index}: {status}, {len(buckets[index])} files, ~{bucket_loads[index]} tests, {now - started:.1f}s")
                 if return_code != 0:
                     print(output[-8000:])
                 continue
@@ -172,7 +177,7 @@ def main() -> int:
                 _terminate_process_tree(proc)
                 results[index] = ("TIMEOUT", 124, time.perf_counter() - started)
                 processes.pop(index, None)
-                print(f"worker {index}: TIMEOUT, {len(buckets[index])} files, {time.perf_counter() - started:.1f}s")
+                print(f"worker {index}: TIMEOUT, {len(buckets[index])} files, ~{bucket_loads[index]} tests, {time.perf_counter() - started:.1f}s")
 
         if processes:
             remaining = deadline - time.perf_counter()
