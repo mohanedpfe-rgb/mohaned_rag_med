@@ -2,8 +2,8 @@
 
 This module contains narrow, idempotent compatibility patches for three defects:
 1. nested runtime-safety boundaries hiding the original infrastructure exception;
-2. retrieval cache short-circuiting live outage detection;
-3. contradiction detection treating different measurement dimensions as conflicts.
+2. retrieval cache short-circuiting live outage detection or storing metadata-filtered hits globally;
+3. contradiction detection treating different measurement dimensions as conflicts and numeric verification rejecting unit-equivalent values.
 
 The patches preserve the single production answer authority and fail closed.
 """
@@ -115,7 +115,12 @@ def _guarded_runtime_safety(original):
 
 
 def _cache_observability_wrapper(original):
-    """Keep cache benefits while proving live retriever health before answer authority."""
+    """Keep cache benefits while proving live retriever health before answer authority.
+
+    A metadata-filtered retrieval is never allowed to leave its filtered hits under the
+    unfiltered query key. The original implementation writes to a global question-only
+    cache, so the wrapper removes that write after every filtered call.
+    """
     def wrapped(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
         cache = getattr(self, "cache", None)
         retriever = getattr(self.system, "retriever", None)
@@ -137,8 +142,47 @@ def _cache_observability_wrapper(original):
                     "retrieval_latency_ms": 0.2,
                     "candidate_count": len(restored),
                 }
-        return original(self, question, route, where)
+
+        result = original(self, question, route, where)
+        if where is not None and cache is not None and callable(getattr(cache, "delete", None)):
+            # Never let a filtered result become the answer for a later unfiltered query.
+            cache.delete(question)
+        return result
     wrapped._deep_contract_cache_guard = True
+    wrapped._deep_contract_original = original
+    return wrapped
+
+
+def _unit_aware_numeric_verifier(original):
+    """Undo only false raw-string numeric mismatches when semantic verification agrees.
+
+    ``verify_claims`` already performs dimension-aware unit conversion. The older
+    verifier added a second raw-string membership check, which incorrectly rejected
+    equivalent expressions such as ``1 g`` vs ``1000 mg``.
+    """
+    def wrapped(self: Any, answer: str, hits: Any, route: Any, compiled: dict[str, Any]) -> dict[str, Any]:
+        result = dict(original(self, answer, hits, route, compiled) or {})
+        if not result.get("numeric_mismatch") or not answer or not hits:
+            return result
+
+        blocks = [str(getattr(hit, "text", "") or "") for hit in hits]
+        marker_ids = [f"S{i + 1}" for i in range(len(hits))]
+        checks = list(verify_claims(answer, blocks, marker_ids))
+        semantic_numeric_mismatch = any(
+            getattr(check, "numeric_mismatch", False)
+            or getattr(check, "status", "") == "NUMERIC_MISMATCH"
+            for check in checks
+        )
+        if semantic_numeric_mismatch:
+            return result
+
+        grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else {}
+        final = result.get("final_answer") if isinstance(result.get("final_answer"), dict) else {}
+        result["numeric_mismatch"] = False
+        result["allow"] = bool(grounding.get("allow")) and bool(final.get("allow", True))
+        return result
+
+    wrapped._deep_contract_numeric_guard = True
     wrapped._deep_contract_original = original
     return wrapped
 
@@ -165,8 +209,12 @@ def install() -> None:
         if not getattr(original_retrieve, "_deep_contract_cache_guard", False):
             med_evidence_pro.MultiTierRetriever.retrieve = _cache_observability_wrapper(original_retrieve)
 
+        original_verify = med_evidence_pro.ActiveVerifier.verify
+        if not getattr(original_verify, "_deep_contract_numeric_guard", False):
+            med_evidence_pro.ActiveVerifier.verify = _unit_aware_numeric_verifier(original_verify)
+
         med_evidence_pro.EvidenceCompiler._detect_contradiction = staticmethod(_detect_contradiction)
         _INSTALLED = True
 
 
-__all__ = ["install"]
+__all__ = ["install", "_cache_observability_wrapper", "_unit_aware_numeric_verifier"]
