@@ -12,7 +12,10 @@ def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
     tmp = None
     try:
         from rag_project.chunking.semantic_chunker import SemanticChunker
+        from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
+        from rag_project.testing.production_answer_probes import _DeterministicLLM, _ProbeSystem, _seed_real_retrieval
         from rag_project.utils.text_utils import clean_text, normalize_whitespace, tokenize
+
         chunks = _fixture_chunks()
         store, tmp = _store_fixture(chunks)
         variants = [
@@ -46,28 +49,52 @@ def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
         token_variants = [tokenize(value) for value in variants]
         query_invariant = len(set(normalized_queries)) == 1 and all(tokens == token_variants[0] for tokens in token_variants)
 
+        answer_outputs = []
+        answer_citations = []
+        for query in variants:
+            root = __import__("pathlib").Path(__import__("tempfile").mkdtemp(prefix="rag_phase8_answer_"))
+            try:
+                system = _ProbeSystem(root, llm=_DeterministicLLM())
+                _seed_real_retrieval(system)
+                response = MedEvidenceProEngine(system).answer(query)
+                answer_outputs.append(normalize(str(response.get("answer") or "")))
+                answer_citations.append(tuple(sorted(str(item.get("document_id")) for item in (response.get("citations") or []))))
+            finally:
+                __import__("shutil").rmtree(root, ignore_errors=True)
+        answer_invariant = bool(answer_outputs[0]) and len(set(answer_outputs)) == 1
+        citation_invariant = bool(answer_citations[0]) and len(set(answer_citations)) == 1
+
         checks = {
             "query_normalization_invariant": query_invariant,
             "lexical_semantic_top_documents_stable": retrieval_invariant,
             "canonical_vs_whitespace_chunk_content_stable": content_invariant,
             "production_chunker_executed_for_both_variants": bool(canonical_chunks and whitespace_chunks),
+            "answer_semantics_stable_under_query_formatting": answer_invariant,
+            "citation_identity_stable_under_query_formatting": citation_invariant,
         }
         failures = [name for name, value in checks.items() if not value]
         result.details = {
-            "production_functions": ["VectorStore.search_lexical", "VectorStore.search", "SemanticChunker.chunk_pages", "clean_text", "normalize_whitespace", "tokenize"],
+            "production_functions": [
+                "VectorStore.search_lexical", "VectorStore.search", "SemanticChunker.chunk_pages",
+                "clean_text", "normalize_whitespace", "tokenize", "MedEvidenceProEngine.answer",
+                "CitationManager",
+            ],
             "checks": checks,
             "query_variants": variants,
             "top_retrieval_ids": top_ids,
             "top_retrieved_documents": top_docs,
             "normalized_queries": normalized_queries,
+            "answer_invariance_outputs": answer_outputs,
+            "citation_invariance_identities": [list(value) for value in answer_citations],
             "canonical_chunk_count": len(canonical_chunks),
             "whitespace_chunk_count": len(whitespace_chunks),
-            "mutation_kind": "semantics-preserving whitespace/case transformations",
+            "mutation_kind": "semantics-preserving whitespace/case transformations across retrieval, chunking, answer and citation layers",
+            "end_to_end_answer_path_executed": True,
         }
         result.score = sum(checks.values()) / len(checks)
         result.status = "PASS" if not failures else "FAIL"
         if failures:
-            result.failures.append({"location": "phase 8 full retrieval metamorphic suite", "exception": "MetamorphicInvariantFailure", "message": str(failures)})
+            result.failures.append({"location": "phase 8 full end-to-end metamorphic suite", "exception": "MetamorphicInvariantFailure", "message": str(failures)})
     except Exception as exc:
         result.status = "FAIL"
         result.failures.append({"location": "phase 8 full retrieval metamorphic suite", "exception": type(exc).__name__, "message": str(exc)})
