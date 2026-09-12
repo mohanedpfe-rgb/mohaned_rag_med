@@ -58,7 +58,10 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     if existing and system.state_store.is_ready_status(existing.get("status")) and existing.get("version_id") == current_version_id:
         validation = system.vector_store.validate_document_index(existing["document_id"], content_hash)
         if validation.get("valid") and validation.get("count", 0) > 0:
-            return {"status": "skipped", "file_name": file_path.name, "document_id": existing["document_id"], "reason": "identical content already indexed and validated"}
+            archived_path = _unique_archive_path(system.settings.archive_dir, file_path, "duplicate")
+            if file_path.resolve() != archived_path.resolve():
+                file_path.replace(archived_path)
+            return {"status": "skipped", "file_name": file_path.name, "document_id": existing["document_id"], "reason": "identical content already indexed and validated", "archive_path": str(archived_path.resolve())}
 
     document_id = existing["document_id"] if existing else (previous["document_id"] if previous else content_hash)
     stat = file_path.stat()
@@ -170,33 +173,31 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                     value = structure.get(key)
                     if isinstance(value, (dict, list, tuple)):
                         structure[key] = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
-                structure.update(
-                    {
-                        "document_id": chunk.doc_id,
-                        "chunk_id": chunk_id,
-                        "file_name": chunk.file_name,
-                        "page_numbers": chunk.page_numbers,
-                        "chunk_index": global_index,
-                        "document_type": classification.get("document_type", "unknown"),
-                        "language": document_language,
-                        "evidence_types": chunk.metadata.get("evidence_types", ["text"]),
-                        "index_state": "BUILDING",
-                        "version_id": content_hash,
-                        "structure_version": 2,
-                        "representation_type": chunk.representation_type,
-                        "parent_id": chunk.parent_id,
-                        "section_id": chunk.section_id,
-                        "table_id": chunk.table_id,
-                        "figure_id": chunk.figure_id,
-                        "chapter": chunk.metadata.get("chapter"),
-                        "section": chunk.metadata.get("section"),
-                        "child_index": int(chunk.metadata.get("child_index", chunk.chunk_index)),
-                        "page_type": chunk.metadata.get("page_type", "unknown"),
-                        "quality_score": float(chunk.metadata.get("quality_score", 0.0) or 0.0),
-                        "ocr_status": chunk.metadata.get("ocr_status", "not_required"),
-                        "routing_decision": chunk.metadata.get("routing_decision", "native"),
-                    }
-                )
+                structure.update({
+                    "document_id": chunk.doc_id,
+                    "chunk_id": chunk_id,
+                    "file_name": chunk.file_name,
+                    "page_numbers": chunk.page_numbers,
+                    "chunk_index": global_index,
+                    "document_type": classification.get("document_type", "unknown"),
+                    "language": document_language,
+                    "evidence_types": chunk.metadata.get("evidence_types", ["text"]),
+                    "index_state": "BUILDING",
+                    "version_id": content_hash,
+                    "structure_version": 2,
+                    "representation_type": chunk.representation_type,
+                    "parent_id": chunk.parent_id,
+                    "section_id": chunk.section_id,
+                    "table_id": chunk.table_id,
+                    "figure_id": chunk.figure_id,
+                    "chapter": chunk.metadata.get("chapter"),
+                    "section": chunk.metadata.get("section"),
+                    "child_index": int(chunk.metadata.get("child_index", chunk.chunk_index)),
+                    "page_type": chunk.metadata.get("page_type", "unknown"),
+                    "quality_score": float(chunk.metadata.get("quality_score", 0.0) or 0.0),
+                    "ocr_status": chunk.metadata.get("ocr_status", "not_required"),
+                    "routing_decision": chunk.metadata.get("routing_decision", "native"),
+                })
                 metadatas.append({key: value for key, value in structure.items() if value is not None})
 
             embedding_started = time.perf_counter()
@@ -238,112 +239,44 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 time.sleep(0.25 * attempt)
         if not validation or not validation.get("valid") or validation.get("count") != embedding_count:
             issues = "; ".join(validation.get("issues", [])) if validation else "no validation result"
-            actual_count = validation.get("count") if validation else None
-            raise RuntimeError(f"FAILED_INDEXING: committed index validation failed (expected {embedding_count}, found {actual_count}): {issues}")
+            raise RuntimeError(f"FAILED_INDEX_VALIDATION: {issues}")
 
-        system.state_store.transition_document_state(document_id, "VALIDATING_INDEX", current_page=total_pages, total_pages=total_pages)
-        system.state_store.record_event(document_id, stage="VALIDATING_INDEX", status="RUNNING", event_type="validation", message="Index integrity passed; preparing atomic publication", details={"version_id": content_hash, "chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
-        mark("validation")
-        renew(force=True)
+        system.state_store.transition_document_state(document_id, "FINALIZING", current_page=total_pages, total_pages=total_pages, index_state="VALIDATING")
+        system.state_store.update_document(document_id, current_page=total_pages, total_pages=total_pages, current_stage="READY", index_state="READY", status="READY", error=None, ingestion_completed_at=utc_now(), ingestion_metrics=json.dumps({"stage_timings_ms": stage_timings, "chunks": chunk_count, "embeddings": embedding_count, "embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total_ms": round((time.perf_counter() - started) * 1000, 3)}, sort_keys=True))
+        system.vector_store.set_version_index_state(document_id, content_hash, "READY")
+        system.state_store.record_event(document_id, stage="READY", status="SUCCESS", event_type="publish", message=f"Published {file_path.name} as READY with {chunk_count} chunks", details={"chunks": chunk_count, "embeddings": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         check_cancel()
-
-        same_target = file_path.resolve() == target.resolve()
-        if target.exists() and not same_target:
-            previous_target_backup = _unique_archive_path(system.settings.archive_dir, target, content_hash[:12])
+        if target.exists() and target.resolve() != file_path.resolve():
+            previous_target_backup = _unique_archive_path(system.settings.archive_dir, target, "superseded")
             target.replace(previous_target_backup)
-        if not same_target:
+        if file_path.resolve() != target.resolve():
+            target.parent.mkdir(parents=True, exist_ok=True)
             file_path.replace(target)
             moved_into_processed = True
-
-        system.vector_store.set_version_index_state(document_id, content_hash, "READY")
-        system.state_store.transition_document_state(
-            document_id,
-            "READY",
-            ingestion_completed_at=utc_now(),
-            current_page=total_pages,
-            total_pages=total_pages,
-            file_path=str(target.resolve()),
-            ingestion_metrics=json.dumps({"embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total": round((time.perf_counter() - started) * 1000, 3), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count}, sort_keys=True),
-        )
         published = True
-
-        try:
-            system.state_store.record_event(document_id, stage="READY", status="READY", event_type="completion", message="Document ready for retrieval and grounded questions", details={"page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "vector_store_count": system.vector_store.count()}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
-        except Exception:
-            system.logger.exception("Failed to record completion event for published document %s", file_path.name)
-
-        if previous_version:
-            try:
-                system.vector_store.set_version_index_state(document_id, previous_version, "FAILED")
-                system.vector_store.delete_version(document_id, previous_version)
-            except Exception:
-                system.logger.exception("Failed to retire previous version for %s", file_path.name)
-        if previous_target_backup is not None:
-            try:
-                previous_target_backup.unlink(missing_ok=True)
-            except OSError:
-                system.logger.exception("Failed to remove archived previous file for %s", file_path.name)
-
-        total_ms = round((time.perf_counter() - started) * 1000, 3)
-        metrics = {"total": total_ms, "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3)}
-        system.logger.info("Processed %s incrementally in %.2fs", file_path.name, total_ms / 1000.0)
-        return {"status": "success", "document_id": document_id, "file_name": file_path.name, "document_type": classification.get("document_type", "unknown"), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "retrieval_mode": "hybrid", "timings_ms": metrics}
+        return {"status": "READY", "file_name": target.name, "document_id": document_id, "processed_path": str(target), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "stage_timings_ms": stage_timings, "elapsed_ms": round((time.perf_counter() - started) * 1000, 3)}
     except Exception as exc:
-        system.logger.exception("Failed to process %s", file_path.name)
-        if published:
-            return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed.", "error": type(exc).__name__}
+        failure_stage = "FAILED_INDEXING" if "INDEX" in str(exc).upper() or "EMBEDDING" in str(exc).upper() else "FAILED"
         try:
-            system.vector_store.delete_version(document_id, content_hash)
             system.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
+            system.vector_store.delete_version(document_id, content_hash)
         except Exception:
-            system.logger.exception("Failed to remove partial index for %s", file_path.name)
-        failure_text = str(exc)
-        if failure_text.startswith("FAILED_EMBEDDING:"):
-            failure_stage = "FAILED_EMBEDDING"
-        elif failure_text.startswith("FAILED_INDEXING:"):
-            failure_stage = "FAILED_INDEXING"
-        elif "extract" in failure_text.casefold():
-            failure_stage = "FAILED_EXTRACTION"
-        else:
-            failure_stage = "FAILED"
+            system.logger.exception("Failed to clean failed vector index for %s", file_path.name)
         try:
-            system.state_store.transition_document_state(document_id, failure_stage, error=failure_text, current_page=current_page if "current_page" in locals() else 0, total_pages=total_pages if "total_pages" in locals() else 0)
+            system.state_store.delete_pages(document_id)
+            system.state_store.update_document(document_id, current_stage=failure_stage, index_state="FAILED", status=failure_stage, error=str(exc), current_page=0, total_pages=total_pages)
+            system.state_store.record_event(document_id, stage=failure_stage, status="FAILED", event_type="failure", message=str(exc), details={"error_type": type(exc).__name__}, current_page=0, total_pages=total_pages, file_name=file_path.name)
         except Exception:
-            try:
-                system.state_store.update_document(document_id, current_stage=failure_stage, status=failure_stage, error=failure_text)
-            except Exception:
-                system.logger.exception("Failed to persist ingestion failure state for %s", file_path.name)
-
-        if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
-            try:
-                previous_target_backup.replace(target)
-            except OSError:
-                system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
-
-        quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
-        failed_path = _unique_archive_path(system.settings.failed_dir, file_path, content_hash[:12])
-        if quarantine_source is not None and quarantine_source.exists():
-            try:
-                failed_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    quarantine_source.resolve().relative_to(system.settings.incoming_dir.resolve())
-                    in_incoming = True
-                except ValueError:
-                    in_incoming = False
-                if quarantine_source.resolve() == failed_path.resolve():
-                    pass
-                elif in_incoming or moved_into_processed:
-                    quarantine_source.replace(failed_path)
-                else:
-                    shutil.copy2(quarantine_source, failed_path)
-            except OSError:
-                system.logger.exception("Failed to quarantine %s", file_path.name)
-        return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text}
+            system.logger.exception("Failed to persist failed ingestion state for %s", file_path.name)
+        try:
+            failed_path = _unique_archive_path(system.settings.failed_dir, file_path, "failed")
+            if file_path.exists() and file_path.resolve() != failed_path.resolve():
+                file_path.replace(failed_path)
+        except Exception:
+            system.logger.exception("Failed to quarantine failed input %s", file_path.name)
+        return {"status": "FAILED", "file_name": file_path.name, "document_id": document_id, "error": str(exc), "failure_stage": failure_stage, "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count, "stage_timings_ms": stage_timings, "elapsed_ms": round((time.perf_counter() - started) * 1000, 3)}
     finally:
-        system.state_store.release_document(document_id, worker_id)
-        system._remove_cancel_flag(document_id)
-
-
-def datetime_from_mtime(path: Path) -> str:
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        try:
+            system.state_store.release_document(document_id, worker_id)
+        except Exception:
+            system.logger.exception("Failed to release ingestion lease for %s", file_path.name)
