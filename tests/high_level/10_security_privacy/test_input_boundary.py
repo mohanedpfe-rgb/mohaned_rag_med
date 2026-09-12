@@ -23,6 +23,7 @@ def test_security__non_pdf_upload_is_rejected_and_never_searchable(clean_system,
         clean_system.ingest_file(payload)
 
     answer = clean_system.answer("What is FAKE_MEDICAL_TEXT_THAT_MUST_NOT_BE_INDEXED?")
-    assert_exact_status(answer, "ABSTAIN")
+    assert_exact_status(answer, "NOT_SUPPORTED")
+    assert not answer.get("generation_path")
     assert not answer.get("citations")
     assert not answer.get("hits")
