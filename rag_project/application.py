@@ -74,6 +74,11 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     result.setdefault("confidence_calibration", {})
     result.setdefault("adaptive_retrieval_budget", {"tier": retrieval.get("tier"), "cache_hit": retrieval.get("cache_hit", False)})
     recovery = result.get("recovery") if isinstance(result.get("recovery"), dict) else {}
+    if str(result.get("status") or "").upper() == "SUCCESS_WITH_WARNINGS" and recovery.get("grounded_extractive_fallback"):
+        result["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
+        generation_meta = dict(result.get("generation_meta") or {})
+        generation_meta.update({"attempted": True, "fallback": True, "recovered": True})
+        result["generation_meta"] = generation_meta
     canonical_executed = not bool(recovery.get("attempted"))
     result["canonical_pipeline_executed"] = bool(result.get("canonical_pipeline_executed", canonical_executed))
     result["evidence_first"] = bool(result.get("evidence_first", bool(result.get("hits"))))
@@ -92,6 +97,10 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
     }
     trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
     trace["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY; trace["language"] = detected_language; trace["language_confidence"] = language_confidence
+    if result.get("generation_path"):
+        generation = dict(trace.get("generation") or {})
+        generation["path"] = result["generation_path"]
+        trace["generation"] = generation
     result["query_trace"] = trace
     result.setdefault("evidence_summary", {"claim_count": evidence.get("claim_count", 0)})
     result["runtime_safety"] = {**dict(result.get("runtime_safety") or {}), "ready_evidence_enforced": True}
