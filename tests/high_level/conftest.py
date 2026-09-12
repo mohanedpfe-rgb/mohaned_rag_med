@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -51,23 +52,30 @@ def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
 
 
 def write_scanned_pdf(path: Path, pages: int = 1) -> Path:
-    objects: list[bytes] = [b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"]
-    page_refs: list[int] = []
-    next_obj = 3
-    for _ in range(max(1, pages)):
-        pages_obj = next_obj
-        image_obj = next_obj + 1
-        content_obj = next_obj + 2
-        next_obj += 3
-        raw = b"\xff"
-        objects.append(f"{pages_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im{image_obj} {image_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode())
-        objects.append(f"{image_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {len(raw)} >>\nstream\n".encode() + raw + b"\nendstream\nendobj\n")
-        stream = f"q 612 0 0 792 0 0 cm /Im{image_obj} Do Q".encode()
-        objects.append(f"{content_obj} 0 obj\n<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream\nendobj\n")
-        page_refs.append(pages_obj)
-    kids = " ".join(f"{ref} 0 R" for ref in page_refs)
-    objects.insert(1, f"2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {len(page_refs)} >>\nendobj\n".encode())
-    path.write_bytes(_build_pdf(objects))
+    """Create a real image-only PDF with large, controlled text for OCR."""
+    import fitz
+    from PIL import Image, ImageDraw, ImageFont
+
+    document = fitz.open()
+    font = ImageFont.load_default(size=54)
+    for page_number in range(1, max(1, pages) + 1):
+        image = Image.new("RGB", (1700, 2200), "white")
+        draw = ImageDraw.Draw(image)
+        lines = [
+            "Diabetes mellitus is a chronic metabolic disorder.",
+            "OCR_CONTROLLED_MARKER: hyperglycemia.",
+            f"Scanned medical page {page_number}.",
+        ]
+        y = 220
+        for line in lines:
+            draw.text((140, y), line, font=font, fill="black")
+            y += 100
+        payload = BytesIO()
+        image.save(payload, format="PNG")
+        page = document.new_page(width=612, height=792)
+        page.insert_image(page.rect, stream=payload.getvalue())
+    document.save(path)
+    document.close()
     return path
 
 
