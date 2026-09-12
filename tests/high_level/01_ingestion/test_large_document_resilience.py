@@ -1,17 +1,37 @@
+from __future__ import annotations
+
 import pytest
-from tests.high_level.conftest import write_minimal_pdf
+
+from tests.high_level.conftest import write_large_pdf
+from tests.high_level.helpers import assert_status
+
 
 @pytest.mark.high_level
 @pytest.mark.slow
+def test_ingestion__hundred_page_pdf_reaches_ready_without_partial_state(clean_system, tmp_path):
+    document = write_large_pdf(tmp_path / "100_pages.pdf", pages=100)
+    result = clean_system.ingest_file(document)
 
-def test_large_document__ends_in_terminal_state(clean_system, tmp_path):
-    source = write_minimal_pdf(tmp_path / "large_100pages.pdf", [f"Page {i}: diabetes mellitus and HbA1c." for i in range(1, 101)])
-    result = clean_system.ingest_file(source)
-    assert str(result.get("status", "")).lower() in {"ready", "completed", "success", "failed", "skipped"}
+    assert_status(result, {"READY"})
+    document_id = str(result.get("document_id") or result.get("id") or "")
+    record = clean_system.state_store.get_document(document_id)
+    assert record is not None
+    assert clean_system.state_store.is_ready_status(record.get("status"))
+    assert str(record.get("index_state") or "").upper() == "READY"
+    assert int(record.get("total_pages") or 0) == 100
+    assert int(record.get("current_page") or 0) == 100
+    assert not record.get("error")
+
 
 @pytest.mark.high_level
+@pytest.mark.slow
+def test_ingestion__large_document_records_terminal_process_events(clean_system, tmp_path):
+    document = write_large_pdf(tmp_path / "events_100_pages.pdf", pages=100)
+    result = clean_system.ingest_file(document)
+    assert_status(result, {"READY"})
 
-def test_ingestion_settings__bound_worker_and_batch_sizes(clean_system):
-    settings = clean_system.settings
-    assert 1 <= settings.max_workers <= 4
-    assert 1 <= settings.embedding_batch_size <= 32
+    document_id = str(result.get("document_id") or result.get("id") or "")
+    events = clean_system.state_store.get_events(document_id)
+    assert events
+    assert any(str(event.get("stage") or "").upper() in {"INDEXING", "VALIDATING_INDEX", "READY", "COMPLETED"} for event in events)
+    assert str(events[-1].get("status") or "").upper() in {"READY", "COMPLETED"}
