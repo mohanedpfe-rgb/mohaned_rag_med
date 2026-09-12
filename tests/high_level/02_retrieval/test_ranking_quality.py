@@ -34,15 +34,19 @@ def test_retrieval__table_query_prefers_table_evidence(clean_system):
     hits = result.get("hits") or []
     assert hits
     assert "Table 1" in str(getattr(hits[0], "text", ""))
+    assert float((hits[0].metadata or {}).get("intent_rerank_bonus", 0.0)) >= 0.40
 
 
 @pytest.mark.high_level
-def test_retrieval__simple_query_uses_at_most_two_variants(clean_system):
+def test_retrieval__simple_query_uses_at_most_two_variants_and_queries(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
     assert_exact_status(result, "SUCCESS")
     assert_exact_path(result, "PATH_A_EXTRACTIVE")
-    variants = ((result.get("route") or {}).get("query_variants") or [])
+    route = result.get("route") or {}
+    retrieval = result.get("retrieval") or {}
+    variants = route.get("query_variants") or []
     assert len(variants) <= 2, variants
+    assert int(retrieval.get("queries", 0)) <= 2, retrieval
 
 
 @pytest.mark.high_level
