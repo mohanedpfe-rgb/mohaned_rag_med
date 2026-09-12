@@ -44,6 +44,14 @@ def assert_exact_path(result: dict[str, Any], expected: str) -> None:
     if plan_path:
         assert plan_path == expected_upper, f"answer plan path {plan_path!r} diverges from generation path {actual!r}"
 
+    # A successful answer may not be considered contract-compliant merely because
+    # its path string is correct.  The exact-path helper is the global success-lock
+    # used by high-level tests, so it verifies evidence, citations, and authority too.
+    if str(result.get("status") or "").upper() in SUCCESS_STATUSES:
+        assert_citations_valid(result)
+        assert_grounded(result)
+        assert_pipeline_authority(result)
+
 
 def assert_pipeline_authority(result: dict[str, Any]) -> None:
     from rag_project.application import ACTIVE_ANSWER_PIPELINE_AUTHORITY
