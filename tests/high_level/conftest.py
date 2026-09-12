@@ -176,9 +176,17 @@ def clean_system(settings_i5: Settings, ready_document: Path):
     system = create_rag_system(settings_i5)
     embedding_service = getattr(system, "embedding_service", None)
     if embedding_service is not None:
+        # Runtime stability deliberately hardens production initialization. For the
+        # deterministic high-level suite, force one local probe so the canonical
+        # robust ingestor never inherits a stale startup error from initialization.
         embedding_service.test_mode = True
         embedding_service.provider = "deterministic-test"
         embedding_service.last_error = None
+        embedding_service._ollama_available = False
+        embedding_service.dimension = None
+        embedding_service.embed_texts(["__high_level_deterministic_embedding_probe__"])
+        system._embedding_dimension_probed = True
+        system.vector_store.set_expected_identity(embedding_service.identity)
     system.embedding_startup_error = None
     ingestion = system.ingest_file(ready_document)
     status = str((ingestion or {}).get("status") or "").upper()
