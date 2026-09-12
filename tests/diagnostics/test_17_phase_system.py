@@ -12,14 +12,13 @@ from rag_project.testing.advanced_phases import (
     fingerprint_failures,
     cascade_compression,
     golden_benchmark,
-    information_loss,
     metamorphic,
     mutation_detection,
     performance,
     rag_causality,
     resources,
-    retrieval_microscope,
 )
+from rag_project.testing.robust_probes import information_loss, retrieval_microscope
 
 
 def _phase(number: int):
@@ -63,6 +62,20 @@ def test_phase_eleven_reports_real_executed_mutants() -> None:
     assert result.details["mutants_applicable"] >= 1
     assert result.details["mutants_killed"] == result.details["mutants_applicable"]
     assert result.details["kill_score"] == 1.0
+
+
+def test_phase_six_measures_representation_survival() -> None:
+    result = information_loss(_phase(6))
+    assert "token_survival" in result.details
+    assert "field_survival" in result.details
+    assert result.details["representation_chain"] == ["PageExtraction", "Chunk", "VectorStore", "SQLite lexical"]
+
+
+def test_phase_nine_measures_retrieval_metrics_and_filtering() -> None:
+    result = retrieval_microscope(_phase(9))
+    assert "lexical_recall_at_3" in result.details
+    assert "semantic_recall_at_3" in result.details
+    assert result.details["metadata_filter_correct"] is True
 
 
 def test_phase_fifteen_exercises_real_rag_stages() -> None:
