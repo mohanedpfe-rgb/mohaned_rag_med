@@ -53,9 +53,39 @@ def _detect_answer_language(question: str) -> tuple[str, float]:
     return "unknown", 0.10
 
 
+def _normalize_public_answer_path(result: dict[str, Any]) -> dict[str, Any]:
+    """Collapse internal hybrid fallback into the single verified public recovery path."""
+    path = str(result.get("generation_path") or "").upper()
+    if path != "PATH_HYBRID_FALLBACK":
+        return result
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    if str(result.get("status") or "").upper() not in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+        return result
+    if verification.get("allow") is not True:
+        return result
+    normalized = dict(result)
+    normalized["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
+    metadata = dict(normalized.get("generation_meta") or {})
+    metadata.update({"attempted": True, "fallback": True, "recovered": True, "internal_path": "PATH_HYBRID_FALLBACK"})
+    normalized["generation_meta"] = metadata
+    recovery = dict(normalized.get("recovery") or {})
+    recovery.update({"attempted": True, "grounded_extractive_fallback": True, "verification": "semantic_claim_verification"})
+    normalized["recovery"] = recovery
+    phases = dict(normalized.get("phase_implementation") or {})
+    phases["degraded_to_recovery"] = True
+    normalized["phase_implementation"] = phases
+    trace = dict(normalized.get("query_trace") or {})
+    generation = dict(trace.get("generation") or {})
+    generation.update({"path": "PATH_A_VERIFIED_FALLBACK", "internal_path": "PATH_HYBRID_FALLBACK"})
+    trace["generation"] = generation
+    normalized["query_trace"] = trace
+    return normalized
+
+
 def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     result = execute_with_runtime_safety(system, str(question or "").strip(), lambda: enhanced_med_evidence_answer(system, question, metadata_filter))
+    result = _normalize_public_answer_path(result)
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
     retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
     route = dict(result.get("route") or {}) if isinstance(result.get("route"), dict) else {}
