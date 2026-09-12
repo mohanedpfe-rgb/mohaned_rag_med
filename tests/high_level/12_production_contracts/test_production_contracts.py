@@ -4,17 +4,21 @@ import inspect
 
 import pytest
 
+from tests.high_level.helpers import assert_exact_path, assert_exact_status, assert_pipeline_authority
+
 
 @pytest.mark.high_level
-def test_production_contracts__single_answer_authority_is_executed(clean_system):
+def test_production_contracts__single_answer_authority_is_executed_exactly(clean_system):
     from rag_project.application import ACTIVE_ANSWER_PIPELINE_AUTHORITY
 
     result = clean_system.answer("What is diabetes mellitus?")
 
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     assert result.get("pipeline_authority") == ACTIVE_ANSWER_PIPELINE_AUTHORITY
     assert result.get("implementation_authority") == ACTIVE_ANSWER_PIPELINE_AUTHORITY
+    assert_pipeline_authority(result)
     assert result.get("canonical_pipeline_executed") is True
-    assert result.get("phase_implementation", {}).get("phase_5_intelligence_visibility", {}).get("canonical_executed") is True
 
 
 @pytest.mark.high_level
@@ -57,6 +61,8 @@ def test_production_contracts__feature_contract_and_startup_quality_are_explicit
 @pytest.mark.high_level
 def test_production_contracts__answer_exposes_all_canonical_phases(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     phases = result.get("phases") or {}
     expected = {
         "phase_0_safety_gate",
