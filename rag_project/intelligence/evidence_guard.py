@@ -34,12 +34,7 @@ class ClaimCheck:
 
 
 class NumericConsistencyResult(dict):
-    """Structured numeric result that remains truthy only when no mismatch exists.
-
-    Older callers treated ``numeric_consistency`` as a boolean predicate. Newer
-    callers need the diagnostic fields. A dict with an explicit bool conversion
-    preserves both contracts without requiring every consumer to change at once.
-    """
+    """Structured numeric result that remains truthy only when no mismatch exists."""
 
     def __bool__(self) -> bool:
         return not bool(self.get("mismatch", False))
@@ -272,24 +267,42 @@ def _best_support(claim, blocks, ids):
     return (rows[0][0], tuple(x[1] for x in rows[:3])) if rows else (0.0, ())
 
 
+def _cited_evidence(claim: str, evidence_blocks: Sequence[str], source_ids: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Restrict verification to sources explicitly cited by the generated claim when markers exist."""
+    markers = [f"S{number}" for number in re.findall(r"\[S(\d+)\]", str(claim or ""), flags=re.I)]
+    if not markers:
+        return list(evidence_blocks), list(source_ids)
+    index_by_id = {str(source_id).casefold(): index for index, source_id in enumerate(source_ids)}
+    selected_indices = [index_by_id[marker.casefold()] for marker in markers if marker.casefold() in index_by_id]
+    if not selected_indices:
+        return [], []
+    unique_indices = list(dict.fromkeys(selected_indices))
+    return [str(evidence_blocks[index]) for index in unique_indices if index < len(evidence_blocks)], [str(source_ids[index]) for index in unique_indices if index < len(source_ids)]
+
+
 def verify_claims(answer, evidence_blocks: Sequence[str], source_ids: Sequence[str]) -> list[ClaimCheck]:
     checks = []
-    joined = "\n".join(evidence_blocks)
     for claim in split_claims(answer):
-        best, sources = _best_support(claim, evidence_blocks, source_ids)
-        num = numeric_consistency_details(claim, joined)
+        cited_blocks, cited_ids = _cited_evidence(claim, evidence_blocks, source_ids)
+        support_blocks = cited_blocks if cited_blocks else []
+        support_ids = cited_ids if cited_ids else []
+        best, sources = _best_support(claim, support_blocks, support_ids) if support_blocks else (0.0, ())
+        cited_joined = "\n".join(cited_blocks)
+        num = numeric_consistency_details(claim, cited_joined) if cited_blocks else {"checked": bool(extract_measurements(claim)), "mismatch": bool(extract_measurements(claim)), "claim_values": [], "evidence_values": [], "unsupported_numeric": [f"{v} {u}" for v, u in extract_measurements(claim)]}
         contra = detect_contradiction(claim, evidence_blocks)
-        numeric_bridge = max((semantic_support(_remove_measurements(claim), _remove_measurements(block)) for block in evidence_blocks), default=0.0) if num["checked"] and not num["mismatch"] else 0.0
+        numeric_bridge = max((semantic_support(_remove_measurements(claim), _remove_measurements(block)) for block in cited_blocks), default=0.0) if num["checked"] and not num["mismatch"] else 0.0
         if contra:
             status, reason = "CONTRADICTED", "A source conflicts with the claim polarity or safety meaning."
         elif num["mismatch"]:
-            status, reason = "NUMERIC_MISMATCH", "The stated measurement is not supported by a compatible evidence value."
+            status, reason = "NUMERIC_MISMATCH", "The stated measurement is not supported by a compatible value in the cited evidence."
         elif best >= 0.62 or numeric_bridge >= 0.35:
             status, reason = "SUPPORTED", "Strong evidence support."
         elif best >= 0.38:
             status, reason = "PARTIAL", "Partial evidence support."
         elif best > 0.05:
             status, reason = "WEAK", "Weak evidence overlap."
+        elif not support_blocks and re.search(r"\[S\d+\]", claim, flags=re.I):
+            status, reason = "UNSUPPORTED", "The cited evidence source does not exist in the supplied evidence set."
         else:
             status, reason = "UNSUPPORTED", "No meaningful evidence support."
         checks.append(ClaimCheck(claim, round(max(best, numeric_bridge), 4), status, sources, bool(num["mismatch"]), contra, reason))
