@@ -28,7 +28,7 @@ jobs:
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
         run: python scripts/test_doctor.py --deep --json artifacts/diagnostic-17-phase.json
-      - name: Require 17/17 implementation coverage
+      - name: Require strict 17/17 certification
         run: |
           python - <<'PY'
           import json
@@ -36,13 +36,18 @@ jobs:
           report = json.loads(Path("artifacts/diagnostic-17-phase.json").read_text(encoding="utf-8"))
           phases = report.get("phases", [])
           assert len(phases) == 17, f"expected 17 phase results, got {len(phases)}"
+          numbers = sorted(item["number"] for item in phases)
+          assert numbers == list(range(1, 18)), numbers
           phase17 = next(item for item in phases if item["number"] == 17)
-          assert phase17["details"].get("implementation_coverage") == "17/17", phase17
-          assert not phase17["details"].get("missing_phase_results"), phase17
-          assert phase17["status"] in {"PASS", "WARN"}, phase17
-          print("17/17 diagnostic implementation coverage verified")
+          details = phase17.get("details", {})
+          assert details.get("implementation_coverage") == "17/17", phase17
+          assert not details.get("missing_phase_results"), phase17
+          assert not details.get("evidence_failures"), phase17
+          assert phase17.get("status") == "PASS", phase17
+          assert report.get("status") == "PASS", report
+          print("STRICT 17/17 CERTIFICATION VERIFIED")
           PY
-      - name: Publish 17-phase diagnostic artifact
+      - name: Publish strict 17-phase diagnostic artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
