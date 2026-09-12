@@ -21,8 +21,11 @@ except Exception:
         _logger.setLevel(logging.INFO)
 
 
+MAX_PROMPT_WORDS = 600
+
+
 class OllamaLLMClient:
-    """Bounded Ollama client with request-scoped deadline awareness."""
+    """Bounded Ollama client with request-scoped deadline and context budgets."""
 
     def __init__(self, base_url: str, model: str, timeout_seconds: float = 180.0, max_output_tokens: int = 512, circuit_threshold: int = 2, circuit_open_seconds: float = 15.0):
         self.base_url = validate_ollama_url(base_url)
@@ -39,6 +42,14 @@ class OllamaLLMClient:
         self.last_error = None
         self._consecutive_failures = 0
         self._circuit_open_until = 0.0
+
+    @staticmethod
+    def _bound_prompt(prompt: str, max_words: int = MAX_PROMPT_WORDS) -> str:
+        words = str(prompt or "").split()
+        if len(words) <= max_words:
+            return str(prompt or "")
+        bounded = " ".join(words[:max_words]).rstrip()
+        return f"{bounded}\n[TRUNCATED_CONTEXT: prompt budget {max_words} words]"
 
     def _circuit_is_open(self) -> bool:
         return time.monotonic() < self._circuit_open_until
@@ -74,11 +85,12 @@ class OllamaLLMClient:
         return max(1.0, min(self.request_timeout_seconds, budget))
 
     def _payload(self, prompt: str, system_prompt: str | None, temperature: float, output_format: Any = None, num_predict: int | None = None) -> dict[str, Any]:
+        bounded_prompt = self._bound_prompt(prompt)
         payload: dict[str, Any] = {
             "model": self.model,
             "stream": False,
             "options": {"temperature": max(0.0, min(float(temperature), 1.0)), "num_predict": max(16, min(int(num_predict or self.max_output_tokens), 4096))},
-            "messages": [{"role": "user", "content": str(prompt)}],
+            "messages": [{"role": "user", "content": bounded_prompt}],
         }
         if output_format is not None:
             payload["format"] = output_format
