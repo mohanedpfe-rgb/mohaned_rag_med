@@ -8,7 +8,8 @@ from typing import Any
 
 def assert_status(result: dict[str, Any], allowed: set[str]) -> None:
     status = str(result.get("status") or "").upper()
-    assert status in {value.upper() for value in allowed}, f"status={status!r}, allowed={sorted(allowed)}"
+    normalized = {value.upper() for value in allowed}
+    assert status in normalized, f"status={status!r}, allowed={sorted(normalized)}"
 
 
 def _citation_markers(result: dict[str, Any]) -> list[str]:
@@ -20,13 +21,17 @@ def assert_citations_valid(result: dict[str, Any]) -> None:
     markers = _citation_markers(result)
     citations = result.get("citations") or []
     hits = result.get("hits") or []
-    if result.get("status") in {"NOT_SUPPORTED", "REASONING_ABSTAIN", "ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY"}:
+    status = str(result.get("status") or "").upper()
+    if status in {"NOT_SUPPORTED", "REASONING_ABSTAIN", "ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY", "ABSTAIN", "BLOCK"}:
+        assert not markers, f"abstention must not claim source markers: {markers}"
         return
     assert markers or citations, "grounded success must expose citation markers or citation objects"
     if markers and hits:
         max_source = len(hits)
         for marker in markers:
-            index = int(re.search(r"\d+", marker).group())
+            index_match = re.search(r"\d+", marker)
+            assert index_match, f"malformed source marker {marker!r}"
+            index = int(index_match.group())
             assert 1 <= index <= max_source, f"invalid source marker {marker} for {max_source} hits"
 
 
@@ -40,6 +45,7 @@ def assert_grounded(result: dict[str, Any]) -> None:
             assert float(ratio) >= 0.60, f"grounding ratio too low: {ratio}"
         answer = str(result.get("answer") or "").strip()
         assert answer, "successful answer must not be empty"
+        assert verification.get("allow") is not False, verification
 
 
 def assert_no_llm_called(llm_spy: Any) -> None:
@@ -68,14 +74,15 @@ def assert_latency_under(result: dict[str, Any], seconds: float) -> None:
 
 
 def assert_extractive_path(result: dict[str, Any]) -> None:
-    path = str(result.get("generation_path") or (result.get("answer_plan") or {}).get("selected_path") or "").lower()
-    assert "extract" in path or path in {"tier0", "fast_path", "direct"}, f"unexpected path: {path!r}"
+    path = str(result.get("generation_path") or (result.get("answer_plan") or {}).get("selected_path") or "").upper()
+    assert path in {"PATH_A_EXTRACTIVE", "PATH_A_VERIFIED_FALLBACK"}, f"unexpected extractive path: {path!r}"
 
 
 def assert_abstained(result: dict[str, Any]) -> None:
-    assert_status(result, {"NOT_SUPPORTED", "REASONING_ABSTAIN", "ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY"})
+    assert_status(result, {"NOT_SUPPORTED", "REASONING_ABSTAIN", "ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY", "ABSTAIN", "BLOCK"})
     answer = str(result.get("answer") or "").lower()
     assert not any(token in answer for token in ("i am certain", "definitely", "the patient should"))
+    assert not result.get("citations"), "abstention must not expose positive citations"
 
 
 def assert_numeric_preserved(result: dict[str, Any], expected_numbers: Iterable[str]) -> None:
@@ -109,8 +116,7 @@ def assert_document_ready(system: Any, document_id: str) -> None:
                         return
                 except Exception:
                     pass
-    pytest_fail = AssertionError(f"unable to verify READY state for document {document_id}")
-    raise pytest_fail
+    raise AssertionError(f"unable to verify READY state for document {document_id}")
 
 
 def assert_no_history_contamination(system: Any, question: str) -> None:
