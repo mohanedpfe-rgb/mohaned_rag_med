@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from tests.high_level.helpers import assert_rank_contains
+from tests.high_level.helpers import assert_exact_path, assert_exact_status, assert_rank_contains
 
 
 @pytest.mark.high_level
 def test_retrieval__exact_medical_term_ranks_in_top_three(clean_system):
     result = clean_system.answer("What is HbA1c used to assess?")
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     hits = result.get("hits") or []
     assert hits
     assert_rank_contains(hits, "HbA1c", top_k=3)
@@ -16,6 +18,8 @@ def test_retrieval__exact_medical_term_ranks_in_top_three(clean_system):
 @pytest.mark.high_level
 def test_retrieval__numeric_query_returns_number_and_unit_in_top_three(clean_system):
     result = clean_system.answer("What dose of metformin is stated?")
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_B_TEMPLATE")
     hits = result.get("hits") or []
     assert hits
     top_text = " ".join(str(getattr(hit, "text", "")) for hit in hits[:3])
@@ -25,6 +29,8 @@ def test_retrieval__numeric_query_returns_number_and_unit_in_top_three(clean_sys
 @pytest.mark.high_level
 def test_retrieval__table_query_prefers_table_evidence(clean_system):
     result = clean_system.answer("Which table contains the HbA1c target?")
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_B_TEMPLATE")
     hits = result.get("hits") or []
     assert hits
     assert "Table 1" in str(getattr(hits[0], "text", ""))
@@ -33,6 +39,8 @@ def test_retrieval__table_query_prefers_table_evidence(clean_system):
 @pytest.mark.high_level
 def test_retrieval__simple_query_uses_at_most_two_variants(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     variants = ((result.get("route") or {}).get("query_variants") or [])
     assert len(variants) <= 2, variants
 
@@ -48,5 +56,7 @@ def test_retrieval__document_filter_returns_only_target_document(clean_system, t
     assert target_id
 
     result = clean_system.answer("What does OTHER_DOCUMENT_MARKER state?", metadata_filter={"document_id": target_id})
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     hit_ids = {str(getattr(hit, "doc_id", "")) for hit in result.get("hits") or []}
     assert hit_ids == {target_id}
