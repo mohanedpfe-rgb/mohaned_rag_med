@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> PhaseResult:
     from rag_project.testing import runner
     from rag_project.testing.implementation_contracts import validate_runtime_ownership
+    from rag_project.testing import production_diagnostic_probes
 
     result = PhaseResult(phase.number, phase.key, phase.name, status="FAIL", started_at=time.time())
     failures: list[dict[str, Any]] = []
@@ -25,7 +26,7 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
         # Phase 17 is a certification boundary: it must never replace or re-run
         # already-produced phase results. Earlier phases are authoritative as
         # executed by UnifiedDiagnosticEngine._execute.
-        identity_contract = {}
+        identity_contract: dict[str, Any] = {}
         for number in range(1, 17):
             item = results.get(number)
             identity_contract[str(number)] = {
@@ -39,6 +40,11 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
                 failures.append({"phase": number, "reason": "phase result identity mismatch", "observed_number": item.number})
             elif item.key != runner.PHASES[number - 1].key:
                 failures.append({"phase": number, "reason": "phase result key mismatch", "observed_key": item.key, "expected_key": runner.PHASES[number - 1].key})
+
+        # Reuse the installed strict semantic wrapper, but only as validation over
+        # existing results. It must not execute any phase itself.
+        semantic_failures = list(production_diagnostic_probes._semantic_contracts(results))
+        failures.extend(semantic_failures)
 
         ownership = validate_runtime_ownership()
         if not ownership.get("pass"):
@@ -64,10 +70,12 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
             "phase_result_identity_contract": identity_contract,
             "implementation_ownership_verified": ownership.get("pass", False),
             "certification_provenance": {"git_head_sha": sha, "working_tree_clean": not bool(status), "expected_ci_sha": expected or None, "matches_expected_ci_sha": not expected or sha == expected, "provenance_verified": provenance_ok},
+            "semantic_contract_validation_executed": True,
             "reexecuted_phases": [],
         }
         result.details["evidence_failures"] = failures
-        result.details["implementation_coverage"] = "17/17" if not failures else f"{17 - len({int(x.get('phase', 17)) for x in failures if str(x.get('phase', '')).isdigit()})}/17"
+        unique_failed = {int(x.get("phase", 17)) for x in failures if str(x.get("phase", "")).isdigit()}
+        result.details["implementation_coverage"] = "17/17" if not failures else f"{17 - len(unique_failed)}/17"
         result.details["fully_implemented_phase_numbers"] = list(range(1, 18)) if not failures else []
         result.details["runtime_non_pass_phases"] = sorted(n for n, item in results.items() if item.status != "PASS")
         result.details["missing_phase_results"] = sorted(set(range(1, 17)) - set(results))
