@@ -46,3 +46,35 @@ def test_storage__cache_rebuild_cannot_resurrect_non_ready_evidence(clean_system
     hits = result.get("hits") or []
     assert hits
     assert all(str((hit.metadata or {}).get("index_state", "")).upper() == "READY" for hit in hits)
+
+
+@pytest.mark.high_level
+def test_storage__metadata_filtered_query_never_reuses_global_semantic_cache(clean_system, tmp_path):
+    target = write_minimal_pdf(tmp_path / "filter_target.pdf", ["FILTER_SCOPE_TARGET_MARKER: target endocrine evidence."])
+    distractor = write_minimal_pdf(tmp_path / "filter_distractor.pdf", ["FILTER_SCOPE_DISTRACTOR_MARKER: distractor cardiology evidence."])
+    target_result = clean_system.ingest_file(target)
+    distractor_result = clean_system.ingest_file(distractor)
+    assert str(target_result.get("status") or "").upper() == "READY"
+    assert str(distractor_result.get("status") or "").upper() == "READY"
+
+    target_id = str(target_result.get("document_id") or "")
+    distractor_id = str(distractor_result.get("document_id") or "")
+    assert target_id and distractor_id and target_id != distractor_id
+
+    # Warm the global cache with the same query shape using the distractor evidence.
+    warm = clean_system.answer("What does FILTER_SCOPE_TARGET_MARKER state?")
+    assert_exact_status(warm, "SUCCESS")
+    assert_exact_path(warm, "PATH_A_EXTRACTIVE")
+
+    filtered = clean_system.answer(
+        "What does FILTER_SCOPE_TARGET_MARKER state?",
+        metadata_filter={"document_id": target_id},
+    )
+    assert_exact_status(filtered, "SUCCESS")
+    assert_exact_path(filtered, "PATH_A_EXTRACTIVE")
+    hit_ids = {str(getattr(hit, "doc_id", "")) for hit in filtered.get("hits") or []}
+    assert hit_ids == {target_id}
+    assert distractor_id not in hit_ids
+    assert "FILTER_SCOPE_TARGET_MARKER" in str(filtered.get("answer") or "")
+    assert_grounded(filtered)
+    assert_citations_valid(filtered)
