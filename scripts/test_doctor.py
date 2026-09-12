@@ -16,8 +16,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from rag_project.testing import runner as diagnostic_runner
 from rag_project.testing.deep_diagnostics import render_report, write_report
-from rag_project.testing.runner import PHASES, run_all
+from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
+
+# The authoritative CLI must exercise the same canonical production ingestion
+# orchestrator used by the application, not a reduced parser/chunker surrogate.
+diagnostic_runner.phase16_real_pipeline = phase16_production_ingestion_benchmark
+PHASES = diagnostic_runner.PHASES
+run_all = diagnostic_runner.run_all
 
 
 def _parse_phases(values: list[str] | None) -> list[int] | None:
@@ -62,7 +69,7 @@ def main() -> int:
         output = write_report(report, Path(args.json))
         print(f"JSON report: {output}")
 
-    return 0 if report.status in {"PASS", "WARN"} else 1
+    return 0 if report.status == "PASS" else 1
 
 
 if __name__ == "__main__":
