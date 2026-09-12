@@ -4,13 +4,17 @@ import pytest
 
 
 @pytest.mark.high_level
-def test_query_intelligence__multi_part_question_exposes_multiple_search_variants(clean_system):
+def test_query_intelligence__multi_part_question_exposes_distinct_search_variants(clean_system):
     result = clean_system.answer("What are the causes and complications of diabetes mellitus?")
 
     assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "GENERATION_ABSTAIN", "NOT_SUPPORTED"}
     route = result.get("route") or {}
-    variants = route.get("query_variants") or []
+    variants = [str(item).casefold() for item in (route.get("query_variants") or [])]
     assert len(variants) >= 2 or route.get("needs_multi_hop") is True
+    if len(variants) >= 2:
+        combined = " | ".join(variants)
+        assert "cause" in combined or "causes" in combined
+        assert "complication" in combined or "complications" in combined
     assert float(route.get("complexity", 0)) >= 0.20
 
 
