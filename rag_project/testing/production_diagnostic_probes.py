@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from typing import Any
 
 from rag_project.testing import runner as base_runner
 from rag_project.testing.deep_diagnostics import PhaseResult
+
+_ORIGINAL_PHASE17_STRICT = base_runner._phase17_strict
 
 
 def phase12_stable_fingerprinting(phase: Any, results: dict[int, PhaseResult]) -> PhaseResult:
@@ -60,7 +61,7 @@ def phase13_known_causal_graph(phase: Any, results: dict[int, PhaseResult]) -> P
 
 def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> PhaseResult:
     """Add a phase-by-phase evidence contract on top of the existing strict gate."""
-    base = base_runner._phase17_strict(phase, results)
+    base = _ORIGINAL_PHASE17_STRICT(phase, results)
     required: dict[int, tuple[str, ...]] = {
         1: ("domains",),
         2: ("collected_tests",),
@@ -94,7 +95,6 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
             if key not in details or details[key] in (None, "", [], {}):
                 evidence_failures.append({"phase": number, "required": key})
     unique = sorted({entry["phase"] for entry in evidence_failures})
-    base.details.setdefault("phase_by_phase_evidence_contract", {})
     base.details["phase_by_phase_evidence_contract"] = {"required_phases": list(required), "failures": evidence_failures}
     base.details["implementation_coverage"] = "17/17" if not evidence_failures and base.status == "PASS" else f"{17 - len(unique)}/17"
     base.details["fully_implemented_phase_numbers"] = [] if evidence_failures or base.status != "PASS" else list(range(1, 18))
