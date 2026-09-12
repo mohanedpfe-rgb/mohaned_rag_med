@@ -11,16 +11,8 @@ MIN_INTEGRATION_TEST_FUNCTIONS = 150
 MIN_HIGH_LEVEL_TEST_FUNCTIONS = 80
 MIN_GOLD_CASES = 20
 GOLD_REQUIRED_FIELDS = {
-    "id",
-    "question",
-    "language",
-    "expected_status",
-    "expected_path",
-    "must_contain",
-    "must_not_contain",
-    "must_cite",
-    "max_latency_s",
-    "must_not_call_llm",
+    "id", "question", "language", "expected_status", "expected_path",
+    "must_contain", "must_not_contain", "must_cite", "max_latency_s", "must_not_call_llm",
 }
 TEST_NAME_PATTERN = re.compile(r"^test_[a-z0-9_]+__.+$")
 EXPECTED_HIGH_LEVEL_PHASES = (
@@ -37,6 +29,17 @@ def _decorator_name(node: ast.AST) -> str:
         parent = _decorator_name(node.value)
         return f"{parent}.{node.attr}" if parent else node.attr
     return ""
+
+
+def _uses_assert_one_of_statuses(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call):
+            continue
+        if _decorator_name(child.func) == "assert_one_of_statuses":
+            return True
+        if isinstance(child.func, ast.Name) and child.func.id == "assert_one_of_statuses":
+            return True
+    return False
 
 
 def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[str]]:
@@ -65,15 +68,15 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
             for child in ast.walk(node):
                 if not isinstance(child, ast.Call):
                     continue
-                if _decorator_name(child.func) not in {"assert_status"} and not (
+                is_assert_status = _decorator_name(child.func) == "assert_status" or (
                     isinstance(child.func, ast.Name) and child.func.id == "assert_status"
-                ):
-                    continue
-                if not child.args:
-                    continue
-                expected = child.args[1] if len(child.args) > 1 else None
-                if isinstance(expected, (ast.Set, ast.List, ast.Tuple)) and len(expected.elts) != 1:
-                    soft_status_assertions.append(f"{path}:{node.name}: assert_status accepts {len(expected.elts)} statuses")
+                )
+                if is_assert_status and len(child.args) > 1:
+                    expected = child.args[1]
+                    if isinstance(expected, (ast.Set, ast.List, ast.Tuple)):
+                        soft_status_assertions.append(f"{path}:{node.name}: assert_status accepts {len(expected.elts)} statuses")
+            if _uses_assert_one_of_statuses(node) and not ("pytest.mark.multi_outcome" in decorators or "multi_outcome" in decorators):
+                soft_status_assertions.append(f"{path}:{node.name}: assert_one_of_statuses requires @pytest.mark.multi_outcome")
         if marked_integration or is_integration_path:
             integration += 1
         if not TEST_NAME_PATTERN.match(node.name):
