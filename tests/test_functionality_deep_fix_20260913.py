@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from rag_project.intelligence.evidence_guard import verify_claims
 from rag_project.intelligence.med_evidence_pro import AnswerCascade, EvidenceClaim, RouteMetadata
+from rag_project.intelligence.runtime_safety import _is_safe_success
 from rag_project.runtime_functionality_deep_fix import (
     _citation_complete_without_shared_state,
     _filter_false_numeric_contradictions,
@@ -156,3 +157,20 @@ def test_numeric_claim_passes_when_the_cited_source_contains_an_equivalent_unit(
     assert len(checks) == 1
     assert checks[0].status == "SUPPORTED"
     assert checks[0].numeric_mismatch is False
+
+
+def test_runtime_success_contract_accepts_canonical_nested_grounding():
+    result = {
+        "status": "SUCCESS",
+        "answer": "Diabetes is a metabolic disorder. [S1]",
+        "hits": [SimpleNamespace(text="Diabetes is a metabolic disorder.")],
+        "verification": {
+            "allow": True,
+            "checked": True,
+            "grounding": {"allow": True, "supported_ratio": 1.0},
+            "supported_ratio": 1.0,
+        },
+        "generation_path": "PATH_A_EXTRACTIVE",
+        "citations": [{"valid": True}],
+    }
+    assert _is_safe_success(result) is True
