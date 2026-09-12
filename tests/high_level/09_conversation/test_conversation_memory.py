@@ -17,7 +17,8 @@ def test_conversation__successful_answer_is_available_to_real_followup(clean_sys
     assert status in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}
     route = second.get("route") or {}
     assert route.get("is_follow_up") is True
-    assert (result_text := str(second.get("rewritten_question") or "") + " " + str(second.get("answer") or "")).casefold()
+    result_text = (str(second.get("rewritten_question") or "") + " " + str(second.get("answer") or "")).casefold()
+    assert result_text
     assert "dose" in result_text
 
     if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
@@ -42,3 +43,14 @@ def test_conversation__failed_answer_is_not_persisted(clean_system):
     after = len(clean_system.conversation_memory.history)
     assert after == before
     assert all("xylomediasis" not in question.casefold() for question, _ in clean_system.conversation_memory.history)
+
+
+@pytest.mark.high_level
+def test_conversation__non_success_structured_outcomes_are_rejected_by_memory_primitive(clean_system):
+    memory = clean_system.conversation_memory
+    before = list(memory.history)
+
+    assert memory.add("blocked query", {"status": "BLOCK", "answer": "unsafe content"}) is False
+    assert memory.add("abstained query", {"status": "GENERATION_ABSTAIN", "answer": "uncertain"}) is False
+    assert memory.add("unsupported query", {"status": "NOT_SUPPORTED", "answer": "not enough evidence"}) is False
+    assert memory.history == before
