@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 
-def test_runtime_contract_names_canonical_answer_and_entity_paths() -> None:
-    from rag_project.application import ANSWER_PIPELINE_AUTHORITY, runtime_contract
+def test_runtime_contract_names_one_canonical_answer_authority_and_entity_paths() -> None:
+    from rag_project.application import ANSWER_PIPELINE_AUTHORITY, ACTIVE_ANSWER_PIPELINE_AUTHORITY, runtime_contract
+    from rag_project.canonical_runtime import ANSWER_AUTHORITY
 
     contract = runtime_contract()
-    assert ANSWER_PIPELINE_AUTHORITY == "rag_project.intelligence.top_level_pipeline.complete_phases"
+    assert ANSWER_PIPELINE_AUTHORITY == ACTIVE_ANSWER_PIPELINE_AUTHORITY
+    assert ANSWER_PIPELINE_AUTHORITY == ANSWER_AUTHORITY
+    assert contract["answer_pipeline_authority"] == ANSWER_PIPELINE_AUTHORITY
     assert contract["answer_pipeline_execution"] == ANSWER_PIPELINE_AUTHORITY
+    assert contract["active_answer_pipeline_authority"] == ANSWER_PIPELINE_AUTHORITY
     assert contract["final_answer_verification"].endswith("final_answer_contract.verify_final_answer")
     assert contract["entity_coverage"].endswith("entity_coverage.score_entity_coverage")
     assert contract["answer_monkey_patch"] is False
