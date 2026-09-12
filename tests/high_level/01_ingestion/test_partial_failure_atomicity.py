@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_large_pdf
+from tests.high_level.helpers import assert_exact_status
 
 
 @pytest.mark.high_level
@@ -20,7 +21,7 @@ def test_ingestion__partial_embedding_failure_never_becomes_searchable(clean_sys
     monkeypatch.setattr(clean_system.embedding_service, "embed_texts", fail_mid_embedding)
     result = clean_system.ingest_file(pdf)
 
-    assert str(result.get("status") or "").upper() == "FAILED"
+    assert_exact_status(result, "FAILED")
     assert calls["count"] >= 2
     document_id = str(result.get("document_id") or result.get("id") or "")
     assert document_id
@@ -31,6 +32,6 @@ def test_ingestion__partial_embedding_failure_never_becomes_searchable(clean_sys
     assert clean_system.state_store.get_pages(document_id) == []
 
     answer = clean_system.answer("What does the controlled large-document page evidence marker state?")
-    assert str(answer.get("status") or "").upper() == "NOT_SUPPORTED"
+    assert_exact_status(answer, "NOT_SUPPORTED")
     assert not answer.get("hits")
     assert not answer.get("citations")
