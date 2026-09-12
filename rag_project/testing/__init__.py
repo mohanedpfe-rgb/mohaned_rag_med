@@ -1,7 +1,6 @@
 """Authoritative testing infrastructure for deep, dependency-aware RAG diagnostics."""
 
-from .full17_hardening import install as _install_full17_hardening
-_install_full17_hardening()
+from . import full17_hardening  # import-time install patches diagnostic bindings before runner import
 
 from .deep_diagnostics import DiagnosticReport, PhaseResult, RootCause
 from .runner import PHASES, UnifiedDiagnosticEngine, run_all
