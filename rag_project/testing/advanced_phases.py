@@ -281,7 +281,6 @@ def adversarial_documents(phase: Any) -> PhaseResult:
             started = time.perf_counter(); chunks = SemanticChunker(chunk_size=180, chunk_overlap=30).chunk_pages(pages); elapsed = time.perf_counter() - started
             valid_chunks = all(chunk.doc_id and chunk.page_numbers and chunk.metadata.get("document_id") for chunk in chunks)
             outcomes.append({"case": variant, "pages": len(pages), "chunks": len(chunks), "valid_chunk_schema": valid_chunks, "elapsed_s": round(elapsed, 4)})
-        # Empty, table-only and figure-only pages are the hostile boundary cases.
         empty = _fixture_pages()[0]; empty.text = ""; empty.table_texts = []; empty.figure_captions = []
         empty_chunks = SemanticChunker(chunk_size=180, chunk_overlap=30).chunk_pages([empty])
         outcomes.append({"case": "empty_page", "pages": 1, "chunks": len(empty_chunks), "valid_chunk_schema": True, "expected_non_crash": True})
@@ -322,7 +321,6 @@ def retrieval_microscope(phase: Any) -> PhaseResult:
         chunks = _fixture_chunks(); store, tmp = _store_fixture(chunks)
         try:
             query_specs = [("diabetes diagnosis", {0, 1}), ("HbA1c diagnostic threshold", {2}), ("kidney nephropathy", {3, 4})]
-            # Relevant chunks are identified from their production text rather than hard-coded rank.
             metrics = []; filter_failures = 0
             for query, relevant_tokens in query_specs:
                 lexical = store.search_lexical(query, n_results=5); semantic = store.search(_embedding(query), n_results=5)
@@ -477,7 +475,6 @@ def _offline_gold(cases: list[dict[str, Any]]) -> dict[str, Any]:
     try:
         rows = []
         for index, item in enumerate(cases):
-            # The diagnostic query is the user's gold question plus its explicit evidence terms.
             query = " ".join([str(item.get("question", "")), *[str(v) for v in item.get("must_contain", [])]])
             semantic = store.search(_embedding(query), n_results=min(5, max(1, len(chunks)))); lexical = store.search_lexical(query, n_results=min(5, max(1, len(chunks)))); semantic_ids = [str(v) for v in (semantic.get("ids") or [[]])[0]]; lexical_ids = [str(v) for v in (lexical.get("ids") or [[]])[0]]; target = f"gold-{index}:"; retrieved = set(semantic_ids) | set(lexical_ids); hit = any(item_id.startswith(target) for item_id in retrieved); lex_rank = next((i + 1 for i, value in enumerate(lexical_ids) if value.startswith(target)), None); sem_rank = next((i + 1 for i, value in enumerate(semantic_ids) if value.startswith(target)), None); rows.append({"id": item.get("id"), "retrieval_hit": hit, "lexical_rank": lex_rank, "semantic_rank": sem_rank})
         recall = sum(bool(r["retrieval_hit"]) for r in rows) / len(rows) if rows else 0.0; rr = [1 / r["lexical_rank"] for r in rows if r["lexical_rank"]]; return {"mode": "offline_retrieval_contract", "case_count": len(rows), "recall_at_k": recall, "mrr": statistics.fmean(rr) if rr else 0.0, "results": rows, "clinical_correctness_claimed": False, "citation_accuracy_claimed": False}
@@ -508,7 +505,7 @@ def fingerprint_failures(results: Iterable[PhaseResult]) -> list[dict[str, Any]]
     groups: dict[str, dict[str, Any]] = {}
     for phase in results:
         for failure in phase.failures:
-            location = str(failure.get("location") or "unknown"); exception = str(failure.get("exception") or "Failure"); message = re.sub(r"\s+", " ", str(failure.get("message") or failure.get("detail") or "")).strip().casefold(); key = f"{location}|{exception}|{re.sub(r'\d+', '#', message)[:180]}"
+            location = str(failure.get("location") or "unknown"); exception = str(failure.get("exception") or "Failure"); message = re.sub(r"\s+", " ", str(failure.get("message") or failure.get("detail") or "")).strip().casefold(); normalized_digits = re.sub(r"\d+", "#", message)[:180]; key = f"{location}|{exception}|{normalized_digits}"
             row = groups.setdefault(key, {"fingerprint": key, "phase_numbers": [], "evidence": [], "locations": []}); row["phase_numbers"].append(phase.number); row["locations"].append(location); row["evidence"].append(f"phase {phase.number}: {message[:240]}")
     output = list(groups.values())
     for row in output:
