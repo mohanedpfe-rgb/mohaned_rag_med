@@ -71,7 +71,7 @@ def _stable_embedding_init(self: Any, *args: Any, **kwargs: Any) -> None:
     if original is None or original is _stable_embedding_init:
         raise RuntimeError("EmbeddingService initializer is unavailable.")
     original(self, *args, **kwargs)
-    self.timeout_seconds = min(float(self.timeout_seconds), 60.0)
+    self.timeout_seconds = min(float(self.timeout_seconds), 300.0)
     self.retries = min(max(1, int(self.retries)), 3)
 
 
