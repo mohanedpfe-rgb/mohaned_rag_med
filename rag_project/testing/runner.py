@@ -14,7 +14,11 @@ from . import deep_diagnostics as core
 from .advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, metamorphic
 from .robust_probes import information_loss, retrieval_microscope
 from .strict_phases import phase10_production_generation
-from .strict_v2 import phase7_real_pdf_lab, phase14_real_benchmark, phase15_resource_stability, phase16_real_pipeline
+from .strict_v2 import phase7_real_pdf_lab, phase15_resource_stability
+from .production_answer_probes import phase10_canonical_answer_engine
+from .production_benchmark_probes import phase14_production_benchmark
+from .production_diagnostic_probes import phase12_stable_fingerprinting, phase13_known_causal_graph, phase17_strict_completion
+from .production_path_probes import phase16_production_ingestion_benchmark
 
 PHASES = tuple(
     replace(p, markers=("generation", "intelligence")) if p.number == 10 else
@@ -148,50 +152,7 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
 
 
 def _phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
-    result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time())
-    required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_pdf_extraction_to_storage_retrieval"}
-    failures = []
-    for number, level in required_levels.items():
-        details = results.get(number).details if results.get(number) else {}
-        if details.get("evidence_level") != level:
-            failures.append({"phase": number, "required_evidence_level": level, "actual": details.get("evidence_level")})
-    p10 = results.get(10)
-    for key in ("answer_generated", "citations_present", "citation_ids_valid", "verification_allow"):
-        if not p10 or not p10.details.get(key):
-            failures.append({"phase": 10, "required_evidence": key})
-    p11 = results.get(11)
-    if not p11 or p11.details.get("kill_score") != 1.0 or p11.details.get("mutants_applicable", 0) < 4 or not p11.details.get("real_pytest_subprocess"):
-        failures.append({"phase": 11, "required_evidence": ">=4 executable mutants, 100% kill, real pytest subprocess"})
-    p15 = results.get(15)
-    if not p15 or p15.details.get("repetitions", 0) < 3 or not p15.details.get("pipeline_exercised"):
-        failures.append({"phase": 15, "required_evidence": "repeated resource workload and monitored production storage/search"})
-    p16 = results.get(16)
-    if not p16 or not p16.details.get("gold_labels_independent_of_corpus_text") or p16.details.get("retrieval_recall", 0) < 0.8:
-        failures.append({"phase": 16, "required_evidence": "independent gold retrieval recall >= 0.8"})
-    for number, expected in ((12, "structured_runtime_failure_fingerprint"), (13, "graph_causal_hypothesis")):
-        details = results.get(number).details if results.get(number) else {}
-        if details.get("evidence_level") != expected:
-            failures.append({"phase": number, "required_evidence_level": expected, "actual": details.get("evidence_level")})
-    missing = sorted(set(range(1, 17)) - set(results))
-    failures.extend({"phase": number, "required_evidence": "phase result"} for number in missing)
-    non_pass = sorted(n for n, p in results.items() if n != 17 and p.status != "PASS")
-    failures.extend({"phase": n, "required_evidence": "phase status PASS", "actual_status": results[n].status} for n in non_pass)
-    unique_failed_phases = {row["phase"] for row in failures}
-    result.details = {
-        "implementation_coverage": "17/17" if not failures else f"{17-len(unique_failed_phases)}/17",
-        "phase_results_present": len(results)+1,
-        "missing_phase_results": missing,
-        "evidence_failures": failures,
-        "runtime_non_pass_phases": non_pass,
-        "certification_basis": "production-path evidence + executable negative testing + causal/resource evidence + every phase PASS",
-        "fully_implemented_phase_numbers": [] if failures else list(range(1,18)),
-    }
-    result.score = 1.0 if not failures else max(0.0, 1.0-len(unique_failed_phases)/17.0)
-    result.status = "PASS" if not failures else "FAIL"
-    if failures:
-        result.failures.append({"location": "phase 17 strict certification", "exception": "Incomplete17PhaseImplementation", "message": str(failures)})
-    result.duration_s = round(core.time.time() - result.started_at, 3)
-    return result
+    return phase17_strict_completion(spec, results)
 
 
 class UnifiedDiagnosticEngine(core.DiagnosticEngine):
@@ -224,14 +185,14 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         elif spec.number == 7: result = phase7_real_pdf_lab(spec)
         elif spec.number == 8: result = metamorphic(spec)
         elif spec.number == 9: result = retrieval_microscope(spec)
-        elif spec.number == 10: result = phase10_production_generation(spec)
+        elif spec.number == 10: result = phase10_canonical_answer_engine(spec)
         elif spec.number == 11: result = _hardened_mutation_phase(spec)
-        elif spec.number == 12: result = _hardened_fingerprinting(spec, self.results)
-        elif spec.number == 13: result = _hardened_causal_graph(spec, self.results)
-        elif spec.number == 14: result = phase14_real_benchmark(spec)
+        elif spec.number == 12: result = phase12_stable_fingerprinting(spec, self.results)
+        elif spec.number == 13: result = phase13_known_causal_graph(spec, self.results)
+        elif spec.number == 14: result = phase14_production_benchmark(spec)
         elif spec.number == 15: result = phase15_resource_stability(spec)
-        elif spec.number == 16: result = phase16_real_pipeline(spec)
-        elif spec.number == 17: result = _phase17_strict(spec, self.results)
+        elif spec.number == 16: result = phase16_production_ingestion_benchmark(spec)
+        elif spec.number == 17: result = phase17_strict_completion(spec, self.results)
         else: raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
         return self._upstream_failure_context(spec, result)
 
