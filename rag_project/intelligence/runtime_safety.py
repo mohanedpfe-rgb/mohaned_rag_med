@@ -55,8 +55,22 @@ def invalidate_stale_cache(system: Any, question: str) -> bool:
     return True
 
 
+def _valid_source_markers(answer: str, hits: Sequence[Any]) -> bool:
+    markers = re.findall(r"\[S(\d+)\]", str(answer or ""), flags=re.I)
+    if not markers:
+        return False
+    maximum = len(hits)
+    return all(1 <= int(marker) <= maximum for marker in markers)
+
+
+def _valid_citations(citations: Sequence[Any]) -> bool:
+    if not citations:
+        return False
+    return all(isinstance(citation, dict) and citation.get("valid") is True for citation in citations)
+
+
 def _is_safe_success(result: dict[str, Any]) -> bool:
-    """Require the public success envelope to contain verifiable evidence."""
+    """Require an explicit, measured, citation-backed public success envelope."""
     if str(result.get("status") or "").upper() not in _SUCCESS:
         return False
     if not str(result.get("answer") or "").strip():
@@ -66,16 +80,28 @@ def _is_safe_success(result: dict[str, Any]) -> bool:
         return False
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
     grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else {}
-    if verification.get("allow") is False or grounding.get("allow") is False:
+    if verification.get("allow") is not True:
         return False
-    markers = re.findall(r"\[S\d+\]", str(result.get("answer") or ""), flags=re.I)
-    citations = result.get("citations") or []
-    return bool(markers or citations)
+    if verification.get("checked") is not True:
+        return False
+    if grounding.get("allow") is not True:
+        return False
+    try:
+        supported_ratio = float(verification.get("supported_ratio", grounding.get("supported_ratio", 0.0)) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if supported_ratio < 0.70:
+        return False
+    if not str(result.get("generation_path") or "").strip():
+        return False
+    citations = list(result.get("citations") or [])
+    return _valid_citations(citations) or _valid_source_markers(str(result.get("answer") or ""), hits)
 
 
 def _force_safe_abstention(result: dict[str, Any], reason: str) -> dict[str, Any]:
     out = dict(result)
     out["status"] = "GENERATION_ABSTAIN"
+    out["generation_path"] = ""
     out["answer"] = "I could not safely verify the indexed evidence for this answer, so the answer was withheld."
     out["citations"] = []
     out["needs_review"] = True
@@ -88,8 +114,6 @@ def _force_safe_abstention(result: dict[str, Any], reason: str) -> dict[str, Any
 
 def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[str, Any] | None:
     original_verification = dict(result.get("verification") or {})
-    # If the verifier blocked claims, this is an evidence-safety rejection, not
-    # an infrastructure outage. Never convert it into a success automatically.
     if int(original_verification.get("blocked_claims", 0) or 0) > 0:
         return None
     hits = ready_hits(system, list(result.get("hits") or []))
@@ -123,6 +147,8 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         citations = manager.validate(built, hits) if manager else []
     except Exception:
         citations = []
+    if not _valid_citations(citations) and not _valid_source_markers(fallback, hits):
+        return None
     recovered = dict(result)
     recovered["status"] = "SUCCESS_WITH_WARNINGS"
     recovered["answer"] = fallback
@@ -143,7 +169,8 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
     }
     recovered["grounding"] = dict(grounding)
     recovered["final_verification"] = final
-    recovered["recovery"] = {"attempted": True, "pipeline_error": "RuntimeError", "grounded_extractive_fallback": True, "verification": "semantic_claim_verification"}
+    previous_error = str((result.get("recovery") or {}).get("pipeline_error") or "Unknown")
+    recovered["recovery"] = {"attempted": True, "pipeline_error": previous_error, "grounded_extractive_fallback": True, "verification": "semantic_claim_verification"}
     phases = dict(recovered.get("phase_implementation") or {})
     phases["degraded_to_recovery"] = True
     recovered["phase_implementation"] = phases
