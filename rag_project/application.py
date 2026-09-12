@@ -13,7 +13,7 @@ from rag_project.security import harden_system
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract, CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract, INGESTION_CONTRACT_VERSION
-from rag_project.canonical_runtime import install as install_canonical_runtime
+from rag_project.canonical_runtime import ANSWER_AUTHORITY, install as install_canonical_runtime
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
 from rag_project.intelligence.production_ops_strict import OperationsStore
 from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
@@ -23,8 +23,8 @@ from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 from rag_project.app import production_rag as production_rag_module
 
 _FACTORY_LOCK = threading.RLock()
-ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer"
-ACTIVE_ANSWER_PIPELINE_AUTHORITY = ANSWER_PIPELINE_AUTHORITY
+ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
+ACTIVE_ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
 _ORIGINAL_PRODUCTION_RAG_SYSTEM = production_rag_module.ProductionRAGSystem
 
 
