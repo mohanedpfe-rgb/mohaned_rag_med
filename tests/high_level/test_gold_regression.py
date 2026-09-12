@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -25,6 +26,22 @@ def pytest_generate_tests(metafunc):
     metafunc.parametrize("gold_case", cases, ids=[str(case["id"]) for case in cases])
 
 
+def _grounded_spy_response(system, question: str, expected_terms: list[str]) -> str:
+    hits = list(system.retriever.retrieve(question, top_k=3, where=None) or [])
+    parts: list[str] = []
+    for index, hit in enumerate(hits[:3], start=1):
+        text = " ".join(str(getattr(hit, "text", "") or "").split())
+        if not text:
+            continue
+        sentence = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        if len(sentence) < 18:
+            sentence = text[:500].strip()
+        parts.append(f"{sentence} [S{index}]")
+    if parts:
+        return "\n".join(parts)
+    return ". ".join(expected_terms or ["No evidence was retrieved"]) + ". [S1]"
+
+
 @pytest.mark.high_level
 def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, fake_ollama_fast, gold_case):
     case = gold_case
@@ -33,12 +50,11 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     must_contain = [str(value).casefold() for value in case.get("must_contain", [])]
     must_not_contain = [str(value).casefold() for value in case.get("must_not_contain", [])]
 
-    terms = [str(value) for value in case.get("must_contain", [])]
-    fake_ollama_fast.response = (
-        "The indexed evidence supports these facts: "
-        + ", ".join(terms or ["the indexed medical evidence"])
-        + ". [S1]"
-    )
+    if expected_path == "PATH_C_CONSTRAINED_LLM":
+        fake_ollama_fast.response = _grounded_spy_response(clean_system, case["question"], [str(v) for v in case.get("must_contain", [])])
+    else:
+        terms = [str(value) for value in case.get("must_contain", [])]
+        fake_ollama_fast.response = "The indexed evidence supports these facts: " + ", ".join(terms or ["the indexed medical evidence"]) + ". [S1]"
     clean_system.llm = fake_ollama_fast
 
     started = time.perf_counter()
