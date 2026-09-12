@@ -8,6 +8,7 @@ import socket
 import threading
 import time
 import unicodedata
+from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -118,7 +119,9 @@ def validate_ollama_url(value: str) -> str:
         return raw
     allowlist = {h.strip().lower() for h in os.getenv(OLLAMA_ALLOWLIST_ENV, "").split(",") if h.strip()}
     if not allowlist or host not in allowlist:
-        raise ValueError("Remote Ollama endpoints are disabled unless the exact hostname is in BOOKRAG_OLLAMA_ALLOWLIST.")
+        raise ValueError(
+            f"Remote Ollama endpoints are disabled unless the exact hostname is in the configured allowlist ({OLLAMA_ALLOWLIST_ENV})."
+        )
     addresses = {str(ipaddress.ip_address(x)) for x in _resolved_ips(host)}
     if not addresses or any(_is_disallowed_ip(addr) for addr in addresses):
         raise ValueError("Ollama hostname resolves to a private, local, reserved, or otherwise unsafe network address.")
@@ -260,26 +263,34 @@ def harden_system(system):
     except Exception: pass
     if getattr(system, "conversation_memory", None) is not None:
         memory = system.conversation_memory; original_prompt_context = memory.prompt_context
-        memory.prompt_context = lambda: sanitize_model_text(original_prompt_context(), limit=8000)
+        @wraps(original_prompt_context)
+        def safe_prompt_context():
+            return sanitize_model_text(original_prompt_context(), limit=8000)
+        memory.prompt_context = safe_prompt_context
     original_clear = system.clear_pdf_data; original_apply = system.apply_settings_in_place; original_ingest_directory = system.ingest_directory; original_ingest_file = system.ingest_file; original_answer = system.answer
+    @wraps(original_clear)
     def guarded_clear():
         require_clear_confirmation(); audit_event("clear_start")
         try: return original_clear()
         finally: audit_event("clear_finish")
+    @wraps(original_apply)
     def guarded_apply(updates):
         clean = dict(updates or {})
         if "ollama_base_url" in clean: clean["ollama_base_url"] = validate_ollama_url(clean["ollama_base_url"])
         for key in ("incoming_dir", "processed_dir", "failed_dir", "archive_dir", "vector_db_dir", "log_dir", "ingestion_db_path"):
             if key in clean: clean[key] = validate_storage_path(root, clean[key], key)
         return original_apply(clean)
+    @wraps(original_ingest_directory)
     def guarded_ingest_directory(directory=None):
         if not acquire_ingest_slot(0.1): raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
         try: return original_ingest_directory(directory)
         finally: release_ingest_slot()
+    @wraps(original_ingest_file)
     def guarded_ingest_file(pdf_path, *args, **kwargs):
         if not acquire_ingest_slot(0.1): raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
         try: return original_ingest_file(pdf_path, *args, **kwargs)
         finally: release_ingest_slot()
+    @wraps(original_answer)
     def guarded_answer(question, *args, **kwargs):
         question = validate_query(question)
         if not consume_rate_limit("answer", limit=30, window_seconds=60): raise RuntimeError("Too many questions in a short period. Please wait a moment and retry.")
