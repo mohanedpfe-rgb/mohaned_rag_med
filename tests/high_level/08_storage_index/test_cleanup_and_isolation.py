@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
+from tests.high_level.helpers import assert_citations_valid
 
 
 @pytest.mark.high_level
@@ -17,6 +18,12 @@ def test_storage__failed_input_does_not_leave_ready_document(clean_system, tmp_p
         record = clean_system.state_store.get_document(document_id)
         assert record is not None
         assert not clean_system.state_store.is_ready_status(record.get("status"))
+        with clean_system.state_store._connect() as connection:
+            page_count = connection.execute(
+                "SELECT COUNT(*) FROM pages WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()[0]
+        assert int(page_count or 0) == 0
 
 
 @pytest.mark.high_level
@@ -31,3 +38,4 @@ def test_storage__metadata_filter_prevents_cross_document_language_leak(clean_sy
     text = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or [])
     assert "FILTER_LANGUAGE_EN" in text
     assert "FILTER_LANGUAGE_FR" not in text
+    assert_citations_valid(result)
