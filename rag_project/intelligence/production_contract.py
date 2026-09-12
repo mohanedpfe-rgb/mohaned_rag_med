@@ -14,7 +14,6 @@ class FeatureSpec:
     critical: bool = True
 
 
-# Exactly one executable target per advertised capability.
 FEATURES: tuple[FeatureSpec, ...] = (
     FeatureSpec("universal_pdf_routing", "rag_project.intelligence.pdf_intelligence:classify_document_pages"),
     FeatureSpec("page_quality_scoring", "rag_project.intelligence.pdf_intelligence:score_page_quality"),
@@ -98,15 +97,12 @@ _LONG_ID = re.compile(r"\b\d{8,}\b")
 
 def _redact_phone_match(match: re.Match[str]) -> str:
     candidate = match.group(0)
-    # A plain digit run is handled by _LONG_ID below; phone redaction is reserved
-    # for explicit international notation or numbers containing separators.
     if candidate.lstrip().startswith("+") or re.search(r"[\s().-]", candidate):
         return "[REDACTED_PHONE]"
     return candidate
 
 
 def redact_sensitive_text(text: str) -> str:
-    """Best-effort diagnostic redaction; never intended as a clinical de-identification system."""
     value = str(text or "")
     value = _EMAIL.sub("[REDACTED_EMAIL]", value)
     value = _PHONENUMBER.sub(_redact_phone_match, value)
@@ -114,19 +110,28 @@ def redact_sensitive_text(text: str) -> str:
     return value
 
 
+def _redact_trace_value(value: Any, *, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {str(k): _redact_trace_value(v, key=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_trace_value(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_trace_value(item, key=key) for item in value)
+    if isinstance(value, set):
+        return {_redact_trace_value(item, key=key) for item in value}
+    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+        return redact_sensitive_text(str(value))
+    return value
+
+
 def sanitize_trace(trace: dict[str, Any] | None) -> dict[str, Any]:
-    """Return a telemetry-safe trace without changing the user-facing answer."""
+    """Return recursively redacted telemetry without changing the user-facing answer."""
     if not trace:
         return {}
-    result = dict(trace)
-    for key in ("question", "original_query"):
-        if key in result:
-            result[key] = redact_sensitive_text(str(result[key]))
-    return result
+    return _redact_trace_value(dict(trace))
 
 
 def production_readiness(profile: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic release decision from independent gates."""
     gates = {
         "feature_contract": bool(profile.get("feature_contract")),
         "tests_green": bool(profile.get("tests_green")),
