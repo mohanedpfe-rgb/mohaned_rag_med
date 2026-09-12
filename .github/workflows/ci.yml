@@ -6,6 +6,34 @@ on:
   pull_request:
 
 jobs:
+  diagnostic-fast-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+      - name: Validate installed environment
+        run: python -m pip check
+      - name: Run authoritative fast diagnostic
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+        run: python scripts/test_doctor.py --fast --fail-fast --json artifacts/diagnostic-fast.json
+      - name: Publish fast diagnostic artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic-fast
+          path: artifacts/diagnostic-fast.json
+          if-no-files-found: ignore
+
   high-level-behavior:
     runs-on: ubuntu-latest
     strategy:
