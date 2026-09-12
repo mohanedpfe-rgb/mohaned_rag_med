@@ -73,8 +73,12 @@ def _collect_consistency_records(system: Any, document_id: str | None) -> dict[s
         document = vector_docs[index] if index < len(vector_docs) else ""
         vector_map[str(raw_id)] = (str(document), dict(metadata))
 
+    # The runtime registry is a recovery mirror, not an independent vector
+    # namespace. Once the real vector collection returned authoritative rows,
+    # merging the mirror would double-count healthy records and create phantom
+    # vector rows during consistency repair.
     authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
-    if isinstance(authoritative, dict):
+    if not vector_map and isinstance(authoritative, dict):
         for raw_id, record in authoritative.items():
             metadata = dict((record or {}).get("metadata") or {})
             if document_id is not None and metadata.get("document_id") != document_id:
@@ -121,8 +125,8 @@ def quick_index_health(system: Any, document_id: str | None = None) -> dict[str,
         where = {"document_id": document_id} if document_id else None
         vector_count = int(vector_store.collection.count()) if where is None else len(_as_list(vector_store.collection.get(where=where, include=[]).get("ids")))
         authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
-        if document_id and isinstance(authoritative, dict):
-            vector_count = max(vector_count, sum(1 for record in authoritative.values() if (record.get("metadata") or {}).get("document_id") == document_id and str(record.get("index_state") or "READY").upper() == "READY"))
+        if vector_count == 0 and document_id and isinstance(authoritative, dict):
+            vector_count = sum(1 for record in authoritative.values() if (record.get("metadata") or {}).get("document_id") == document_id and str(record.get("index_state") or "READY").upper() == "READY")
         lexical_db = Path(vector_store.lexical_database)
         with _sqlite_connect(lexical_db) as connection:
             row = connection.execute("SELECT COUNT(*) FROM lexical_documents WHERE index_state = 'READY'" + (" AND json_extract(metadata, '$.document_id') = ?" if document_id else ""), ((str(document_id),) if document_id else ())).fetchone()
@@ -152,7 +156,9 @@ def repair_index_consistency(system: Any, document_id: str | None = None) -> dic
         expected[str(raw_id)] = (str(document), normalized)
 
     authoritative = getattr(vector_store, "_storage_contract_authoritative_records", {})
-    if isinstance(authoritative, dict):
+    if not expected and isinstance(authoritative, dict):
+        # Recovery mirror is used only when the real collection is empty. It must
+        # never introduce an additional expected vector row beside a real one.
         for raw_id, record in authoritative.items():
             metadata = dict((record or {}).get("metadata") or {})
             if scope is not None and metadata.get("document_id") != scope:
