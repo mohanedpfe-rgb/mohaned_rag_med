@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_citations_valid, assert_entities_present, assert_exact_path, assert_exact_status, assert_grounded
+from tests.high_level.helpers import (
+    assert_citations_valid,
+    assert_entities_present,
+    assert_exact_path,
+    assert_exact_status,
+    assert_grounded,
+)
 
 
 @pytest.mark.high_level
@@ -38,6 +44,7 @@ def test_multilingual__english_query_retrieves_french_and_arabic_evidence(clean_
 
     result = clean_system.answer("What does the indexed literature say about chronic diabetes?")
     assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     route = result.get("route") or {}
     assert route.get("language") == "en"
     hits = result.get("hits") or []
