@@ -157,15 +157,14 @@ def empty_document(tmp_path: Path):
 
 @pytest.fixture
 def clean_system(settings_i5: Settings, ready_document: Path):
-    try:
-        system = create_rag_system(settings_i5)
-        ingestion = system.ingest_file(ready_document)
-        status = str((ingestion or {}).get("status") or "").lower()
-        if status not in {"ready", "completed", "success", "skipped"}:
-            pytest.skip(f"controlled fixture document could not reach a usable ingestion state: {ingestion}")
-        return system
-    except Exception as exc:
-        pytest.skip(f"canonical runtime could not initialize in isolated profile: {type(exc).__name__}: {exc}")
+    system = create_rag_system(settings_i5)
+    ingestion = system.ingest_file(ready_document)
+    status = str((ingestion or {}).get("status") or "").upper()
+    assert status in {"READY", "COMPLETED", "SUCCESS", "SKIPPED"}, (
+        "controlled fixture document failed to reach a usable ingestion state: "
+        f"{ingestion!r}"
+    )
+    return system
 
 
 @pytest.fixture
