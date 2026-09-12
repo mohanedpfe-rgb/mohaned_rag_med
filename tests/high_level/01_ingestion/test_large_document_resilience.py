@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_large_pdf
-from tests.high_level.helpers import assert_status
+from tests.high_level.helpers import assert_exact_status
 
 
 @pytest.mark.high_level
@@ -12,7 +12,7 @@ def test_ingestion__hundred_page_pdf_reaches_ready_without_partial_state(clean_s
     document = write_large_pdf(tmp_path / "100_pages.pdf", pages=100)
     result = clean_system.ingest_file(document)
 
-    assert_status(result, {"READY"})
+    assert_exact_status(result, "READY")
     document_id = str(result.get("document_id") or result.get("id") or "")
     record = clean_system.state_store.get_document(document_id)
     assert record is not None
@@ -25,13 +25,13 @@ def test_ingestion__hundred_page_pdf_reaches_ready_without_partial_state(clean_s
 
 @pytest.mark.high_level
 @pytest.mark.slow
-def test_ingestion__large_document_records_terminal_process_events(clean_system, tmp_path):
+def test_ingestion__large_document_records_ready_terminal_process_event(clean_system, tmp_path):
     document = write_large_pdf(tmp_path / "events_100_pages.pdf", pages=100)
     result = clean_system.ingest_file(document)
-    assert_status(result, {"READY"})
+    assert_exact_status(result, "READY")
 
     document_id = str(result.get("document_id") or result.get("id") or "")
     events = clean_system.state_store.get_events(document_id)
     assert events
-    assert any(str(event.get("stage") or "").upper() in {"INDEXING", "VALIDATING_INDEX", "READY", "COMPLETED"} for event in events)
-    assert str(events[-1].get("status") or "").upper() in {"READY", "COMPLETED"}
+    assert any(str(event.get("stage") or "").upper() in {"INDEXING", "VALIDATING_INDEX", "READY"} for event in events)
+    assert str(events[-1].get("status") or "").upper() == "READY"
