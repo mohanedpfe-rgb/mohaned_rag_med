@@ -31,6 +31,8 @@ def test_production_contracts__runtime_contract_has_one_composition_root_and_no_
     assert contract["base_ingestion_engine"] == "rag_project.ingestion.robust_ingestor.robust_ingest_file"
     assert contract["versioned_ingestion_publication"] is True
     assert contract["last_known_good_preservation"] is True
+    assert contract["ready_only_retrieval_boundary"] is True
+    assert contract["ready_only_retriever"] == "rag_project.retrieval.ready_only_retriever.ReadyOnlyRetriever"
 
 
 @pytest.mark.high_level
