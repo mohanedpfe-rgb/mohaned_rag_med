@@ -21,8 +21,8 @@ def test_retrieval__finds_exact_medical_term_in_ready_evidence(clean_system):
 
 
 @pytest.mark.high_level
-def test_retrieval__preserves_exact_numeric_evidence_for_query(clеan_system):
-    result = clеan_system.answer("What dose of metformin is explicitly stated in the indexed document?")
+def test_retrieval__preserves_exact_numeric_evidence_for_query(clean_system):
+    result = clean_system.answer("What dose of metformin is explicitly stated in the indexed document?")
 
     assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
     hits = result.get("hits") or []
