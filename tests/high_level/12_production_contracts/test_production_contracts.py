@@ -86,11 +86,13 @@ def test_production_contracts__answer_exposes_all_canonical_phases(clean_system)
 
 @pytest.mark.high_level
 def test_production_contracts__versioned_ingestion_is_part_of_the_live_composition():
-    from rag_project.app.production_rag import ProductionRAGSystem
+    from rag_project.application import runtime_contract
     from rag_project.ingestion import versioned_ingestor
 
-    source = inspect.getsource(ProductionRAGSystem.ingest_file)
-    assert "versioned_ingestor.ingest_version_safely" in source
+    contract = runtime_contract()
+    assert contract["canonical_ingestion"] == "rag_project.ingestion.versioned_ingestor.ingest_version_safely"
+    assert contract["versioned_ingestion_publication"] is True
+    assert contract["last_known_good_preservation"] is True
     assert callable(versioned_ingestor.ingest_version_safely)
 
 
