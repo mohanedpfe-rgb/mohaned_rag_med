@@ -18,6 +18,16 @@ def _unique_archive_path(directory: Path, source: Path, suffix: str) -> Path:
     raise RuntimeError("Unable to allocate an archive path for a superseded document.")
 
 
+def _public_result(result: dict[str, Any]) -> dict[str, Any]:
+    out = dict(result or {})
+    status = str(out.get("status") or "").upper()
+    if status in {"SUCCESS", "COMPLETED"}:
+        out["status"] = "READY"
+    elif status == "FAILED":
+        out["status"] = "FAILED"
+    return out
+
+
 def _is_success(result: dict[str, Any]) -> bool:
     return str(result.get("status") or "").upper() in {"SUCCESS", "READY", "COMPLETED"}
 
@@ -59,12 +69,12 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     resolved = source.resolve()
     previous = system.state_store.get_by_path(str(resolved))
     if not previous or not source.is_file():
-        return robust_ingestor.robust_ingest_file(system, source)
+        return _public_result(robust_ingestor.robust_ingest_file(system, source))
 
     content_hash = system._hash_file(source)
     previous_hash = str(previous.get("content_hash") or "")
     if not previous_hash or previous_hash == content_hash:
-        return robust_ingestor.robust_ingest_file(system, source)
+        return _public_result(robust_ingestor.robust_ingest_file(system, source))
 
     incoming_dir = Path(system.settings.incoming_dir)
     incoming_dir.mkdir(parents=True, exist_ok=True)
@@ -78,7 +88,7 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         result["versioned_replacement"] = True
         result["previous_document_id"] = previous.get("document_id")
         result["previous_version_preserved"] = True
-        return result
+        return _public_result(result)
 
     new_document_id = str(result.get("document_id") or "")
     new_record = system.state_store.get_document(new_document_id) if new_document_id else None
