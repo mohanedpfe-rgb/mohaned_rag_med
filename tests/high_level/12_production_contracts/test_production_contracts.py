@@ -36,7 +36,10 @@ def test_production_contracts__feature_contract_and_startup_quality_are_explicit
 
     assert isinstance(contract, dict)
     assert contract.get("all_resolved") is True
-    assert int(contract.get("feature_count", 0)) >= 40
+    assert contract.get("unique_names") is True
+    assert contract.get("duplicates") == []
+    assert contract.get("unresolved") == {}
+    assert int(contract.get("feature_count", 0)) == 44
     assert isinstance(quality, dict)
     assert "ready" in quality
 
@@ -58,3 +61,14 @@ def test_production_contracts__answer_exposes_all_canonical_phases(clean_system)
     }
     assert expected.issubset(phases)
     assert all(str(phases[name]) for name in expected)
+
+
+@pytest.mark.high_level
+def test_production_contracts__versioned_ingestion_is_part_of_the_live_composition():
+    import inspect
+    from rag_project.app.production_rag import ProductionRAGSystem
+    from rag_project.ingestion import versioned_ingestor
+
+    source = inspect.getsource(ProductionRAGSystem.ingest_file)
+    assert "versioned_ingestor.ingest_version_safely" in source
+    assert callable(versioned_ingestor.ingest_version_safely)
