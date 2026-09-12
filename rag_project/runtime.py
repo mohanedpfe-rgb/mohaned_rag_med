@@ -45,6 +45,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_answer_recovery_contract import install as answer_recovery_contract
     from rag_project.runtime_deep_contract_fix import install as deep_contract_fix
     from rag_project.runtime_post_contract_fix import install as post_contract_fix
+    from rag_project.runtime_functionality_deep_fix import install as functionality_deep_fix
 
     return (
         vector_store,
@@ -82,6 +83,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         answer_recovery_contract,
         deep_contract_fix,
         post_contract_fix,
+        functionality_deep_fix,
     )
 
 
