@@ -19,11 +19,13 @@ if str(ROOT) not in sys.path:
 from rag_project.testing import runner as diagnostic_runner
 from rag_project.testing.deep_diagnostics import render_report, write_report
 from rag_project.testing.production_answer_probes import phase10_canonical_answer_engine
+from rag_project.testing.production_benchmark_probes import phase14_production_benchmark
 from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
 
-# The authoritative CLI must exercise the canonical production answer and ingestion
-# authorities rather than reduced component-only surrogates.
+# The authoritative CLI must exercise the canonical production answer, benchmark,
+# and ingestion authorities rather than reduced component-only surrogates.
 diagnostic_runner.phase10_production_generation = phase10_canonical_answer_engine
+diagnostic_runner.phase14_real_benchmark = phase14_production_benchmark
 diagnostic_runner.phase16_real_pipeline = phase16_production_ingestion_benchmark
 PHASES = diagnostic_runner.PHASES
 run_all = diagnostic_runner.run_all
