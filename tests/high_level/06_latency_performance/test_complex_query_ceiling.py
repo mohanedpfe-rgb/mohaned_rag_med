@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.high_level.helpers import assert_citations_valid, assert_grounded, assert_latency_under, assert_status, timed_call
+from tests.high_level.helpers import assert_citations_valid, assert_exact_path, assert_exact_status, assert_grounded, assert_latency_under, assert_pipeline_authority, timed_call
 
 
 @pytest.mark.high_level
@@ -20,13 +20,12 @@ def test_complex_question__stays_under_configured_generation_ceiling(clean_syste
         "using only the indexed evidence.",
     )
 
-    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
-    assert result.get("generation_path") == "PATH_C_CONSTRAINED_LLM", result
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_C_CONSTRAINED_LLM")
+    assert_pipeline_authority(result)
     assert fake_ollama_fast.calls, "complex synthesis query must invoke the LLM"
 
     configured_budget_seconds = float(clean_system.settings.generation_latency_budget_seconds)
-    # Allow only a small observer-side scheduling margin; the reported production
-    # latency itself must remain inside the configured answer budget.
     assert_latency_under(result, configured_budget_seconds)
     assert wall_clock_seconds <= configured_budget_seconds + 0.75
 
