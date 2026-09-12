@@ -152,6 +152,15 @@ def test_numeric_verifier_restores_mismatch_if_an_earlier_wrapper_cleared_it_inc
     assert result["numeric_mismatch"] is True and result["allow"] is False
 
 
+def test_numeric_verifier_checks_signed_values():
+    hit = SimpleNamespace(text="The measured temperature is -5 mg equivalent value.", metadata={})
+    route = SimpleNamespace(numeric_sensitivity=True)
+    original_result = {"numeric_mismatch": False, "grounding": {"allow": True}, "final_answer": {"allow": True}, "allow": True}
+    wrapped = _wrap_numeric_verifier(lambda self, answer, hits, route, compiled: original_result)
+    result = wrapped(SimpleNamespace(), "The value is -7 mg.", [hit], route, {})
+    assert result["numeric_mismatch"] is True and result["allow"] is False
+
+
 def test_numeric_claim_must_match_the_cited_source_not_another_source():
     answer = "The dose is 500 mg. [S1]"
     evidence = ["The dose is 250 mg.", "The dose is 500 mg."]
