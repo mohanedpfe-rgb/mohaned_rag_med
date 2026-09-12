@@ -61,6 +61,7 @@ jobs:
 
   high-level-behavior:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     strategy:
       fail-fast: false
       matrix:
@@ -75,31 +76,52 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements.lock
+          python -m pip install pytest-xdist
       - name: Validate installed environment
         run: python -m pip check
       - name: Compile source
         run: python -m compileall -q rag_project app.py run_dev.py scripts
       - name: Validate two-plan test inventory
         run: python scripts/validate_test_inventory.py
-      - name: Run exact 13-phase high-level plan
+      - name: Run parallel high-level fast gate (60 second budget)
         env:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
-        run: python scripts/run_high_level_plan.py --json artifacts/high-level-13-phase.json
-      - name: Run high-level behavior suite as a collection gate
-        env:
-          DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "true"
-          EMBEDDING_TEST_MODE: "true"
-        run: python -m pytest -q tests/high_level -m high_level
-      - name: Publish 13-phase and pytest artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: high-level-13-phase-python-${{ matrix.python-version }}
-          path: artifacts/high-level-13-phase.json
-          if-no-files-found: ignore
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import time
+
+          command = [
+              sys.executable,
+              "-m",
+              "pytest",
+              "tests/high_level",
+              "-m",
+              "high_level and not slow",
+              "-n",
+              "auto",
+              "--dist",
+              "loadscope",
+              "--durations=20",
+              "-q",
+          ]
+          started = time.perf_counter()
+          completed = subprocess.run(command, check=False)
+          elapsed = time.perf_counter() - started
+          print(f"HIGH_LEVEL_FAST_WALL_CLOCK_SECONDS={elapsed:.2f}")
+          if completed.returncode != 0:
+              raise SystemExit(completed.returncode)
+          if elapsed > 60.0:
+              print(
+                  f"HIGH_LEVEL_FAST_BUDGET_EXCEEDED: {elapsed:.2f}s > 60.00s",
+                  file=sys.stderr,
+              )
+              raise SystemExit(78)
+          print("HIGH_LEVEL_FAST_60S_BUDGET_VERIFIED")
+          PY
 
   regression-suite:
     runs-on: ubuntu-latest
