@@ -19,12 +19,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install --require-hashes -r requirements.lock
-      - name: Run high-level slow scenarios
+          python -m pip install pytest-xdist
+      - name: Run complete high-level behavior suite in parallel
         env:
           DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "false"
+          OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
-        run: python -m pytest -q tests/high_level -m "high_level and slow"
+        run: python -m pytest -q tests/high_level -m high_level -n auto --dist loadscope --durations=20
+      - name: Run the authoritative 13-phase plan
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "true"
+          EMBEDDING_TEST_MODE: "true"
+        run: python scripts/run_high_level_plan.py --json artifacts/high-level-13-phase.json
       - name: Run optional real-Ollama tests when available
         env:
           DEVICE_MODE: i5_16gb
@@ -34,3 +41,10 @@ jobs:
           else
             echo "Ollama is not available on this runner; optional real-Ollama tests are skipped."
           fi
+      - name: Publish 13-phase artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: high-level-13-phase-nightly
+          path: artifacts/high-level-13-phase.json
+          if-no-files-found: ignore
