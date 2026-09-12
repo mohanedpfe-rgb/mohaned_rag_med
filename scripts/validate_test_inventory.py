@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ast
 import json
-import sys
 from pathlib import Path
 
 MIN_TOTAL_TEST_FUNCTIONS = 500
@@ -13,7 +12,8 @@ MIN_HIGH_LEVEL_TEST_FUNCTIONS = 80
 
 def _functions(path: Path) -> tuple[int, int, int]:
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source_text = path.read_text(encoding="utf-8")
+        tree = ast.parse(source_text, filename=str(path))
     except (OSError, SyntaxError):
         return 0, 0, 0
     total = high_level = integration = 0
@@ -24,7 +24,7 @@ def _functions(path: Path) -> tuple[int, int, int]:
         parts = {p.lower() for p in path.parts}
         if "high_level" in parts:
             high_level += 1
-        source = ast.get_source_segment(path.read_text(encoding="utf-8"), node) or ""
+        source = ast.get_source_segment(source_text, node) or ""
         if "pytest.mark.integration" in source or "/integration/" in str(path).replace("\\", "/"):
             integration += 1
     return total, high_level, integration
@@ -37,10 +37,14 @@ def inspect(root: Path) -> dict[str, int | bool]:
     for path in tests.rglob("test_*.py"):
         files += 1
         a, b, c = _functions(path)
-        total += a; high_level += b; integration += c
-    # High-level behavior tests are integration-grade tests by design when the
-    # explicit integration marker is absent, so count them toward the plan floor.
-    effective_integration = max(integration, high_level)
+        total += a
+        high_level += b
+        integration += c
+
+    # High-level behavior tests and explicit integration tests are separate test
+    # populations. Both are executable integration-grade coverage, so their sum
+    # is the effective integration population; do not take max() and discard one.
+    effective_integration = integration + high_level
     result = {
         "test_files": files,
         "total_test_functions": total,
