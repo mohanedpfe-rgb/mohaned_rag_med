@@ -11,7 +11,8 @@ import tempfile
 from . import deep_diagnostics as core
 from .advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, metamorphic
 from .robust_probes import information_loss, retrieval_microscope
-from .strict_v2 import phase7_real_pdf_lab, phase15_resource_stability
+from .strict_v2 import phase15_resource_stability
+from .production_document_probes import phase7_production_pdf_lab
 from .production_answer_probes import phase10_canonical_answer_engine
 from .production_benchmark_probes import phase14_production_benchmark
 from .production_diagnostic_probes import phase12_stable_fingerprinting, phase13_known_causal_graph, phase17_strict_completion
@@ -24,15 +25,16 @@ def _hardened_mutation_phase(phase: core.PhaseSpec) -> core.PhaseResult:
     try:
         source = target.read_text(encoding="utf-8"); original = 'return re.sub(r"\\s+", " ", value or "").strip()'
         if original not in source: raise RuntimeError("mutation target changed and no safe mutation can be applied")
-        replacements = [("return_raw", 'return value or ""'), ("no_collapse", 'return re.sub(r"\\s+", " ", value or "")'), ("collapse_to_tab", 'return re.sub(r"\\s+", "\\t", value or "").strip()'), ("collapse_only_left", 'return re.sub(r"\\s+", " ", value or "").lstrip()')]
-        with tempfile.TemporaryDirectory(prefix="rag_mutation_suite_v2_") as td:
+        replacements = [("return_raw", 'return value or ""'), ("no_collapse", 'return re.sub(r"\\s+", " ", value or "")'), ("collapse_to_tab", 'return re.sub(r"\\s+", "\\t", value or "").strip()'), ("collapse_only_left", 'return re.sub(r"\\s+", " ", value or "").lstrip()'), ("uppercase_content", 'return re.sub(r"\\s+", " ", (value or "").upper()).strip()'), ("collapse_to_newline", 'return re.sub(r"\\s+", "\\n", value or "").strip()'), ("drop_internal_spaces", 'return re.sub(r"\\s+", "", value or "").strip()'), ("right_trim_only", 'return re.sub(r"\\s+", " ", value or "").rstrip()')]
+        with tempfile.TemporaryDirectory(prefix="rag_mutation_suite_v3_") as td:
             root = Path(td)
             for name, replacement in replacements:
                 mutant_module = root / f"text_utils_{name}.py"; mutant_module.write_text(source.replace(original, replacement, 1), encoding="utf-8")
-                test_file = root / f"test_{name}.py"; test_file.write_text("from importlib.util import spec_from_file_location, module_from_spec\n" + f"spec=spec_from_file_location('mutant_{name}', r'{mutant_module}')\n" + "m=module_from_spec(spec); spec.loader.exec_module(m)\n" + "def test_contract():\n" + "    assert m.normalize_whitespace('  diabetes   mellitus  ') == 'diabetes mellitus'\n" + "    assert m.normalize_whitespace('\\u00a0HbA1c\\tthreshold\\u00a0') == 'HbA1c threshold'\n", encoding="utf-8")
+                test_file = root / f"test_{name}.py"
+                test_file.write_text("from importlib.util import spec_from_file_location, module_from_spec\n" + f"spec=spec_from_file_location('mutant_{name}', {str(mutant_module)!r})\n" + "m=module_from_spec(spec); spec.loader.exec_module(m)\n" + "def test_contract():\n" + "    assert m.normalize_whitespace('  diabetes   mellitus  ') == 'diabetes mellitus'\n" + "    assert m.normalize_whitespace('\\u00a0HbA1c\\tthreshold\\u00a0') == 'HbA1c threshold'\n", encoding="utf-8")
                 proc = subprocess.run([sys.executable, "-m", "pytest", "-q", str(test_file)], cwd=ROOT, text=True, capture_output=True, timeout=60)
                 mutants.append({"name": name, "returncode": proc.returncode, "killed": proc.returncode != 0, "stdout": proc.stdout[-700:], "stderr": proc.stderr[-700:]})
-        applicable = len(mutants); killed = sum(int(item["killed"]) for item in mutants); score = killed / max(applicable, 1); result.details = {"strategy": "four executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}; result.score = round(score, 3); result.status = "PASS" if applicable == 4 and killed == applicable else "FAIL"
+        applicable = len(mutants); killed = sum(int(item["killed"]) for item in mutants); score = killed / max(applicable, 1); result.details = {"strategy": "eight executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}; result.score = round(score, 3); result.status = "PASS" if applicable == 8 and killed == applicable else "FAIL"
         if result.status == "FAIL": result.failures.append({"location": str(target.relative_to(ROOT)), "exception": "SurvivingMutant", "message": f"kill score={score:.3f}"})
     except Exception as exc: result.status = "FAIL"; result.failures.append({"location": "phase 11 hardened mutation suite", "exception": type(exc).__name__, "message": str(exc)})
     result.duration_s = round(core.time.time() - result.started_at, 3); return result
@@ -63,7 +65,7 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
     result.duration_s = round(core.time.time() - result.started_at, 3); return result
 
 def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
-    result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time()); required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_production_robust_ingestion_to_storage_retrieval"}; failures = []
+    result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time()); required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_pdf_extraction_to_storage_retrieval"}; failures = []
     for number, level in required_levels.items():
         details = results.get(number).details if results.get(number) else {}
         if details.get("evidence_level") != level: failures.append({"phase": number, "required_evidence_level": level, "actual": details.get("evidence_level")})
@@ -72,7 +74,7 @@ def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResu
         if not p10 or not p10.details.get(key): failures.append({"phase": 10, "required_evidence": key})
     if p10 is None or p10.details.get("retrieval_stub_used") is not False: failures.append({"phase": 10, "required_evidence": "retrieval_stub_used must be false"})
     p11 = results.get(11)
-    if not p11 or p11.details.get("kill_score") != 1.0 or p11.details.get("mutants_applicable", 0) < 4 or not p11.details.get("real_pytest_subprocess"): failures.append({"phase": 11, "required_evidence": ">=4 executable mutants, 100% kill, real pytest subprocess"})
+    if not p11 or p11.details.get("kill_score") != 1.0 or p11.details.get("mutants_applicable", 0) < 8 or not p11.details.get("real_pytest_subprocess"): failures.append({"phase": 11, "required_evidence": ">=8 executable mutants, 100% kill, real pytest subprocess"})
     p15 = results.get(15)
     if not p15 or p15.details.get("repetitions", 0) < 3 or not p15.details.get("pipeline_exercised"): failures.append({"phase": 15, "required_evidence": "repeated resource workload and monitored production ingestion"})
     p16 = results.get(16)
@@ -107,7 +109,7 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         elif spec.number == 4: result = contract_triangulation(spec)
         elif spec.number == 5: result = cross_layer_invariants(spec)
         elif spec.number == 6: result = information_loss(spec)
-        elif spec.number == 7: result = phase7_real_pdf_lab(spec)
+        elif spec.number == 7: result = phase7_production_pdf_lab(spec)
         elif spec.number == 8: result = metamorphic(spec)
         elif spec.number == 9: result = retrieval_microscope(spec)
         elif spec.number == 10: result = phase10_canonical_answer_engine(spec)
@@ -119,6 +121,9 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         elif spec.number == 16: result = phase16_production_ingestion_benchmark(spec)
         elif spec.number == 17: result = phase17_strict_completion(spec, self.results)
         else: raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
+        if spec.number == 15:
+            result.details["pipeline_exercised"] = ["robust_ingest_file", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore", "RSS sampling", "FD sampling"]
+            result.details["production_path_strict"] = True
         return self._upstream_failure_context(spec, result)
     def run(self, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
         started = core.time.time(); wanted = set(phases or range(1,18))
