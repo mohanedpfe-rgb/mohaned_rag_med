@@ -7,13 +7,20 @@ from rag_project.testing.advanced_phases import _cleanup_store, _embedding, _fix
 
 
 def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
+    import shutil
+    import tempfile
     import time
+    from pathlib import Path
+
     result = PhaseResult(phase.number, phase.key, phase.name, started_at=time.time())
     tmp = None
+    server = None
+    answer_roots: list[Path] = []
     try:
         from rag_project.chunking.semantic_chunker import SemanticChunker
+        from rag_project.generation.llm_client import OllamaLLMClient
         from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
-        from rag_project.testing.production_answer_probes import _DeterministicLLM, _ProbeSystem, _seed_real_retrieval
+        from rag_project.testing.production_answer_probes import _LocalOllamaServer, _ProbeSystem, _seed_real_retrieval
         from rag_project.utils.text_utils import clean_text, normalize_whitespace, tokenize
 
         chunks = _fixture_chunks()
@@ -49,20 +56,33 @@ def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
         token_variants = [tokenize(value) for value in variants]
         query_invariant = len(set(normalized_queries)) == 1 and all(tokens == token_variants[0] for tokens in token_variants)
 
+        server = _LocalOllamaServer()
         answer_outputs = []
         answer_citations = []
-        for query in variants:
-            root = __import__("pathlib").Path(__import__("tempfile").mkdtemp(prefix="rag_phase8_answer_"))
-            try:
-                system = _ProbeSystem(root, llm=_DeterministicLLM())
-                _seed_real_retrieval(system)
-                response = MedEvidenceProEngine(system).answer(query)
-                answer_outputs.append(normalize(str(response.get("answer") or "")))
-                answer_citations.append(tuple(sorted(str(item.get("document_id")) for item in (response.get("citations") or []))))
-            finally:
-                __import__("shutil").rmtree(root, ignore_errors=True)
+        answer_verification = []
+        protocol_health = []
+        generation_paths = []
+        for index, query in enumerate([
+            "Explain diabetes mellitus and the role of HbA1c in diagnosis.",
+            "  Explain diabetes mellitus and the role of HbA1c in diagnosis.  ",
+            "EXPLAIN DIABETES MELLITUS AND THE ROLE OF HBA1C IN DIAGNOSIS.",
+            "Explain   diabetes mellitus and the role of HbA1c in diagnosis.",
+        ]):
+            root = Path(tempfile.mkdtemp(prefix=f"rag_phase8_answer_{index}_")); answer_roots.append(root)
+            system = _ProbeSystem(root, llm=OllamaLLMClient(server.base_url, "diagnostic-protocol:latest", timeout_seconds=15, max_output_tokens=512))
+            system.generation_backend = "ollama_protocol"
+            _seed_real_retrieval(system)
+            protocol_health.append(bool(system.llm.health_check(timeout_seconds=2.0)))
+            response = MedEvidenceProEngine(system).answer(query)
+            answer_outputs.append(normalize(str(response.get("answer") or "")))
+            answer_citations.append(tuple(sorted(str(item.get("document_id")) for item in (response.get("citations") or []))))
+            answer_verification.append(bool((response.get("verification") or {}).get("allow")))
+            generation_paths.append(str(response.get("generation_path") or ""))
+
         answer_invariant = bool(answer_outputs[0]) and len(set(answer_outputs)) == 1
         citation_invariant = bool(answer_citations[0]) and len(set(answer_citations)) == 1
+        verification_invariant = bool(answer_verification) and all(answer_verification)
+        client_path_invariant = bool(protocol_health) and all(protocol_health) and all("ollama" in path.casefold() or "generated" in path.casefold() for path in generation_paths)
 
         checks = {
             "query_normalization_invariant": query_invariant,
@@ -71,13 +91,16 @@ def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
             "production_chunker_executed_for_both_variants": bool(canonical_chunks and whitespace_chunks),
             "answer_semantics_stable_under_query_formatting": answer_invariant,
             "citation_identity_stable_under_query_formatting": citation_invariant,
+            "answer_verification_stable_under_query_formatting": verification_invariant,
+            "ollama_client_protocol_stable_under_query_formatting": client_path_invariant,
         }
         failures = [name for name, value in checks.items() if not value]
         result.details = {
+            "evidence_level": "end_to_end_rag_metamorphic_execution",
             "production_functions": [
                 "VectorStore.search_lexical", "VectorStore.search", "SemanticChunker.chunk_pages",
                 "clean_text", "normalize_whitespace", "tokenize", "MedEvidenceProEngine.answer",
-                "CitationManager",
+                "CitationManager", "OllamaLLMClient",
             ],
             "checks": checks,
             "query_variants": variants,
@@ -86,19 +109,28 @@ def run_full_metamorphic_suite(phase: Any) -> PhaseResult:
             "normalized_queries": normalized_queries,
             "answer_invariance_outputs": answer_outputs,
             "citation_invariance_identities": [list(value) for value in answer_citations],
+            "verification_results": answer_verification,
+            "generation_paths": generation_paths,
+            "ollama_protocol_health_checks": protocol_health,
             "canonical_chunk_count": len(canonical_chunks),
             "whitespace_chunk_count": len(whitespace_chunks),
-            "mutation_kind": "semantics-preserving whitespace/case transformations across retrieval, chunking, answer and citation layers",
+            "mutation_kind": "semantics-preserving whitespace/case transformations across retrieval, chunking, generation, verification and citation identity",
             "end_to_end_answer_path_executed": True,
+            "ollama_protocol_path_executed": True,
+            "transformation_count": len(checks),
         }
         result.score = sum(checks.values()) / len(checks)
         result.status = "PASS" if not failures else "FAIL"
         if failures:
-            result.failures.append({"location": "phase 8 full end-to-end metamorphic suite", "exception": "MetamorphicInvariantFailure", "message": str(failures)})
+            result.failures.append({"location": "phase 8 full end-to-end RAG metamorphic suite", "exception": "MetamorphicInvariantFailure", "message": str(failures)})
     except Exception as exc:
         result.status = "FAIL"
-        result.failures.append({"location": "phase 8 full retrieval metamorphic suite", "exception": type(exc).__name__, "message": str(exc)})
+        result.failures.append({"location": "phase 8 full end-to-end RAG metamorphic suite", "exception": type(exc).__name__, "message": str(exc)})
     finally:
+        if server is not None:
+            server.close()
+        for root in answer_roots:
+            shutil.rmtree(root, ignore_errors=True)
         if tmp is not None:
             _cleanup_store(tmp)
     result.duration_s = round(time.time() - result.started_at, 3)
