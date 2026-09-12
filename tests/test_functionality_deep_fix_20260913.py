@@ -142,6 +142,15 @@ def test_numeric_verifier_clears_mismatch_when_all_values_are_equivalent():
     assert result["numeric_mismatch"] is False and result["allow"] is True
 
 
+def test_numeric_verifier_restores_mismatch_if_an_earlier_wrapper_cleared_it_incorrectly():
+    hit = SimpleNamespace(text="The dose is 1 g; another reported dose is 500 mg.", metadata={})
+    route = SimpleNamespace(numeric_sensitivity=True)
+    earlier_result = {"numeric_mismatch": False, "grounding": {"allow": True}, "final_answer": {"allow": True}, "allow": True}
+    wrapped = _wrap_numeric_verifier(lambda self, answer, hits, route, compiled: earlier_result)
+    result = wrapped(SimpleNamespace(), "Use 1000 mg and 750 mg.", [hit], route, {})
+    assert result["numeric_mismatch"] is True and result["allow"] is False
+
+
 def test_numeric_claim_must_match_the_cited_source_not_another_source():
     answer = "The dose is 500 mg. [S1]"
     evidence = ["The dose is 250 mg.", "The dose is 500 mg."]
