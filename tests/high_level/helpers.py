@@ -18,10 +18,16 @@ ABSTAIN_STATUSES = {
 SUCCESS_STATUSES = {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
-def assert_status(result: dict[str, Any], allowed: set[str]) -> None:
-    status = str(result.get("status") or "").upper()
-    normalized = {value.upper() for value in allowed}
-    assert status in normalized, f"status={status!r}, allowed={sorted(normalized)}"
+def assert_status(result: dict[str, Any], expected: str) -> None:
+    assert isinstance(expected, str), "assert_status() accepts exactly one expected status; use assert_one_of_statuses() for explicit alternatives"
+    assert_exact_status(result, expected)
+
+
+def assert_one_of_statuses(result: dict[str, Any], allowed: set[str]) -> None:
+    normalized = {str(value).upper() for value in allowed}
+    assert len(normalized) >= 2, "assert_one_of_statuses() is for explicit multi-outcome tests"
+    actual = str(result.get("status") or "").upper()
+    assert actual in normalized, f"status={actual!r}, allowed={sorted(normalized)}"
 
 
 def assert_exact_status(result: dict[str, Any], expected: str) -> None:
@@ -149,7 +155,7 @@ def assert_extractive_path(result: dict[str, Any]) -> None:
 
 
 def assert_abstained(result: dict[str, Any]) -> None:
-    assert_status(result, ABSTAIN_STATUSES)
+    assert_one_of_statuses(result, ABSTAIN_STATUSES)
     answer = str(result.get("answer") or "").lower()
     assert not any(token in answer for token in ("i am certain", "definitely", "the patient should"))
     assert not result.get("citations"), "abstention must not expose positive citations"
