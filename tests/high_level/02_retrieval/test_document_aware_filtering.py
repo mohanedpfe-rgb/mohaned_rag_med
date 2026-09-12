@@ -1,18 +1,24 @@
+from __future__ import annotations
+
 import pytest
 
-@pytest.mark.high_level
+from tests.high_level.conftest import write_minimal_pdf
+from tests.high_level.helpers import assert_status
 
-def test_metadata_filter__changes_retrieval_scope(clean_system):
-    retriever = getattr(clean_system, "retriever", None)
-    assert retriever is not None
-    try:
-        hits = retriever.retrieve("diabetes", top_k=5, where={"language": "en"})
-    except TypeError:
-        pytest.skip("retriever does not expose metadata filter in this runtime")
-    assert isinstance(hits, (list, tuple))
 
 @pytest.mark.high_level
+def test_retrieval__document_aware_answer_uses_requested_document_evidence(clean_system, tmp_path):
+    diabetes = write_minimal_pdf(tmp_path / "diabetes_source.pdf", ["DOC_A_UNIQUE: diabetes mellitus is a chronic metabolic disorder."])
+    anemia = write_minimal_pdf(tmp_path / "anemia_source.pdf", ["DOC_B_UNIQUE: anemia is a reduction in red blood cell mass."])
+    a = clean_system.ingest_file(diabetes)
+    b = clean_system.ingest_file(anemia)
+    assert_status(a, {"READY"})
+    assert_status(b, {"READY"})
 
-def test_answer__reports_document_aware_execution(clean_system):
-    result = clean_system.answer("What is diabetes mellitus?")
-    assert result.get("document_aware", True) is True
+    result = clean_system.answer("What does DOC_A_UNIQUE say about diabetes mellitus?")
+    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+    hits = result.get("hits") or []
+    assert hits
+    texts = " ".join(str(getattr(hit, "text", "")) for hit in hits).casefold()
+    assert "doc_a_unique" in texts
+    assert "doc_b_unique" not in texts
