@@ -60,9 +60,18 @@ def _wrap_retrieval_skip_health_probe(original):
     return wrapped
 
 
-def _citation_complete_without_shared_state(original):
-    """Validate citations against evidence actually supplied to the current generation."""
+def _citation_complete_without_shared_state(original) -> Any:
+    """Validate citations against the evidence IDs actually supplied to this generation."""
     def wrapped(answer: str, hit_count: int) -> bool:
+        expected_ids = getattr(_TLS, "citation_ids", None)
+        markers = {int(x) for x in re.findall(r"\[S(\d+)\]", str(answer or ""), flags=re.I)}
+        if expected_ids is not None:
+            try:
+                allowed_ids = {int(x) for x in expected_ids}
+            except (TypeError, ValueError):
+                allowed_ids = set()
+            if not markers or not markers.issubset(allowed_ids):
+                return False
         expected = getattr(_TLS, "citation_limit", None)
         return original(answer, int(expected if expected is not None else hit_count))
     wrapped._functionality_citation_guard = True
@@ -78,18 +87,27 @@ def _wrap_generate(original):
             for number in (getattr(claim, "source_numbers", ()) or ())
             if isinstance(number, int) or str(number).isdigit()
         ]
-        previous = getattr(_TLS, "citation_limit", None)
+        previous_limit = getattr(_TLS, "citation_limit", None)
+        previous_ids = getattr(_TLS, "citation_ids", None)
         _TLS.citation_limit = max(source_numbers, default=0)
+        _TLS.citation_ids = set(source_numbers)
         try:
             return original(self, question, route, compiled)
         finally:
-            if previous is None:
+            if previous_limit is None:
                 try:
                     del _TLS.citation_limit
                 except AttributeError:
                     pass
             else:
-                _TLS.citation_limit = previous
+                _TLS.citation_limit = previous_limit
+            if previous_ids is None:
+                try:
+                    del _TLS.citation_ids
+                except AttributeError:
+                    pass
+            else:
+                _TLS.citation_ids = previous_ids
     wrapped._functionality_generate_guard = True
     return wrapped
 
