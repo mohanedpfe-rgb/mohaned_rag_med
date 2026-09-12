@@ -32,11 +32,9 @@ def _wrap_retrieval_skip_health_probe(original):
         method = getattr(retriever, "retrieve", None)
         if not callable(method):
             return original(self, question, route, where)
-        called = {"probe": False}
         original_method = method
         def proxy(query: Any, top_k: Any = 8, filter_where: Any = None, *args: Any, **kwargs: Any):
-            if not called["probe"] and query == question and top_k == 1 and filter_where == where and not args and not kwargs:
-                called["probe"] = True
+            if query == question and top_k == 1 and filter_where == where and not args and not kwargs:
                 return []
             return original_method(query, top_k, filter_where, *args, **kwargs)
         try:
@@ -87,7 +85,7 @@ def _wrap_generate(original):
     wrapped._functionality_generate_guard = True
     return wrapped
 
-_NUMERIC_RE = re.compile(r"(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)\b", re.I)
+_NUMERIC_RE = re.compile(r"(?P<value>[-+]?\d+(?:\.\d+)?)\s*(?P<unit>mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)\b", re.I)
 _UNIT_SCALE = {"kg":1_000_000.0,"g":1_000.0,"mg":1.0,"mcg":0.001,"µg":0.001,"l":1_000.0,"ml":1.0,"mmhg":1.0,"mmol/l":1.0,"%":1.0,"iu":1.0,"unit":1.0,"units":1.0}
 _UNIT_DIMENSION = {"kg":"mass","g":"mass","mg":"mass","mcg":"mass","µg":"mass","l":"volume","ml":"volume","mmhg":"pressure","mmol/l":"concentration","%":"percent","iu":"activity","unit":"activity","units":"activity"}
 
