@@ -12,10 +12,10 @@ from tests.high_level.helpers import (
 
 
 @pytest.mark.high_level
-def test_abstention__unsupported_question_uses_exact_not_supported_path_and_no_citations(clean_system):
+def test_abstention__unsupported_question_uses_exact_not_supported_status_and_no_citations(clean_system):
     result = clean_system.answer("What is the cure for a fictional disease called xylomediasis?")
 
-    assert_exact_status(result, "ABSTAIN")
+    assert_exact_status(result, "NOT_SUPPORTED")
     assert not result.get("generation_path"), result
     assert_abstained(result)
     assert result.get("citations") == []
@@ -26,7 +26,7 @@ def test_abstention__unsupported_question_uses_exact_not_supported_path_and_no_c
 def test_abstention__unsupported_question_does_not_invent_claims_or_evidence(clean_system):
     result = clean_system.answer("What is the cure for a fictional disease called xylomediasis?")
 
-    assert_exact_status(result, "ABSTAIN")
+    assert_exact_status(result, "NOT_SUPPORTED")
     assert not result.get("claims")
     assert not result.get("hits")
     assert not result.get("citations")
