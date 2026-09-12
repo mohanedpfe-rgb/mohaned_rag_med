@@ -16,12 +16,12 @@ from rag_project.testing.strict_phases import (
     phase10_production_generation,
     phase11_mutation_testing,
     phase13_causal_graph,
-    phase16_independent_gold,
     phase17_strict_certification,
     wrap_phase7,
     wrap_phase14,
     wrap_phase15,
 )
+from rag_project.testing.final_probes import phase16_independent_gold
 
 
 def _phase(number: int):
@@ -102,7 +102,7 @@ def test_phase_thirteen_builds_evidence_backed_failure_graph() -> None:
     assert result.details["candidate_roots"]
 
 
-def test_phase_sixteen_uses_independent_corpus() -> None:
+def test_phase_sixteen_uses_separate_independent_corpus_and_labels() -> None:
     result = phase16_independent_gold(_phase(16))
     assert result.status == "PASS", result.failures
     assert result.details["gold_labels_independent_of_corpus_text"] is True
