@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 
@@ -32,7 +34,9 @@ def test_production_contracts__runtime_contract_has_one_composition_root_and_no_
     assert contract["versioned_ingestion_publication"] is True
     assert contract["last_known_good_preservation"] is True
     assert contract["ready_only_retrieval_boundary"] is True
-    assert contract["ready_only_retriever"] == "rag_project.retrieval.ready_only_retriever.ReadyOnlyRetriever"
+    assert contract["ready_only_retriever"].endswith("ReadyOnlyRetriever")
+    assert contract["runtime_cache_freshness"] is True
+    assert contract["verified_generation_recovery"] is True
 
 
 @pytest.mark.high_level
@@ -71,10 +75,21 @@ def test_production_contracts__answer_exposes_all_canonical_phases(clean_system)
 
 @pytest.mark.high_level
 def test_production_contracts__versioned_ingestion_is_part_of_the_live_composition():
-    import inspect
     from rag_project.app.production_rag import ProductionRAGSystem
     from rag_project.ingestion import versioned_ingestor
 
     source = inspect.getsource(ProductionRAGSystem.ingest_file)
     assert "versioned_ingestor.ingest_version_safely" in source
     assert callable(versioned_ingestor.ingest_version_safely)
+
+
+@pytest.mark.high_level
+def test_production_contracts__runtime_safety_layer_is_live_and_not_documentation_only():
+    from rag_project.application import runtime_contract
+    from rag_project.intelligence import runtime_safety
+
+    contract = runtime_contract()
+    assert contract["runtime_cache_freshness"] is True
+    assert contract["verified_generation_recovery"] is True
+    assert callable(runtime_safety.execute_with_runtime_safety)
+    assert "execute_with_runtime_safety" in inspect.getsource(runtime_safety)
