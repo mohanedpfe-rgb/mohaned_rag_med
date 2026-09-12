@@ -12,7 +12,6 @@ _TLS = threading.local()
 
 
 def _wrap_retrieval_cache_fallthrough(original):
-    """A cache hit that becomes irrelevant after scope filtering must not become a false abstention."""
     def wrapped(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
         hits, state = original(self, question, route, where)
         state = dict(state or {})
@@ -28,7 +27,6 @@ def _wrap_retrieval_cache_fallthrough(original):
 
 
 def _wrap_retrieval_skip_health_probe(original):
-    """Do not let the deep runtime's unused top_k=1 health probe break the real retrieval path."""
     def wrapped(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
         retriever = getattr(getattr(self, "system", None), "retriever", None)
         method = getattr(retriever, "retrieve", None)
@@ -51,7 +49,6 @@ def _wrap_retrieval_skip_health_probe(original):
 
 
 def _citation_complete_without_shared_state(original) -> Any:
-    """Validate citations against the evidence IDs actually supplied to this generation."""
     def wrapped(answer: str, hit_count: int) -> bool:
         expected_ids = getattr(_TLS, "citation_ids", None)
         markers = {int(x) for x in re.findall(r"\[S(\d+)\]", str(answer or ""), flags=re.I)}
@@ -108,7 +105,6 @@ def _numeric_unit_equivalent(left: str, right: str) -> bool:
 
 
 def _wrap_numeric_verifier(original):
-    """Clear a raw numeric mismatch only when every answer value is grounded or unit-equivalent."""
     def wrapped(self: Any, answer: str, hits: Any, route: Any, compiled: dict[str, Any]):
         result = dict(original(self, answer, hits, route, compiled) or {})
         if not result.get("numeric_mismatch") or not answer or not hits: return result
@@ -126,7 +122,6 @@ def _wrap_numeric_verifier(original):
 
 
 def _filter_false_numeric_contradictions(original):
-    """Keep genuine numeric conflicts but remove conflicts that are only unit changes."""
     def wrapped(claims: Any):
         result = dict(original(claims) or {}); conflicts = []
         for conflict in result.get("conflicts") or []:
@@ -158,22 +153,19 @@ def _wrap_route(original):
 
 
 def _wrap_contradiction_detection(original):
-    """Avoid false contradictions caused by unrelated negation with only a trivial shared token."""
+    """Avoid false contradictions caused by unrelated negation with weak context overlap."""
     def wrapped(claim: Any, evidence_blocks: Any):
-        if isinstance(evidence_blocks, str):
-            blocks = [evidence_blocks]
-        else:
-            blocks = list(evidence_blocks or ())
-        try:
-            from rag_project.intelligence import evidence_guard
-            meaningful = evidence_guard.meaningful_tokens if hasattr(evidence_guard, "meaningful_tokens") else None
-        except Exception:
-            meaningful = None
+        blocks = [evidence_blocks] if isinstance(evidence_blocks, str) else list(evidence_blocks or ())
         result = bool(original(claim, blocks))
         if not result:
             return False
         claim_text = str(claim or "").casefold()
         claim_tokens = set(re.findall(r"[\w-]{3,}", claim_text, flags=re.UNICODE))
+        try:
+            from rag_project.intelligence import evidence_guard
+            semantic_support = evidence_guard.semantic_support
+        except Exception:
+            semantic_support = None
         for block in blocks:
             text = str(block or "").casefold()
             shared = claim_tokens & set(re.findall(r"[\w-]{3,}", text, flags=re.UNICODE))
@@ -181,7 +173,8 @@ def _wrap_contradiction_detection(original):
                 (re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", claim_text) and re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", text))
                 or (re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", claim_text) and re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", text))
             )
-            if explicit or len(shared) >= 2:
+            semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
+            if len(shared) >= 2 or (explicit and semantic >= 0.55):
                 return True
         return False
     wrapped._functionality_contradiction_guard = True
@@ -227,4 +220,4 @@ def install() -> None:
                 evidence_guard.detect_contradiction = _wrap_contradiction_detection(original_guard_contradiction)
         _INSTALLED=True
 
-__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_filter_false_numeric_contradictions","_wrap_numeric_verifier","_wrap_contradiction_detection"]
+__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_functionality_sentences","_filter_false_numeric_contradictions","_wrap_numeric_verifier","_wrap_contradiction_detection"]
