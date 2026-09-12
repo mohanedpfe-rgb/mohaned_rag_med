@@ -13,14 +13,6 @@ _SUCCESS = {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
 def _versions_match(record: dict[str, Any], metadata: dict[str, Any]) -> bool:
-    """Validate hit/state identity while supporting the pre-fix vector metadata format.
-
-    The state store's ``version_id`` is the ingestion/version fingerprint, while older
-    vector rows used the content hash in that same metadata field.  A legacy row is
-    accepted only when its value exactly equals the READY state's content hash.  This
-    preserves fail-closed behavior while allowing already-indexed documents to remain
-    usable without forcing an immediate full rebuild.
-    """
     record_version = str(record.get("version_id") or "")
     hit_version = str(metadata.get("version_id") or "")
     if not record_version or not hit_version:
@@ -108,7 +100,6 @@ def _valid_citations(citations: Sequence[Any]) -> bool:
 
 
 def _is_safe_success(result: dict[str, Any]) -> bool:
-    """Require an explicit, measured, citation-backed public success envelope."""
     if str(result.get("status") or "").upper() not in _SUCCESS:
         return False
     if not str(result.get("answer") or "").strip():
@@ -117,7 +108,9 @@ def _is_safe_success(result: dict[str, Any]) -> bool:
     if not hits:
         return False
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
-    grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else {}
+    grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else None
+    if grounding is None:
+        grounding = verification.get("grounding") if isinstance(verification.get("grounding"), dict) else {}
     if verification.get("allow") is not True:
         return False
     if verification.get("checked") is not True:
@@ -194,17 +187,7 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
     recovered["citations"] = citations
     recovered["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
     recovered["generation_meta"] = {"attempted": True, "fallback": True, "recovered_from": "GENERATION_ABSTAIN"}
-    recovered["verification"] = {
-        "allow": True,
-        "checked": True,
-        "grounding": dict(grounding),
-        "final_answer": final,
-        "supported_ratio": float(grounding.get("supported_ratio", 0.0) or 0.0),
-        "claim_count": len(checks),
-        "blocked_claims": 0,
-        "numeric_mismatch": False,
-        "contradiction": dict(original_verification.get("contradiction") or {}),
-    }
+    recovered["verification"] = {"allow": True, "checked": True, "grounding": dict(grounding), "final_answer": final, "supported_ratio": float(grounding.get("supported_ratio", 0.0) or 0.0), "claim_count": len(checks), "blocked_claims": 0, "numeric_mismatch": False, "contradiction": dict(original_verification.get("contradiction") or {})}
     recovered["grounding"] = dict(grounding)
     recovered["final_verification"] = final
     previous_error = str((result.get("recovery") or {}).get("pipeline_error") or "Unknown")
