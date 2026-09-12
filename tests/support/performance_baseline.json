@@ -1,0 +1,8 @@
+{
+  "text_normalization": {"p95_ms": 250.0, "basis": "deterministic CI certification ceiling"},
+  "chunking": {"p95_ms": 500.0, "basis": "deterministic CI certification ceiling"},
+  "lexical_retrieval": {"p95_ms": 500.0, "basis": "deterministic CI certification ceiling"},
+  "semantic_retrieval": {"p95_ms": 500.0, "basis": "deterministic CI certification ceiling"},
+  "pdf_extract": {"p95_ms": 1000.0, "basis": "deterministic CI certification ceiling"},
+  "index_build": {"p95_ms": 1000.0, "basis": "deterministic CI certification ceiling"}
+}
