@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from pathlib import Path
@@ -52,15 +53,51 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
     return resolved
 
 
+def _detect_answer_language(question: str) -> tuple[str, float]:
+    """Deterministically classify the query language for routing observability."""
+    text = str(question or "")
+    arabic = len(re.findall(r"[\u0600-\u06ff]", text))
+    latin = len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", text))
+    french_markers = sum(
+        1
+        for marker in (
+            "qu'est-ce",
+            "quelle",
+            "quel",
+            "quels",
+            "quelles",
+            "diabète",
+            "traitement",
+            "mécanisme",
+            "contre-indication",
+            "fréquence",
+            "définition",
+        )
+        if re.search(rf"\b{re.escape(marker)}\b", text.casefold())
+    )
+    if arabic > 0 and arabic >= max(2, latin):
+        confidence = min(1.0, 0.75 + arabic / max(20, len(text)) * 0.25)
+        return "ar", round(confidence, 3)
+    if french_markers:
+        return "fr", min(1.0, 0.80 + 0.05 * min(french_markers, 4))
+    if latin:
+        return "en", 0.90
+    return "unknown", 0.10
+
+
 def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute the canonical MedEvidence Pro stack and persist production telemetry."""
     started = time.perf_counter()
     result = dict(enhanced_med_evidence_answer(system, question, metadata_filter) or {})
     verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
     retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
-    route = result.get("route") if isinstance(result.get("route"), dict) else {}
+    route = dict(result.get("route") or {}) if isinstance(result.get("route"), dict) else {}
     evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
     contradiction = verification.get("contradiction") if isinstance(verification.get("contradiction"), dict) else {}
+    detected_language, language_confidence = _detect_answer_language(question)
+    route.setdefault("language", detected_language)
+    route.setdefault("language_confidence", language_confidence)
+    result["route"] = route
     result.setdefault("query_analysis", route); result.setdefault("phase_plan", route)
     result.setdefault("rewritten_question", str(question or "").strip())
     result.setdefault("answer_plan", {"selected_path": result.get("generation_path", "")})
@@ -80,7 +117,10 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
         "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", True), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", True))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "signals_present": True, "canonical_executed": True},
     }
-    if "query_trace" in result and isinstance(result["query_trace"], dict): result["query_trace"]["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
+    if "query_trace" in result and isinstance(result["query_trace"], dict):
+        result["query_trace"]["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
+        result["query_trace"]["language"] = detected_language
+        result["query_trace"]["language_confidence"] = language_confidence
     result.setdefault("evidence_summary", {"claim_count": evidence.get("claim_count", 0)})
     try:
         settings = getattr(system, "settings", None); root = getattr(settings, "project_root", None)
