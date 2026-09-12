@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import shutil
 import uuid
 from pathlib import Path
@@ -30,8 +28,6 @@ def _retire_previous_version(system: Any, previous: dict[str, Any], new_document
     if not previous_document_id or not previous_version:
         return
 
-    # Fence the old version out of retrieval first. Physical deletion can then
-    # fail without ever making the superseded version searchable again.
     system.vector_store.set_version_index_state(previous_document_id, previous_version, "FAILED")
     system.vector_store.delete_version(previous_document_id, previous_version)
     system.state_store.delete_pages(previous_document_id)
@@ -44,8 +40,6 @@ def _retire_previous_version(system: Any, previous: dict[str, Any], new_document
             error=f"Superseded by document version {new_document_id}.",
         )
     finally:
-        # The event is diagnostic only and must never prevent the new version
-        # from being published after the old version has been fenced off.
         try:
             system.state_store.record_event(
                 previous_document_id,
@@ -60,12 +54,7 @@ def _retire_previous_version(system: Any, previous: dict[str, Any], new_document
 
 
 def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
-    """Build changed-path content under a new identity and publish only after READY.
-
-    The normal ingestor remains the single extraction/indexing implementation. This
-    wrapper handles replacement identity and retirement of an older READY document,
-    preserving the old searchable version across failed re-indexes.
-    """
+    """Publish changed content only as READY after durable validation."""
     source = Path(pdf_path)
     resolved = source.resolve()
     previous = system.state_store.get_by_path(str(resolved))
@@ -117,8 +106,6 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         old_retirement_started = True
         _retire_previous_version(system, previous, new_document_id)
     except Exception as exc:
-        # The old vector version is fenced before physical deletion, so the safe
-        # rollback is to invalidate the new version and restore the previous file.
         try:
             system.vector_store.set_version_index_state(
                 new_document_id,
@@ -153,8 +140,8 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             except OSError:
                 pass
 
-        result = {
-            "status": "failed",
+        return {
+            "status": "FAILED",
             "file_name": source.name,
             "document_id": new_document_id,
             "previous_document_id": previous.get("document_id"),
@@ -162,12 +149,11 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             "previous_version_preserved": not old_retirement_started or str((system.state_store.get_document(str(previous.get("document_id") or "")) or {}).get("status") or "").upper() == "READY",
             "error": f"Versioned replacement could not be published safely: {type(exc).__name__}",
         }
-        return result
 
     out = dict(result)
     out.update(
         {
-            "status": "success",
+            "status": "READY",
             "versioned_replacement": True,
             "previous_document_id": previous.get("document_id"),
             "previous_version_retired": True,
