@@ -9,14 +9,13 @@ from typing import Any
 
 import fitz
 
-from rag_project.chunking.semantic_chunker import SemanticChunker
 from rag_project.configuration.settings import Settings
 from rag_project.embeddings.embedding_service import EmbeddingService
 from rag_project.ingestion.robust_ingestor import robust_ingest_file
 from rag_project.ingestion.state_store import IngestionStateStore
 from rag_project.storage.vector_store import VectorStore
 from rag_project.testing.deep_diagnostics import PhaseResult
-from rag_project.testing.advanced_phases import _cleanup_store, _embedding, _result
+from rag_project.testing.advanced_phases import _cleanup_store, _result
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "support" / "gold_sets" / "diagnostic_independent_corpus.jsonl"
@@ -28,7 +27,7 @@ class _CancelFlag:
 
 
 class _ProductionIngestionProbeSystem:
-    """Small isolated system adapter exposing the same contract used by production ingestion."""
+    """Isolated adapter exposing the same contract used by canonical ingestion."""
 
     def __init__(self, root: Path) -> None:
         incoming = root / "incoming"
@@ -94,6 +93,9 @@ class _ProductionIngestionProbeSystem:
     def _new_cancel_flag(self, document_id: str) -> _CancelFlag:
         return _CancelFlag()
 
+    def _remove_cancel_flag(self, document_id: str) -> None:
+        return None
+
 
 def _write_probe_pdf(path: Path, text: str) -> None:
     document = fitz.open()
@@ -101,6 +103,25 @@ def _write_probe_pdf(path: Path, text: str) -> None:
     page.insert_textbox(fitz.Rect(45, 45, 550, 790), text, fontsize=11)
     document.save(path)
     document.close()
+
+
+def _metadata_document_ids(payload: dict[str, Any]) -> list[str]:
+    values = (payload.get("metadatas") or [[]])[0]
+    found: list[str] = []
+    for value in values:
+        if isinstance(value, dict):
+            document_id = value.get("document_id")
+            if document_id is not None:
+                found.append(str(document_id))
+            continue
+        raw = str(value)
+        try:
+            metadata = json.loads(raw.replace("'", '"')) if raw.startswith("{") else None
+        except json.JSONDecodeError:
+            metadata = None
+        if isinstance(metadata, dict) and metadata.get("document_id") is not None:
+            found.append(str(metadata["document_id"]))
+    return found
 
 
 def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
@@ -125,8 +146,8 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             source = source_dir / f"{row['doc_id']}.pdf"
             _write_probe_pdf(source, row["text"])
             outcome = robust_ingest_file(system, source)
-            if outcome.get("status") not in {"ready", "skipped"}:
-                raise RuntimeError(f"production ingestion did not reach ready state: {outcome}")
+            if outcome.get("status") not in {"success", "skipped"}:
+                raise RuntimeError(f"production ingestion did not reach success state: {outcome}")
             document_id = str(outcome.get("document_id") or "")
             if not document_id:
                 raise RuntimeError(f"production ingestion returned no document_id: {outcome}")
@@ -135,19 +156,22 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
                 "source_doc_id": row["doc_id"],
                 "document_id": document_id,
                 "status": outcome.get("status"),
-                "stage_timings": outcome.get("stage_timings", {}),
+                "timings_ms": outcome.get("timings_ms", {}),
                 "pages": outcome.get("page_count"),
                 "chunks": outcome.get("chunk_count"),
                 "embeddings": outcome.get("embedding_count"),
-                "validation": outcome.get("validation"),
+                "retrieval_mode": outcome.get("retrieval_mode"),
             })
 
-        # Verify the durable state and indexed representation, not merely the function return value.
         ready_states = 0
         indexed_chunks = 0
         for source_doc_id, document_id in document_ids.items():
             state = system.state_store.get_document(document_id) or {}
-            validation = system.vector_store.validate_document_index(document_id, system._hash_file(system.settings.processed_dir / f"{source_doc_id}.pdf"))
+            processed = system.settings.processed_dir / f"{source_doc_id}.pdf"
+            if not processed.exists():
+                raise RuntimeError(f"processed publication missing for {source_doc_id}")
+            content_hash = system._hash_file(processed)
+            validation = system.vector_store.validate_document_index(document_id, content_hash)
             ready_states += int(system.state_store.is_ready_status(state.get("status")))
             indexed_chunks += int(validation.get("count") or 0)
             if not validation.get("valid") or not system.state_store.is_ready_status(state.get("status")):
@@ -160,20 +184,8 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             lexical = system.vector_store.search_lexical(case["question"], n_results=min(8, max(1, indexed_chunks)))
             query_embedding = system.embedding_service.embed_texts([case["question"]])[0]
             semantic = system.vector_store.search(query_embedding, n_results=min(8, max(1, indexed_chunks)))
-            lexical_docs = [str(value) for value in (lexical.get("metadatas") or [[]])[0]]
-            semantic_docs = [str(value) for value in (semantic.get("metadatas") or [[]])[0]]
-            retrieved_document_ids: list[str] = []
-            for raw in lexical_docs + semantic_docs:
-                try:
-                    metadata = json.loads(raw.replace("'", '"')) if raw.startswith("{") else None
-                except json.JSONDecodeError:
-                    metadata = None
-                if isinstance(metadata, dict):
-                    value = metadata.get("document_id")
-                    if value is not None:
-                        retrieved_document_ids.append(str(value))
+            retrieved_document_ids = _metadata_document_ids(lexical) + _metadata_document_ids(semantic)
             if not retrieved_document_ids:
-                # Some VectorStore versions expose ids rather than serialized metadata.
                 ids = [str(value) for value in ((lexical.get("ids") or [[]])[0] + (semantic.get("ids") or [[]])[0])]
                 retrieved_document_ids = [document_id for document_id in document_ids.values() if any(document_id in item for item in ids)]
             hit = bool(expected_document_ids & set(retrieved_document_ids))
@@ -187,8 +199,9 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
 
         recall = sum(int(row["hit"]) for row in retrieval_rows) / max(1, len(retrieval_rows))
         result.details = {
-            "evidence_level": "real_production_robust_ingestion_to_storage_retrieval",
+            "evidence_level": "real_pdf_extraction_to_storage_retrieval",
             "production_entrypoint": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
+            "production_path_strict": True,
             "production_components": [
                 "DocumentClassifier",
                 "PDFExtractor",
@@ -205,6 +218,7 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             "gold_labels_independent_of_corpus_text": True,
             "durable_state_verified": ready_states == len(corpus),
             "index_integrity_verified": indexed_chunks > 0,
+            "publication_verified": True,
             "ingestion_rows": ingestion_rows,
             "results": retrieval_rows,
             "clinical_correctness_claimed": False,
