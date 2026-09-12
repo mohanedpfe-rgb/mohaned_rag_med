@@ -47,7 +47,6 @@ def analyze() -> dict[str, Any]:
     graph: dict[str, set[str]] = defaultdict(set)
     parse_failures: list[str] = []
     forbidden: list[dict[str, str]] = []
-    production_tests: dict[str, int] = defaultdict(int)
 
     for path in PROJECT.rglob("*.py"):
         rel = str(path.relative_to(ROOT)).replace("\\", "/")
@@ -63,8 +62,7 @@ def analyze() -> dict[str, Any]:
             if isinstance(node, ast.Import):
                 imports = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom):
-                base = node.module or ""
-                imports = [base]
+                imports = [node.module or ""]
             else:
                 continue
             for imported in imports:
@@ -77,16 +75,26 @@ def analyze() -> dict[str, Any]:
                     if (source_domain, target_domain) in FORBIDDEN_EDGES:
                         forbidden.append({"from": source_domain, "to": target_domain, "module": rel})
 
-    # A production file must never import its own test harness.
+    # Only production code is subject to this ownership rule. The diagnostic
+    # harness is intentionally allowed to import itself and other testing code.
     test_imports: list[str] = []
     for path in PROJECT.rglob("*.py"):
         rel = str(path.relative_to(ROOT)).replace("\\", "/")
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+        if rel.startswith("rag_project/testing/") or rel == "rag_project/testing.py":
             continue
-        if "rag_project.testing" in text:
-            test_imports.append(rel)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+        except (OSError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            imported_names: list[str] = []
+            if isinstance(node, ast.Import):
+                imported_names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_names = [node.module]
+            if any(name == "rag_project.testing" or name.startswith("rag_project.testing.") for name in imported_names):
+                test_imports.append(rel)
+                break
 
     ownership_failures: list[str] = []
     application = PROJECT / "application.py"
