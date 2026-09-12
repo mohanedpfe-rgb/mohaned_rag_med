@@ -73,6 +73,7 @@ EXPECTED = {
     "11_resilience": {
         "test_embedding_timeout_contract.py",
         "test_failure_modes.py",
+        "test_llm_context_budget.py",
         "test_retrieval_failure.py",
         "test_safe_degrade_contract.py",
         "test_verified_generation_recovery.py",
