@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_large_pdf
-from tests.high_level.helpers import assert_status
+from tests.high_level.helpers import assert_citations_valid, assert_grounded, assert_status
 
 
 @pytest.mark.high_level
@@ -14,14 +14,21 @@ def test_e2e_large_document__hundred_page_pdf_reaches_ready_and_remains_queryabl
     assert_status(ingestion, {"READY"})
 
     document_id = str(ingestion.get("document_id") or ingestion.get("id") or "")
+    assert document_id
     record = clean_system.state_store.get_document(document_id)
     assert record is not None
     assert int(record.get("total_pages") or 0) == 100
     assert clean_system.state_store.is_ready_status(record.get("status"))
+    assert str(record.get("status") or "").upper() == "READY"
     assert str(record.get("index_state") or "").upper() == "READY"
+    assert int(record.get("current_page") or 0) >= 100
 
     result = clean_system.answer("What clinical evidence marker appears on controlled large-document page 100?")
-    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}
-    if result.get("hits"):
-        combined = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or [])
-        assert "page 100" in combined.casefold() or "page 99" in combined.casefold()
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    hits = result.get("hits") or []
+    assert hits
+    combined = " ".join(str(getattr(hit, "text", "")) for hit in hits)
+    assert "page 100" in combined.casefold() or "page 99" in combined.casefold()
+    assert_citations_valid(result)
+    assert_grounded(result)
+    assert any(str(getattr(hit, "doc_id", "")) == document_id for hit in hits)
