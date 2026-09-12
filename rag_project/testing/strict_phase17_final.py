@@ -1,4 +1,4 @@
-"""Final authoritative Phase 17 certification without re-executing earlier phases."""
+"""Final authoritative Phase 17 certification boundary."""
 from __future__ import annotations
 
 import os
@@ -23,17 +23,10 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
         if phase.number != 17 or phase.key != "certification":
             failures.append({"phase": 17, "reason": "Phase 17 received a non-canonical PhaseSpec", "actual_number": phase.number, "actual_key": phase.key})
 
-        # Phase 17 is a certification boundary: it must never replace or re-run
-        # already-produced phase results. Earlier phases are authoritative as
-        # executed by UnifiedDiagnosticEngine._execute.
         identity_contract: dict[str, Any] = {}
         for number in range(1, 17):
             item = results.get(number)
-            identity_contract[str(number)] = {
-                "present": item is not None,
-                "number": getattr(item, "number", None),
-                "key": getattr(item, "key", None),
-            }
+            identity_contract[str(number)] = {"present": item is not None, "number": getattr(item, "number", None), "key": getattr(item, "key", None)}
             if item is None:
                 failures.append({"phase": number, "reason": "completed phase result is missing before certification"})
             elif item.number != number:
@@ -41,8 +34,6 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
             elif item.key != runner.PHASES[number - 1].key:
                 failures.append({"phase": number, "reason": "phase result key mismatch", "observed_key": item.key, "expected_key": runner.PHASES[number - 1].key})
 
-        # Reuse the installed strict semantic wrapper, but only as validation over
-        # existing results. It must not execute any phase itself.
         semantic_failures = list(production_diagnostic_probes._semantic_contracts(results))
         failures.extend(semantic_failures)
 
@@ -72,6 +63,8 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
             "certification_provenance": {"git_head_sha": sha, "working_tree_clean": not bool(status), "expected_ci_sha": expected or None, "matches_expected_ci_sha": not expected or sha == expected, "provenance_verified": provenance_ok},
             "semantic_contract_validation_executed": True,
             "reexecuted_phases": [],
+            "authoritative_module": "rag_project.testing.strict_phase17_final",
+            "legacy_phase17_wrapper_active": False,
         }
         result.details["evidence_failures"] = failures
         unique_failed = {int(x.get("phase", 17)) for x in failures if str(x.get("phase", "")).isdigit()}
@@ -90,11 +83,6 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
         result.failures.append({"location": "phase 17 final certification boundary", "exception": type(exc).__name__, "message": str(exc)})
     result.duration_s = round(time.time() - result.started_at, 3)
     return result
-
-
-# Preserve the existing ownership contract's expected wrapper identity.
-phase17_strict_completion.__module__ = "rag_project.testing.strict_runtime_contracts"
-phase17_strict_completion._provenance_wrapped = True
 
 
 __all__ = ["phase17_strict_completion"]
