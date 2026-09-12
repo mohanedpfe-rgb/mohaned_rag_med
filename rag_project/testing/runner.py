@@ -1,6 +1,5 @@
 """Authoritative entry point for the unified 17-phase RAG diagnostic system."""
 from __future__ import annotations
-
 from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
@@ -9,7 +8,6 @@ import re
 import subprocess
 import sys
 import tempfile
-
 from . import deep_diagnostics as core
 from .advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, metamorphic
 from .robust_probes import information_loss, retrieval_microscope
@@ -18,24 +16,13 @@ from .production_answer_probes import phase10_canonical_answer_engine
 from .production_benchmark_probes import phase14_production_benchmark
 from .production_diagnostic_probes import phase12_stable_fingerprinting, phase13_known_causal_graph, phase17_strict_completion
 from .production_path_probes import phase16_production_ingestion_benchmark
-
-PHASES = tuple(
-    replace(p, markers=("generation", "intelligence")) if p.number == 10 else
-    replace(p, markers=("slow",)) if p.number == 14 else
-    replace(p, markers=("high_level",)) if p.number == 16 else p
-    for p in core.PHASES
-)
-
+PHASES = tuple(replace(p, markers=("generation", "intelligence")) if p.number == 10 else replace(p, markers=("slow",)) if p.number == 14 else replace(p, markers=("high_level",)) if p.number == 16 else p for p in core.PHASES)
 ROOT = Path(__file__).resolve().parents[2]
 
-
 def _hardened_mutation_phase(phase: core.PhaseSpec) -> core.PhaseResult:
-    result = core.PhaseResult(phase.number, phase.key, phase.name, status="FAIL", started_at=core.time.time())
-    target = ROOT / "rag_project" / "utils" / "text_utils.py"
-    mutants = []
+    result = core.PhaseResult(phase.number, phase.key, phase.name, status="FAIL", started_at=core.time.time()); target = ROOT / "rag_project" / "utils" / "text_utils.py"; mutants = []
     try:
-        source = target.read_text(encoding="utf-8")
-        original = 'return re.sub(r"\\s+", " ", value or "").strip()'
+        source = target.read_text(encoding="utf-8"); original = 'return re.sub(r"\\s+", " ", value or "").strip()'
         if original not in source: raise RuntimeError("mutation target changed and no safe mutation can be applied")
         replacements = [("return_raw", 'return value or ""'), ("no_collapse", 'return re.sub(r"\\s+", " ", value or "")'), ("collapse_to_tab", 'return re.sub(r"\\s+", "\\t", value or "").strip()'), ("collapse_only_left", 'return re.sub(r"\\s+", " ", value or "").lstrip()')]
         with tempfile.TemporaryDirectory(prefix="rag_mutation_suite_v2_") as td:
@@ -45,13 +32,10 @@ def _hardened_mutation_phase(phase: core.PhaseSpec) -> core.PhaseResult:
                 test_file = root / f"test_{name}.py"; test_file.write_text("from importlib.util import spec_from_file_location, module_from_spec\n" + f"spec=spec_from_file_location('mutant_{name}', r'{mutant_module}')\n" + "m=module_from_spec(spec); spec.loader.exec_module(m)\n" + "def test_contract():\n" + "    assert m.normalize_whitespace('  diabetes   mellitus  ') == 'diabetes mellitus'\n" + "    assert m.normalize_whitespace('\\u00a0HbA1c\\tthreshold\\u00a0') == 'HbA1c threshold'\n", encoding="utf-8")
                 proc = subprocess.run([sys.executable, "-m", "pytest", "-q", str(test_file)], cwd=ROOT, text=True, capture_output=True, timeout=60)
                 mutants.append({"name": name, "returncode": proc.returncode, "killed": proc.returncode != 0, "stdout": proc.stdout[-700:], "stderr": proc.stderr[-700:]})
-        applicable = len(mutants); killed = sum(int(item["killed"]) for item in mutants); score = killed / max(applicable, 1)
-        result.details = {"strategy": "four executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}; result.score = round(score, 3); result.status = "PASS" if applicable == 4 and killed == applicable else "FAIL"
+        applicable = len(mutants); killed = sum(int(item["killed"]) for item in mutants); score = killed / max(applicable, 1); result.details = {"strategy": "four executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}; result.score = round(score, 3); result.status = "PASS" if applicable == 4 and killed == applicable else "FAIL"
         if result.status == "FAIL": result.failures.append({"location": str(target.relative_to(ROOT)), "exception": "SurvivingMutant", "message": f"kill score={score:.3f}"})
-    except Exception as exc:
-        result.status = "FAIL"; result.failures.append({"location": "phase 11 hardened mutation suite", "exception": type(exc).__name__, "message": str(exc)})
+    except Exception as exc: result.status = "FAIL"; result.failures.append({"location": "phase 11 hardened mutation suite", "exception": type(exc).__name__, "message": str(exc)})
     result.duration_s = round(core.time.time() - result.started_at, 3); return result
-
 
 def _hardened_fingerprinting(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
     result = core.PhaseResult(spec.number, spec.key, spec.name, status="PASS", started_at=core.time.time()); fingerprints = []
@@ -61,7 +45,6 @@ def _hardened_fingerprinting(spec: core.PhaseSpec, results: dict[int, core.Phase
     multiplicity = {}
     for row in fingerprints: multiplicity[row["fingerprint"]] = multiplicity.get(row["fingerprint"], 0) + 1
     result.details = {"evidence_level": "structured_runtime_failure_fingerprint", "algorithm": "normalized project frame + exception + normalized message + SHA-256 digest", "unique_fingerprints": len(multiplicity), "failure_count": len(fingerprints), "fingerprints": fingerprints[:100], "multiplicity": multiplicity, "evidence_phases": sorted(results)}; result.score = 1.0; result.duration_s = round(core.time.time() - result.started_at, 3); return result
-
 
 def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
     result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time())
@@ -79,16 +62,15 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
     except Exception as exc: result.status = "FAIL"; result.failures.append({"location": "phase 13 hardened causal graph", "exception": type(exc).__name__, "message": str(exc)})
     result.duration_s = round(core.time.time() - result.started_at, 3); return result
 
-
 def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
     result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time()); required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_production_robust_ingestion_to_storage_retrieval"}; failures = []
     for number, level in required_levels.items():
         details = results.get(number).details if results.get(number) else {}
         if details.get("evidence_level") != level: failures.append({"phase": number, "required_evidence_level": level, "actual": details.get("evidence_level")})
     p10 = results.get(10)
-    for key in ("answer_generated", "citations_present", "citation_ids_valid", "verification_allow", "canonical_engine_executed", "retrieval_stub_used"):
-        if not p10 or key not in p10.details or not p10.details.get(key): failures.append({"phase": 10, "required_evidence": key})
-    if p10 and p10.details.get("retrieval_stub_used") is False: pass
+    for key in ("answer_generated", "citations_present", "citation_ids_valid", "verification_allow", "canonical_engine_executed"):
+        if not p10 or not p10.details.get(key): failures.append({"phase": 10, "required_evidence": key})
+    if p10 is None or p10.details.get("retrieval_stub_used") is not False: failures.append({"phase": 10, "required_evidence": "retrieval_stub_used must be false"})
     p11 = results.get(11)
     if not p11 or p11.details.get("kill_score") != 1.0 or p11.details.get("mutants_applicable", 0) < 4 or not p11.details.get("real_pytest_subprocess"): failures.append({"phase": 11, "required_evidence": ">=4 executable mutants, 100% kill, real pytest subprocess"})
     p15 = results.get(15)
@@ -103,10 +85,8 @@ def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResu
     if failures: result.failures.append({"location": "phase 17 strict certification", "exception": "Incomplete17PhaseImplementation", "message": str(failures)})
     result.duration_s = round(core.time.time() - result.started_at, 3); return result
 
-
 def _phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
     return phase17_strict_completion(spec, results)
-
 
 class UnifiedDiagnosticEngine(core.DiagnosticEngine):
     """Dependency-aware engine with production-path execution for all 17 phases."""
@@ -154,7 +134,6 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
             ordered = [self.results[n] for n in sorted(self.results)]; causes = core.fingerprint_failures(ordered); cascade = core.compress_cascade(ordered, causes); status = "PASS" if not any(p.status != "PASS" for p in ordered) else "FAIL"
             return core.DiagnosticReport(started_at=started, elapsed_s=round(core.time.time()-started,3), status=status, phases=ordered, root_causes=causes, cascade=cascade, architecture=self.architecture)
         finally: core.PHASES = original
-
 
 def run_all(*, mode: str = "all", timeout_scale: float = 1.0, fail_fast: bool = False, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
     return UnifiedDiagnosticEngine(mode=mode, timeout_scale=timeout_scale, fail_fast=fail_fast).run(phases)
