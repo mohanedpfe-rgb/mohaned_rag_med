@@ -11,8 +11,8 @@
   },
   "canonical_stage_keys": [
     "canonical_ingestion",
-    "post_ingestion_validation",
     "lexical_retrieval",
+    "post_ingestion_validation",
     "semantic_retrieval"
   ],
   "canonical_ingestion": {
