@@ -11,10 +11,11 @@ from . import deep_diagnostics as core
 from .architecture_contracts import strict_fast_health
 from .production_answer_probes import phase10_canonical_answer_engine
 from .production_benchmark_probes import phase14_production_benchmark
-from .production_diagnostic_probes import phase12_stable_fingerprinting, phase17_strict_completion
+from .production_diagnostic_probes import phase12_stable_fingerprinting
 from .production_document_probes import phase7_production_pdf_lab
-from .production_path_probes import phase16_production_ingestion_benchmark
+from .strict_phase16_production import strict_phase16_production_ingestion_benchmark
 from .production_retrieval_probes import phase9_independent_retrieval
+from .strict_phase17_final import phase17_strict_completion
 from .strict_foundation_phases import strict_contract_triangulation, strict_cross_layer_invariants, strict_diagnostic_chain
 from .strict_information_loss import strict_information_loss
 from .strict_runtime_contracts import strict_resource_stability
@@ -127,7 +128,7 @@ def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResu
     p15 = results.get(15)
     if not p15 or p15.details.get("repetitions", 0) < 3 or not p15.details.get("pipeline_exercised"): failures.append({"phase": 15, "required_evidence": "repeated resource workload and monitored production ingestion"})
     p16 = results.get(16)
-    if not p16 or not p16.details.get("gold_labels_independent_of_corpus_text") or p16.details.get("retrieval_recall", 0) < 0.80 or not p16.details.get("durable_state_verified") or not p16.details.get("index_integrity_verified"): failures.append({"phase": 16, "required_evidence": "canonical robust ingestion, durable READY state, validated index, independent gold recall >= 0.8"})
+    if not p16 or not p16.details.get("gold_labels_independent_of_corpus_text") or p16.details.get("retrieval_recall", 0) < 0.80 or not p16.details.get("durable_state_verified") or not p16.details.get("index_integrity_verified") or not p16.details.get("gold_integrity_contract_verified") or not p16.details.get("gold_references_resolved") or not p16.details.get("independent_from_phase9_dataset"): failures.append({"phase": 16, "required_evidence": "strict independent Phase 16 corpus/gold integrity + robust ingestion + durable state + validated index + recall >= 0.8"})
     for number, expected in ((7, "real_pdf_extractor"), (12, "structured_runtime_failure_fingerprint"), (13, "graph_causal_hypothesis")):
         details = results.get(number).details if results.get(number) else {}
         if details.get("evidence_level") != expected: failures.append({"phase": number, "required_evidence_level": expected, "actual": details.get("evidence_level")})
@@ -162,7 +163,7 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
     def _execute(self, spec: core.PhaseSpec) -> core.PhaseResult:
         blocked = self._blocked(spec)
         if blocked: return blocked
-        dispatch = {1: self._phase1, 2: strict_fast_health, 3: strict_diagnostic_chain, 4: strict_contract_triangulation, 5: strict_cross_layer_invariants, 6: strict_information_loss, 7: phase7_production_pdf_lab, 8: run_full_metamorphic_suite, 9: phase9_independent_retrieval, 10: phase10_canonical_answer_engine, 11: run_full_mutation_suite, 12: phase12_stable_fingerprinting, 13: strict_causal_phase, 14: phase14_production_benchmark, 15: strict_resource_stability, 16: phase16_production_ingestion_benchmark, 17: phase17_strict_completion}
+        dispatch = {1: self._phase1, 2: strict_fast_health, 3: strict_diagnostic_chain, 4: strict_contract_triangulation, 5: strict_cross_layer_invariants, 6: strict_information_loss, 7: phase7_production_pdf_lab, 8: run_full_metamorphic_suite, 9: phase9_independent_retrieval, 10: phase10_canonical_answer_engine, 11: run_full_mutation_suite, 12: phase12_stable_fingerprinting, 13: strict_causal_phase, 14: phase14_production_benchmark, 15: strict_resource_stability, 16: strict_phase16_production_ingestion_benchmark, 17: phase17_strict_completion}
         function = dispatch.get(spec.number)
         if function is None: raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
         result = function(spec, self.results) if spec.number in {12, 13, 17} else function(spec)
