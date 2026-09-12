@@ -11,7 +11,7 @@ from tests.high_level.helpers import (
 
 
 @pytest.mark.high_level
-def test_simple_fact__uses_extract_ive_path_without_llm(clean_system, fake_ollama_fast):
+def test_simple_fact__uses_extractive_path_without_llm(clean_system, fake_ollama_fast):
     """A simple factual question must stay on the deterministic extraction path."""
     clean_system.llm = fake_ollama_fast
 
