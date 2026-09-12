@@ -27,6 +27,10 @@ def test_production_contracts__runtime_contract_has_one_composition_root_and_no_
     assert contract["final_answer_verification"]
     assert contract["atomic_ingestion_publication"] is True
     assert contract["post_write_index_validation"] is True
+    assert contract["canonical_ingestion"] == "rag_project.ingestion.versioned_ingestor.ingest_version_safely"
+    assert contract["base_ingestion_engine"] == "rag_project.ingestion.robust_ingestor.robust_ingest_file"
+    assert contract["versioned_ingestion_publication"] is True
+    assert contract["last_known_good_preservation"] is True
 
 
 @pytest.mark.high_level
