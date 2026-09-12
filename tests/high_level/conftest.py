@@ -129,6 +129,11 @@ def settings_i5(tmp_path_factory: pytest.TempPathFactory) -> Settings:
         max_workers=2,
         ollama_concurrency=1,
     )
+    # High-level tests are deterministic contract tests. They must never depend on
+    # a developer machine having Ollama running, an installed embedding model, or
+    # a particular local environment variable.
+    settings.embedding_test_mode = True
+    settings.lazy_model_loading = True
     settings.project_root.mkdir(parents=True, exist_ok=True)
     return settings
 
@@ -165,7 +170,16 @@ def empty_document(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture(scope="session")
 def clean_system(settings_i5: Settings, ready_document: Path):
+    # Defensive enforcement protects the fixture from environment/config drift
+    # introduced by global .env files or runtime installers.
+    settings_i5.embedding_test_mode = True
     system = create_rag_system(settings_i5)
+    embedding_service = getattr(system, "embedding_service", None)
+    if embedding_service is not None:
+        embedding_service.test_mode = True
+        embedding_service.provider = "deterministic-test"
+        embedding_service.last_error = None
+    system.embedding_startup_error = None
     ingestion = system.ingest_file(ready_document)
     status = str((ingestion or {}).get("status") or "").upper()
     assert status in {"READY", "COMPLETED", "SUCCESS", "SKIPPED"}, (
