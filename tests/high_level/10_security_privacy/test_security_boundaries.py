@@ -16,6 +16,22 @@ def test_security__path_traversal_is_rejected(tmp_path):
 
 
 @pytest.mark.high_level
+def test_security__production_ingestion_rejects_non_pdf(clean_system, tmp_path):
+    candidate = tmp_path / "notes.txt"
+    candidate.write_text("not a PDF", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unsupported or missing PDF"):
+        clean_system.ingest_file(candidate)
+
+
+@pytest.mark.high_level
+def test_security__production_ingestion_rejects_path_escape(clean_system, tmp_path):
+    candidate = tmp_path / "escape.pdf"
+    candidate.write_bytes(b"%PDF-1.4\n% deliberately outside controlled project roots\n")
+    with pytest.raises(ValueError, match="outside|inside|Unsupported|missing"):
+        clean_system.ingest_file(candidate)
+
+
+@pytest.mark.high_level
 def test_security__non_pdf_upload_is_rejected():
     with pytest.raises(ValueError, match="not a valid PDF payload"):
         validate_pdf_payload("notes.txt", b"plain text")
