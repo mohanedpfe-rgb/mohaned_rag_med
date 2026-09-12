@@ -20,13 +20,21 @@ from rag_project.testing import runner as diagnostic_runner
 from rag_project.testing.deep_diagnostics import render_report, write_report
 from rag_project.testing.production_answer_probes import phase10_canonical_answer_engine
 from rag_project.testing.production_benchmark_probes import phase14_production_benchmark
+from rag_project.testing.production_diagnostic_probes import (
+    phase12_stable_fingerprinting,
+    phase13_known_causal_graph,
+    phase17_strict_completion,
+)
 from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
 
-# The authoritative CLI must exercise the canonical production answer, benchmark,
-# and ingestion authorities rather than reduced component-only surrogates.
+# The authoritative CLI must exercise canonical production authorities and the
+# executable self-tests for diagnostic intelligence, not reduced surrogates.
 diagnostic_runner.phase10_production_generation = phase10_canonical_answer_engine
+diagnostic_runner.phase12_fingerprinting = phase12_stable_fingerprinting
+diagnostic_runner.phase13_causal_graph = phase13_known_causal_graph
 diagnostic_runner.phase14_real_benchmark = phase14_production_benchmark
 diagnostic_runner.phase16_real_pipeline = phase16_production_ingestion_benchmark
+diagnostic_runner._phase17_strict = phase17_strict_completion
 PHASES = diagnostic_runner.PHASES
 run_all = diagnostic_runner.run_all
 
