@@ -152,12 +152,14 @@ def install() -> None:
         from rag_project.intelligence import med_evidence_pro
         from rag_project.intelligence import runtime_safety
         from rag_project import application
+        from rag_project.app import production_rag as production_rag_module
 
         original_runtime_safety = runtime_safety.execute_with_runtime_safety
         if not getattr(original_runtime_safety, "_deep_contract_guard", False):
             guarded = _guarded_runtime_safety(original_runtime_safety)
             runtime_safety.execute_with_runtime_safety = guarded
             application.execute_with_runtime_safety = guarded
+            production_rag_module.execute_with_runtime_safety = guarded
 
         original_retrieve = med_evidence_pro.MultiTierRetriever.retrieve
         if not getattr(original_retrieve, "_deep_contract_cache_guard", False):
