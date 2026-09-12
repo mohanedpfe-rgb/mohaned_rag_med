@@ -29,13 +29,12 @@ _UNIT_DIMENSION = {
 _STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "of", "for", "to", "and", "or",
     "in", "on", "with", "by", "as", "this", "that", "these", "those", "value", "values",
-    "approximately", "about", "approximately", "from", "than", "between", "twice", "daily",
+    "approximately", "about", "from", "than", "between", "twice", "daily",
 }
 
 
 def _canonical_unit(unit: str) -> str:
-    value = str(unit or "").casefold().replace(" ", "")
-    return value
+    return str(unit or "").casefold().replace(" ", "")
 
 
 def _dimension(unit: str) -> str:
@@ -45,8 +44,10 @@ def _dimension(unit: str) -> str:
 def _claim_context(text: str) -> set[str]:
     cleaned = _NUMERIC_RE.sub(" VALUE ", str(text or "").casefold())
     cleaned = re.sub(r"[^\w\s-]", " ", cleaned, flags=re.UNICODE)
-    tokens = {token for token in re.findall(r"[\w-]{3,}", cleaned, flags=re.UNICODE) if token not in _STOPWORDS}
-    return tokens
+    return {
+        token for token in re.findall(r"[\w-]{3,}", cleaned, flags=re.UNICODE)
+        if token not in _STOPWORDS
+    }
 
 
 def _numeric_groups(text: str) -> list[tuple[float, str, str]]:
@@ -62,13 +63,7 @@ def _numeric_groups(text: str) -> list[tuple[float, str, str]]:
 
 
 def _detect_contradiction(claims: Any) -> dict[str, Any]:
-    """Detect only context-linked conflicts in the same physical dimension.
-
-    Different dimensions (e.g. 500 mg and 7%) can coexist without contradiction.
-    Two values only conflict when their units share a dimension and their claims
-    have meaningful topical overlap, which prevents unrelated numeric facts from
-    being treated as mutually exclusive.
-    """
+    """Detect only context-linked conflicts in the same physical dimension."""
     rows: list[tuple[list[tuple[float, str, str]], set[str], str]] = []
     for claim in claims or ():
         text = str(getattr(claim, "text", "") or "")
@@ -88,16 +83,14 @@ def _detect_contradiction(claims: Any) -> dict[str, Any]:
                         continue
                     if left_value == right_value and left_unit == right_unit:
                         continue
-                    conflicts.append(
-                        {
-                            "left": [f"{left_value:g} {left_unit}"],
-                            "right": [f"{right_value:g} {right_unit}"],
-                            "dimension": left_dim,
-                            "shared_context": sorted(shared)[:8],
-                            "left_claim": left_text,
-                            "right_claim": right_text,
-                        }
-                    )
+                    conflicts.append({
+                        "left": [f"{left_value:g} {left_unit}"],
+                        "right": [f"{right_value:g} {right_unit}"],
+                        "dimension": left_dim,
+                        "shared_context": sorted(shared)[:8],
+                        "left_claim": left_text,
+                        "right_claim": right_text,
+                    })
     return {
         "has_contradiction": bool(conflicts),
         "conflicts": conflicts[:8],
@@ -110,8 +103,6 @@ def _guarded_runtime_safety(original):
     def wrapped(system: Any, question: str, answer_fn):
         depth = int(getattr(_TLS, "runtime_safety_depth", 0) or 0)
         if depth > 0:
-            # The outer production boundary is authoritative. Inner callers must
-            # not convert an infrastructure exception into a public abstention.
             return answer_fn()
         _TLS.runtime_safety_depth = depth + 1
         try:
@@ -124,19 +115,19 @@ def _guarded_runtime_safety(original):
 
 
 def _cache_observability_wrapper(original):
-    """Keep cache benefits while proving live retriever health on cache hits."""
+    """Keep cache benefits while proving live retriever health before answer authority."""
     def wrapped(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
         cache = getattr(self, "cache", None)
         retriever = getattr(self.system, "retriever", None)
-        if cache is not None:
-            cached = cache.get(question) if where is None else None
+
+        if retriever is not None and callable(getattr(retriever, "retrieve", None)):
+            # The retriever is the live infrastructure authority. A one-hit probe
+            # prevents a cached response from hiding a current retrieval outage.
+            retriever.retrieve(question, 1, where)
+
+        if cache is not None and where is None:
+            cached = cache.get(question)
             if cached:
-                if retriever is not None and callable(getattr(retriever, "retrieve", None)):
-                    # A one-hit health probe is deliberately performed before a
-                    # cached result becomes answer authority. This makes a real
-                    # retrieval outage visible instead of silently serving stale
-                    # infrastructure state.
-                    retriever.retrieve(question, 1, where)
                 restored = cache.restore(cached)
                 return restored, {
                     "tier": "CACHE",
@@ -162,21 +153,17 @@ def install() -> None:
         from rag_project.intelligence import runtime_safety
         from rag_project import application
 
-        # One runtime-safety authority: the outer ProductionRAGSystem boundary.
         original_runtime_safety = runtime_safety.execute_with_runtime_safety
         if not getattr(original_runtime_safety, "_deep_contract_guard", False):
             guarded = _guarded_runtime_safety(original_runtime_safety)
             runtime_safety.execute_with_runtime_safety = guarded
             application.execute_with_runtime_safety = guarded
 
-        # Make retrieval outages observable even when a semantic cache entry exists.
         original_retrieve = med_evidence_pro.MultiTierRetriever.retrieve
         if not getattr(original_retrieve, "_deep_contract_cache_guard", False):
             med_evidence_pro.MultiTierRetriever.retrieve = _cache_observability_wrapper(original_retrieve)
 
-        # Replace dimension-blind numeric contradiction logic.
         med_evidence_pro.EvidenceCompiler._detect_contradiction = staticmethod(_detect_contradiction)
-
         _INSTALLED = True
 
 
