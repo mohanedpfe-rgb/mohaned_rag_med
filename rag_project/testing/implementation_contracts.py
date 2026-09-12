@@ -49,11 +49,14 @@ def _source_dispatch_numbers(runner: Any) -> set[int]:
     tree = ast.parse(inspect.getsource(runner.UnifiedDiagnosticEngine._execute))
     numbers: set[int] = set()
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "number" and len(node.comparators) == 1):
-            continue
-        literal = node.comparators[0]
-        if isinstance(literal, ast.Constant) and isinstance(literal.value, int):
-            numbers.add(literal.value)
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "number" and len(node.comparators) == 1:
+            literal = node.comparators[0]
+            if isinstance(literal, ast.Constant) and isinstance(literal.value, int):
+                numbers.add(literal.value)
+        elif isinstance(node, ast.Dict):
+            for key in node.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, int):
+                    numbers.add(key.value)
     return numbers
 
 
@@ -76,20 +79,20 @@ def validate_runtime_ownership() -> dict[str, Any]:
     globals_map = runner.UnifiedDiagnosticEngine._execute.__globals__
     resolved = {
         1: (runner.UnifiedDiagnosticEngine._execute, "self-dispatch"),
-        2: (deep_diagnostics._fast_health, "deep_diagnostics binding"),
-        3: (globals_map.get("diagnostic_chain"), "global binding"),
-        4: (globals_map.get("contract_triangulation"), "global binding"),
-        5: (globals_map.get("cross_layer_invariants"), "global binding"),
-        6: (globals_map.get("information_loss"), "global binding"),
+        2: (globals_map.get("strict_fast_health"), "global binding"),
+        3: (globals_map.get("strict_diagnostic_chain"), "global binding"),
+        4: (globals_map.get("strict_contract_triangulation"), "global binding"),
+        5: (globals_map.get("strict_cross_layer_invariants"), "global binding"),
+        6: (globals_map.get("strict_information_loss"), "global binding"),
         7: (globals_map.get("phase7_production_pdf_lab"), "global binding"),
-        8: (globals_map.get("metamorphic"), "global binding"),
+        8: (globals_map.get("run_full_metamorphic_suite"), "global binding"),
         9: (globals_map.get("phase9_independent_retrieval"), "global binding"),
         10: (globals_map.get("phase10_canonical_answer_engine"), "global binding"),
-        11: (globals_map.get("_hardened_mutation_phase"), "global binding"),
+        11: (globals_map.get("run_full_mutation_suite"), "global binding"),
         12: (globals_map.get("phase12_stable_fingerprinting"), "global binding"),
-        13: (globals_map.get("phase13_known_causal_graph"), "global binding"),
+        13: (globals_map.get("strict_causal_phase"), "global binding"),
         14: (globals_map.get("phase14_production_benchmark"), "global binding"),
-        15: (globals_map.get("phase15_resource_stability"), "global binding"),
+        15: (globals_map.get("strict_resource_stability"), "global binding"),
         16: (globals_map.get("phase16_production_ingestion_benchmark"), "global binding"),
         17: (globals_map.get("phase17_strict_completion"), "global binding"),
     }
@@ -128,17 +131,7 @@ def validate_runtime_ownership() -> dict[str, Any]:
         value, binding_kind = resolved[owner.number]
         actual_qualname = _qualname(value) if value is not None else None
         actual_module = _module(value) if value is not None else None
-        row = {
-            "phase": owner.number,
-            "key": owner.key,
-            "expected_symbol": owner.authoritative_symbol,
-            "actual_qualname": actual_qualname,
-            "actual_module": actual_module,
-            "binding_kind": binding_kind,
-            "expected_module": owner.module,
-            "expected_evidence_kind": owner.evidence_kind,
-            "status": "PASS",
-        }
+        row = {"phase": owner.number, "key": owner.key, "expected_symbol": owner.authoritative_symbol, "actual_qualname": actual_qualname, "actual_module": actual_module, "binding_kind": binding_kind, "expected_module": owner.module, "expected_evidence_kind": owner.evidence_kind, "status": "PASS"}
         if value is None:
             row["status"] = "FAIL"
             failures.append({"phase": owner.number, "reason": "authoritative callable is missing", "expected": owner.authoritative_symbol})
@@ -158,17 +151,7 @@ def validate_runtime_ownership() -> dict[str, Any]:
     else:
         rows[-1]["provenance_wrapped"] = True
 
-    return {
-        "contract_version": "17-phase-implementation-ownership-v5",
-        "phase_count": 17,
-        "phase_numbers": phase_numbers,
-        "dispatch_numbers": sorted(dispatch_numbers),
-        "expected_dispatch_numbers": list(range(1, 18)),
-        "hardened_runtime_bindings_verified": all(resolved[n][0] is expected[n] for n in expected),
-        "ownership_rows": rows,
-        "failures": failures,
-        "pass": not failures,
-    }
+    return {"contract_version": "17-phase-implementation-ownership-v6", "phase_count": 17, "phase_numbers": phase_numbers, "dispatch_numbers": sorted(dispatch_numbers), "expected_dispatch_numbers": list(range(1, 18)), "hardened_runtime_bindings_verified": all(resolved[n][0] is expected[n] for n in expected), "ownership_rows": rows, "failures": failures, "pass": not failures}
 
 
 __all__ = ["EXPECTED_OWNERS", "PhaseOwnership", "validate_runtime_ownership"]
