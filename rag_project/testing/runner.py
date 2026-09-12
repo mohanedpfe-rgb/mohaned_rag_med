@@ -7,23 +7,26 @@ from typing import Iterable
 from . import deep_diagnostics as core
 from .advanced_phases import (
     adversarial_documents,
-    cascade_phase,
-    certification_phase,
     contract_triangulation,
     cross_layer_invariants,
     diagnostic_chain,
-    golden_benchmark,
     information_loss as legacy_information_loss,
     metamorphic,
-    mutation_detection,
-    performance,
-    rag_causality,
-    resources,
+    performance as legacy_performance,
+    resources as legacy_resources,
     retrieval_microscope as legacy_retrieval_microscope,
-    root_cause_phase,
 )
 from .robust_probes import information_loss, retrieval_microscope
-
+from .strict_phases import (
+    phase10_production_generation,
+    phase11_mutation_testing,
+    phase13_causal_graph,
+    phase16_independent_gold,
+    phase17_strict_certification,
+    wrap_phase7,
+    wrap_phase14,
+    wrap_phase15,
+)
 
 PHASES = tuple(
     replace(p, markers=("generation", "intelligence")) if p.number == 10 else
@@ -37,8 +40,6 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
     """Dependency-aware engine with bounded, project-aware execution for all 17 phases."""
 
     def _blocked(self, spec: core.PhaseSpec) -> core.PhaseResult | None:
-        # A failed prerequisite is evidence, not a reason to suppress downstream
-        # diagnostics. Only a missing result is a true execution dependency failure.
         missing = [dep for dep in spec.dependencies if dep not in self.results]
         if not missing:
             return None
@@ -69,27 +70,31 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         elif spec.number == 6:
             result = information_loss(spec)
         elif spec.number == 7:
-            result = adversarial_documents(spec)
+            result = wrap_phase7(spec)
         elif spec.number == 8:
             result = metamorphic(spec)
         elif spec.number == 9:
             result = retrieval_microscope(spec)
         elif spec.number == 10:
-            result = rag_causality(spec)
+            result = phase10_production_generation(spec)
         elif spec.number == 11:
-            result = mutation_detection(spec)
+            result = phase11_mutation_testing(spec)
         elif spec.number == 12:
-            result = root_cause_phase(spec, self.results)
+            result = core.PhaseResult(spec.number, spec.key, spec.name, status="PASS", started_at=core.time.time())
+            fingerprints = core.fingerprint_failures(self.results.values())
+            result.details = {"algorithm": "structured location + exception + normalized message fingerprint", "unique_fingerprints": len(fingerprints), "fingerprints": fingerprints[:50], "evidence_phases": sorted(self.results)}
+            result.score = 1.0
+            result.duration_s = round(core.time.time() - result.started_at, 3)
         elif spec.number == 13:
-            result = cascade_phase(spec, self.results)
+            result = phase13_causal_graph(spec, self.results)
         elif spec.number == 14:
-            result = performance(spec)
+            result = wrap_phase14(spec)
         elif spec.number == 15:
-            result = resources(spec)
+            result = wrap_phase15(spec)
         elif spec.number == 16:
-            result = golden_benchmark(spec)
+            result = phase16_independent_gold(spec)
         elif spec.number == 17:
-            result = certification_phase(spec, self.results)
+            result = phase17_strict_certification(spec, self.results)
         else:
             raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
         return self._upstream_failure_context(spec, result)
