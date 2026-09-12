@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import pytest
 
+from tests.high_level.helpers import assert_citations_valid, assert_document_ready, assert_exact_path, assert_exact_status, assert_grounded
+
 
 @pytest.mark.high_level
 @pytest.mark.slow
-def test_ingestion__image_heavy_scanned_pdf_activates_ocr_metadata_and_never_fabricates_text(clean_system, scanned_document):
+def test_ingestion__image_heavy_scanned_pdf_activates_ocr_and_becomes_grounded_searchable_content(clean_system, scanned_document):
     result = clean_system.ingest_file(scanned_document)
-    assert str(result.get("status") or "").upper() == "FAILED"
+    assert str(result.get("status") or "").upper() == "READY"
 
     document_id = str(result.get("document_id") or result.get("id") or "")
-    assert document_id
-    record = clean_system.state_store.get_document(document_id)
-    assert record is not None
-    assert int(record.get("total_pages") or 0) == 2
+    assert_document_ready(clean_system, document_id)
 
     with clean_system.state_store._connect() as connection:
         rows = connection.execute(
@@ -22,16 +21,16 @@ def test_ingestion__image_heavy_scanned_pdf_activates_ocr_metadata_and_never_fab
         ).fetchall()
 
     assert [row[0] for row in rows] == [1, 2]
-    for _, text, method, ocr_status in rows:
-        assert str(method or "").upper() in {"OCR", "NONE", "UNKNOWN"}
-        if str(method or "").upper() == "OCR":
-            assert str(ocr_status or "").strip()
-        assert "clinical" not in str(text or "").casefold()
-        assert "diabetes" not in str(text or "").casefold()
+    assert all("OCR_CONTROLLED_MARKER" in str(row[1] or "") for row in rows)
+    assert any(str(row[2] or "").upper() == "OCR" for row in rows)
+    assert all(str(row[3] or "").strip() for row in rows)
 
-    answer = clean_system.answer("What clinical fact is contained in this image-only document?")
-    assert str(answer.get("status") or "").upper() == "NOT_SUPPORTED"
-    assert answer.get("citations") == []
+    answer = clean_system.answer("What chronic disorder is contained in the scanned medical document?")
+    assert_exact_status(answer, "SUCCESS")
+    assert_exact_path(answer, "PATH_A_EXTRACTIVE")
+    assert "diabetes" in str(answer.get("answer") or "").casefold()
+    assert_citations_valid(answer)
+    assert_grounded(answer)
 
 
 @pytest.mark.high_level
