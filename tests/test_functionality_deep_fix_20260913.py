@@ -169,6 +169,14 @@ def test_numeric_claim_passes_when_the_cited_source_contains_an_equivalent_unit(
     assert checks[0].numeric_mismatch is False
 
 
+def test_invalid_citation_marker_is_not_ignored_when_a_valid_marker_is_present():
+    answer = "Diabetes is a metabolic disorder. [S1] [S9]"
+    evidence = ["Diabetes is a metabolic disorder."]
+    checks = verify_claims(answer, evidence, ["S1"])
+    assert len(checks) == 1
+    assert checks[0].status == "UNSUPPORTED"
+
+
 def test_runtime_success_contract_accepts_canonical_nested_grounding():
     result = {
         "status": "SUCCESS",
