@@ -1,8 +1,7 @@
-"""Small authoritative overrides for probes whose acceptance criteria are representation-specific."""
+"""Production-oriented representation and retrieval probes."""
 from __future__ import annotations
 
 import json
-import math
 import statistics
 import time
 from pathlib import Path
@@ -12,6 +11,7 @@ from .deep_diagnostics import PhaseResult
 from .advanced_phases import _cleanup_store, _embedding, _fixture_chunks, _fixture_pages, _store_fixture, _survival, _token_set, _result
 
 ROOT = Path(__file__).resolve().parents[2]
+GOLD = ROOT / "tests" / "support" / "gold_sets" / "diagnostic_independent_gold.jsonl"
 
 
 def information_loss(phase: Any) -> PhaseResult:
@@ -27,7 +27,6 @@ def information_loss(phase: Any) -> PhaseResult:
             import sqlite3
             with sqlite3.connect(store.lexical_database) as connection:
                 lexical_rows = connection.execute("SELECT document, metadata FROM lexical_documents ORDER BY id").fetchall()
-
             source_text = "\n".join(page.text for page in pages)
             chunk_text = "\n".join(chunk.text for chunk in chunks)
             lexical_text = "\n".join(str(row[0]) for row in lexical_rows)
@@ -38,7 +37,6 @@ def information_loss(phase: Any) -> PhaseResult:
                     lexical_fields |= set(json.loads(raw).keys())
                 except Exception:
                     pass
-
             field_survival = {
                 "document_id": {"source": True, "chunk": all(bool(c.doc_id) for c in chunks), "vector": "document_id" in vector_fields, "lexical": "document_id" in lexical_fields},
                 "page_numbers": {"source": all(page.page_number is not None for page in pages), "chunk": all(bool(c.page_numbers) for c in chunks), "vector": "page_numbers" in vector_fields, "lexical": "page_numbers" in lexical_fields},
@@ -69,43 +67,54 @@ def information_loss(phase: Any) -> PhaseResult:
     return result
 
 
+def _load_independent_gold() -> list[dict[str, Any]]:
+    if not GOLD.exists():
+        raise FileNotFoundError(GOLD)
+    rows = [json.loads(line) for line in GOLD.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(rows) < 3:
+        raise RuntimeError("independent gold set is too small")
+    return rows
+
+
+def _metadata_by_id(store: Any) -> dict[str, dict[str, Any]]:
+    payload = store.get_documents()
+    ids = payload.get("ids") or []
+    metadatas = payload.get("metadatas") or []
+    return {str(item_id): dict(meta or {}) for item_id, meta in zip(ids, metadatas, strict=False)}
+
+
 def retrieval_microscope(phase: Any) -> PhaseResult:
     result = _result(phase)
     try:
-        from rag_project.utils.text_utils import meaningful_tokens
         chunks = _fixture_chunks()
+        gold = _load_independent_gold()
         store, tmp = _store_fixture(chunks)
         try:
-            query_specs = ["diabetes diagnosis", "HbA1c diagnostic threshold", "kidney nephropathy"]
+            metadata = _metadata_by_id(store)
             metrics: list[dict[str, Any]] = []
-            for query in query_specs:
-                q_tokens = set(meaningful_tokens(query))
-                relevant = set()
-                for chunk in chunks:
-                    text_tokens = _token_set(chunk.text)
-                    if q_tokens and q_tokens.issubset(text_tokens):
-                        relevant.add(f"{chunk.doc_id}:{chunk.chunk_index}:{chunk.representation_type}")
-                # A query with a phrase-specific label may match through a table/figure representation.
-                if not relevant:
-                    for chunk in chunks:
-                        if q_tokens & _token_set(chunk.text):
-                            relevant.add(f"{chunk.doc_id}:{chunk.chunk_index}:{chunk.representation_type}")
+            for case in gold:
+                expected_doc_ids = {str(value) for value in case.get("expected_doc_ids", [])}
+                if not expected_doc_ids:
+                    raise RuntimeError(f"gold case {case.get('id')} has no expected_doc_ids")
+                query = str(case["question"])
                 lexical = store.search_lexical(query, n_results=5)
                 semantic = store.search(_embedding(query), n_results=5)
                 lexical_ids = [str(v) for v in (lexical.get("ids") or [[]])[0]]
                 semantic_ids = [str(v) for v in (semantic.get("ids") or [[]])[0]]
-                lex_rank = next((i + 1 for i, item in enumerate(lexical_ids) if item in relevant), None)
-                sem_rank = next((i + 1 for i, item in enumerate(semantic_ids) if item in relevant), None)
-                metrics.append({"query": query, "relevant_count": len(relevant), "lexical_recall_at_3": bool(lex_rank and lex_rank <= 3), "semantic_recall_at_3": bool(sem_rank and sem_rank <= 3), "lexical_rank": lex_rank, "semantic_rank": sem_rank})
+                lexical_docs = {str((metadata.get(item) or {}).get("document_id")) for item in lexical_ids if item in metadata}
+                semantic_docs = {str((metadata.get(item) or {}).get("document_id")) for item in semantic_ids if item in metadata}
+                lex_rank = next((i + 1 for i, item in enumerate(lexical_ids) if str((metadata.get(item) or {}).get("document_id")) in expected_doc_ids), None)
+                sem_rank = next((i + 1 for i, item in enumerate(semantic_ids) if str((metadata.get(item) or {}).get("document_id")) in expected_doc_ids), None)
+                metrics.append({"id": case["id"], "question": query, "expected_doc_ids": sorted(expected_doc_ids), "lexical_hit": bool(expected_doc_ids & lexical_docs), "semantic_hit": bool(expected_doc_ids & semantic_docs), "lexical_rank": lex_rank, "semantic_rank": sem_rank, "lexical_recall_at_3": bool(lex_rank and lex_rank <= 3), "semantic_recall_at_3": bool(sem_rank and sem_rank <= 3)})
             filtered = store.search_lexical("diabetes", n_results=5, where={"document_id": "does-not-exist"})
             filter_ok = not bool((filtered.get("ids") or [[]])[0])
             lexical_recall = statistics.fmean([int(row["lexical_recall_at_3"]) for row in metrics]) if metrics else 0.0
             semantic_recall = statistics.fmean([int(row["semantic_recall_at_3"]) for row in metrics]) if metrics else 0.0
             reciprocal = [1.0 / row["lexical_rank"] for row in metrics if row["lexical_rank"]]
             mrr = statistics.fmean(reciprocal) if reciprocal else 0.0
-            result.details = {"queries": metrics, "lexical_recall_at_3": lexical_recall, "semantic_recall_at_3": semantic_recall, "lexical_mrr": mrr, "metadata_filter_correct": filter_ok, "vector_count": store.count(), "lexical_count": store.lexical_count()}
+            result.details = {"evidence_level": "independent_gold_retrieval_microscope", "gold_path": str(GOLD.relative_to(ROOT)), "gold_cases": len(metrics), "gold_independent_of_corpus_text": True, "queries": metrics, "lexical_recall_at_3": lexical_recall, "semantic_recall_at_3": semantic_recall, "lexical_mrr": mrr, "metadata_filter_correct": filter_ok, "vector_count": store.count(), "lexical_count": store.lexical_count(), "relevance_derived_from_fixture_text": False}
             result.score = round((lexical_recall + semantic_recall + int(filter_ok)) / 3.0, 3)
-            result.status = "PASS" if lexical_recall >= 0.67 and filter_ok else "FAIL"
+            result.status = "PASS" if lexical_recall >= 0.67 and semantic_recall >= 0.67 and filter_ok else "FAIL"
             if result.status == "FAIL":
                 result.failures.append({"location": "VectorStore.search/search_lexical", "exception": "RetrievalMicroscopeFailure", "message": json.dumps(result.details, sort_keys=True)})
         finally:
