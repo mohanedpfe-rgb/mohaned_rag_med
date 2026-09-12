@@ -36,11 +36,11 @@ def _parse_phases(values: list[str] | None) -> list[int] | None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Fast, deep, dependency-aware RAG test diagnosis")
+    parser = argparse.ArgumentParser(description="Evidence-producing, dependency-aware 17-phase RAG diagnosis")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--fast", action="store_true", help="run the fast diagnostic subset")
-    group.add_argument("--deep", action="store_true", help="run all 17 phases except explicit performance/resource policy changes")
-    group.add_argument("--all", action="store_true", help="run all 17 phases")
+    group.add_argument("--fast", action="store_true", help="run the bounded fast diagnostic subset")
+    group.add_argument("--deep", action="store_true", help="run all 17 bounded diagnostic phases")
+    group.add_argument("--all", action="store_true", help="run all 17 bounded diagnostic phases")
     group.add_argument("--phase", nargs="+", metavar="N", help="run selected phase numbers")
     parser.add_argument("--timeout-scale", type=float, default=1.0, help="scale phase timeouts")
     parser.add_argument("--fail-fast", action="store_true", help="stop after the first failed phase")
