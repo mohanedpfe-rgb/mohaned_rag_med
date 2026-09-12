@@ -20,13 +20,7 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
         requested_mode = os.getenv("DIAGNOSTIC_RESOURCE_MODE", "bounded").strip().lower()
         requested_seconds = float(os.getenv("DIAGNOSTIC_RESOURCE_SECONDS", "20"))
         duration = max(requested_seconds, 86400.0) if requested_mode == "24h" else requested_seconds
-        proc = subprocess.run(
-            [sys.executable, str(child), "--duration", str(max(5.0, duration))],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=max(30, int(duration) + 30),
-        )
+        proc = subprocess.run([sys.executable, str(child), "--duration", str(max(5.0, duration))], cwd=ROOT, text=True, capture_output=True, timeout=max(30, int(duration) + 30))
         payload = None
         for line in reversed(proc.stdout.splitlines()):
             try:
@@ -79,16 +73,7 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
             "observation_depth_ok": enough_observation,
             "exit_code": proc.returncode,
             "workload": payload.get("workload"),
-            "pipeline_exercised": [
-                "robust_ingest_file",
-                "PDFExtractor",
-                "SemanticChunker",
-                "EmbeddingService(test_mode)",
-                "VectorStore",
-                "IngestionStateStore",
-                "RSS trend sampling",
-                "FD sampling",
-            ],
+            "pipeline_exercised": ["robust_ingest_file", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore", "RSS trend sampling", "FD sampling"],
             "long_running_24h_mode_supported": True,
             "certification_mode": "24h_observation" if requested_mode == "24h" else "bounded_smoke",
         }
@@ -111,13 +96,7 @@ def _with_provenance(original, phase, results):
         status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, text=True, capture_output=True, timeout=10, check=True).stdout.strip()
         expected = os.getenv("GITHUB_SHA", "").strip()
         provenance_ok = bool(sha) and not status and (not expected or sha == expected)
-        result.details["certification_provenance"] = {
-            "git_head_sha": sha,
-            "working_tree_clean": not bool(status),
-            "expected_ci_sha": expected or None,
-            "matches_expected_ci_sha": (not expected or sha == expected),
-            "provenance_verified": provenance_ok,
-        }
+        result.details["certification_provenance"] = {"git_head_sha": sha, "working_tree_clean": not bool(status), "expected_ci_sha": expected or None, "matches_expected_ci_sha": (not expected or sha == expected), "provenance_verified": provenance_ok}
         if not provenance_ok:
             result.status = "FAIL"
             result.score = 0.0
@@ -133,12 +112,9 @@ def _strict_semantic_wrapper(original):
     def wrapped(results: dict[int, PhaseResult]):
         failures = list(original(results))
         extra: list[dict[str, Any]] = []
-
         try:
             from rag_project.testing.implementation_contracts import validate_runtime_ownership
             ownership = validate_runtime_ownership()
-            if results.get(17) is not None:
-                results[17].details["implementation_ownership_contract"] = ownership
             if not ownership.get("pass"):
                 extra.append({"phase": 17, "reason": "authoritative 17-phase implementation ownership contract failed", "failures": ownership.get("failures", [])})
         except Exception as exc:
@@ -161,6 +137,30 @@ def _strict_semantic_wrapper(original):
         d10 = p10.details if p10 else {}
         if p10 is None or d10.get("generation_client") != "OllamaLLMClient" or not d10.get("ollama_protocol_roundtrip_verified"):
             extra.append({"phase": 10, "reason": "production Ollama client roundtrip evidence incomplete"})
+        p14 = results.get(14)
+        d14 = p14.details if p14 else {}
+        baseline_path = ROOT / "tests" / "support" / "performance_baseline.json"
+        baseline_contract_ok = False
+        baseline_failure = None
+        try:
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            expected_stages = {"canonical_ingestion", "post_ingestion_validation", "lexical_retrieval", "semantic_retrieval"}
+            baseline_contract_ok = (
+                baseline.get("schema_version") == 2
+                and baseline.get("baseline_type") == "certification_ceiling"
+                and baseline.get("historical_measurement") is False
+                and expected_stages.issubset(baseline.keys())
+                and baseline.get("canonical_stage_keys") == sorted(expected_stages)
+                and all(isinstance(baseline.get(stage, {}).get("p95_ms"), (int, float)) for stage in expected_stages)
+            )
+        except Exception as exc:
+            baseline_failure = {"exception": type(exc).__name__, "message": str(exc)}
+        if p14 is None or not d14.get("stage_metrics") or not d14.get("regression_comparisons") or not d14.get("regression_pass") or not baseline_contract_ok:
+            extra.append({"phase": 14, "reason": "performance benchmark/regression evidence or baseline provenance incomplete", "baseline_failure": baseline_failure})
+        else:
+            d14["baseline_contract_verified"] = True
+            d14["baseline_type"] = "certification_ceiling"
+            d14["historical_baseline_available"] = False
         p15 = results.get(15)
         d15 = p15.details if p15 else {}
         if p15 is None or not d15.get("rss_trend_ok") or not d15.get("fd_leak_ok") or d15.get("evidence_level") != "real_subprocess_resource_observation":
