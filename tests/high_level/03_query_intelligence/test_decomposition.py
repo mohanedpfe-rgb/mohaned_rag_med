@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.high_level.helpers import assert_exact_status
+from tests.high_level.helpers import assert_exact_path, assert_exact_status
 
 
 @pytest.mark.high_level
@@ -10,6 +10,7 @@ def test_query_intelligence__multi_part_question_is_split_into_cause_and_complic
     result = clean_system.answer("What are the causes and complications of diabetes mellitus?")
 
     assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     route = result.get("route") or {}
     variants = [str(item).casefold() for item in (route.get("query_variants") or [])]
     assert len(variants) >= 2
@@ -25,6 +26,7 @@ def test_query_intelligence__single_factual_question_is_not_over_decomposed(clea
     result = clean_system.answer("What is diabetes mellitus?")
 
     assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     route = result.get("route") or {}
     variants = route.get("query_variants") or []
     assert len(variants) <= 2
