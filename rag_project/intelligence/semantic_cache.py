@@ -14,20 +14,16 @@ _CURRENT_SYSTEM: Any | None = None
 
 
 class SemanticRetrievalCache:
-    """Embedding-aware retrieval cache with cosine matching and bounded TTL."""
+    """Embedding-aware retrieval cache with cosine matching and bounded TTL.
+
+    Filtered retrieval is never cached. The active system carries the request
+    scope so a cache entry from the whole library cannot satisfy a document-
+    filtered request, and filtered evidence cannot contaminate the global cache.
+    """
 
     SCHEMA_VERSION = 1
 
-    def __init__(
-        self,
-        db_path: str | Path,
-        ttl_seconds: float = 7 * 24 * 60 * 60,
-        *,
-        embed_query: Callable[[str], Sequence[float]] | None = None,
-        similarity_threshold: float = 0.95,
-        max_entries: int = 10_000,
-        expected_dimension: int = 768,
-    ) -> None:
+    def __init__(self, db_path: str | Path, ttl_seconds: float = 7 * 24 * 60 * 60, *, embed_query: Callable[[str], Sequence[float]] | None = None, similarity_threshold: float = 0.95, max_entries: int = 10_000, expected_dimension: int = 768) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embed_query = embed_query
@@ -39,18 +35,7 @@ class SemanticRetrievalCache:
             raise ValueError("similarity_threshold must be in (0, 1].")
         with sqlite3.connect(self.db_path) as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.execute(
-                """CREATE TABLE IF NOT EXISTS semantic_retrieval_cache (
-                    cache_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    query TEXT NOT NULL,
-                    embedding BLOB NOT NULL,
-                    dimension INTEGER NOT NULL,
-                    payload TEXT NOT NULL,
-                    created REAL NOT NULL,
-                    accessed REAL NOT NULL,
-                    hits INTEGER NOT NULL DEFAULT 0
-                )"""
-            )
+            db.execute("CREATE TABLE IF NOT EXISTS semantic_retrieval_cache (cache_id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL, embedding BLOB NOT NULL, dimension INTEGER NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL, accessed REAL NOT NULL, hits INTEGER NOT NULL DEFAULT 0)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_created ON semantic_retrieval_cache(created, cache_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_accessed ON semantic_retrieval_cache(accessed, cache_id)")
             db.commit()
@@ -74,6 +59,13 @@ class SemanticRetrievalCache:
         right_norm = math.sqrt(sum(float(b) * float(b) for b in right))
         denominator = left_norm * right_norm
         return dot / denominator if denominator > 1e-12 else 0.0
+
+    @staticmethod
+    def _filtered_scope_active() -> bool:
+        if _CURRENT_SYSTEM is None:
+            return False
+        scope = getattr(_CURRENT_SYSTEM, "_active_metadata_filter", None)
+        return bool(scope)
 
     def _resolve_embedder(self) -> Callable[[str], Sequence[float]] | None:
         if self.embed_query is not None:
@@ -99,6 +91,8 @@ class SemanticRetrievalCache:
         return vector
 
     def get(self, query: str) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
+        if self._filtered_scope_active():
+            return None
         vector = self._query_embedding(query)
         if vector is None:
             return None
@@ -132,6 +126,8 @@ class SemanticRetrievalCache:
         return self.restore(payload), {"similarity": round(float(similarity), 6), "created": float(row[4]), "age_seconds": max(0.0, now - float(row[4])), "hits": int(row[6]) + 1}
 
     def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
+        if self._filtered_scope_active():
+            return False
         vector = self._query_embedding(query)
         if vector is None or self.ttl_seconds <= 0:
             return False
@@ -139,11 +135,7 @@ class SemanticRetrievalCache:
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
             db.execute("INSERT INTO semantic_retrieval_cache (query,embedding,dimension,payload,created,accessed,hits) VALUES(?,?,?,?,?,?,0)", (str(query)[:3000], self._pack(vector), len(vector), json.dumps(payload, ensure_ascii=False), now, now))
-            overflow = db.execute(
-                "SELECT cache_id FROM semantic_retrieval_cache "
-                "ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?",
-                (self.max_entries,),
-            ).fetchall()
+            overflow = db.execute("SELECT cache_id FROM semantic_retrieval_cache ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?", (self.max_entries,)).fetchall()
             if overflow:
                 db.executemany("DELETE FROM semantic_retrieval_cache WHERE cache_id=?", overflow)
             db.commit()
