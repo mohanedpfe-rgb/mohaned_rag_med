@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
+from pathlib import Path
 from typing import Any
 
 from rag_project.testing.deep_diagnostics import PhaseResult
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _runner():
@@ -45,11 +49,123 @@ def phase13_known_causal_graph(phase: Any, results: dict[int, PhaseResult]) -> P
     return base
 
 
+def _architecture_semantic_contract(details: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    required_domains = {"ingestion", "chunking", "embeddings", "retrieval", "intelligence", "generation", "storage", "evaluation"}
+    domains = details.get("domains") or {}
+    missing_domains = sorted(domain for domain in required_domains if not (domains.get(domain) or {}).get("modules", 0))
+    if missing_domains:
+        failures.append(f"missing production domains: {missing_domains}")
+    if int(details.get("python_modules") or 0) <= 0:
+        failures.append("architecture reports no production Python modules")
+    if int(details.get("test_files") or 0) <= 0:
+        failures.append("architecture reports no test files")
+    # Independently parse project imports; Phase 1 must not certify only from counters.
+    parse_errors = []
+    import_edges = 0
+    for path in (ROOT / "rag_project").rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    import_edges += len(node.names)
+        except (OSError, SyntaxError) as exc:
+            parse_errors.append(f"{path.relative_to(ROOT)}:{type(exc).__name__}")
+    if parse_errors:
+        failures.append(f"production AST parse failures: {parse_errors[:5]}")
+    if import_edges <= 0:
+        failures.append("architecture dependency graph is empty")
+    return failures
+
+
+def _semantic_phase_contracts(results: dict[int, PhaseResult]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    p1 = results.get(1)
+    if p1:
+        for message in _architecture_semantic_contract(p1.details or {}):
+            failures.append({"phase": 1, "reason": message})
+
+    p7 = results.get(7)
+    if p7:
+        d = p7.details or {}
+        if not d.get("real_pdf_objects"):
+            failures.append({"phase": 7, "reason": "real PDF objects were not exercised"})
+        if not d.get("malformed_pdf_rejected"):
+            failures.append({"phase": 7, "reason": "malformed PDF rejection was not demonstrated"})
+        if len(d.get("variant_results") or []) < 5:
+            failures.append({"phase": 7, "reason": "adversarial document matrix is too small"})
+
+    p8 = results.get(8)
+    if p8:
+        checks = p8.details.get("checks") or {}
+        if len(checks) < 4 or not all(bool(value) for value in checks.values()):
+            failures.append({"phase": 8, "reason": "metamorphic invariants are incomplete or failing"})
+        if not p8.details.get("production_functions"):
+            failures.append({"phase": 8, "reason": "metamorphic phase did not report executed production functions"})
+
+    p9 = results.get(9)
+    if p9 and not p9.details.get("gold_labels_independent_of_corpus_text", False):
+        failures.append({"phase": 9, "reason": "retrieval labels are not independently sourced"})
+
+    p10 = results.get(10)
+    if p10:
+        d = p10.details or {}
+        if d.get("retrieval_stub_used") is not False:
+            failures.append({"phase": 10, "reason": "answer phase did not prove non-stub retrieval"})
+        orchestration = set(d.get("production_orchestration") or [])
+        required_orchestration = {"MultiTierRetriever", "HybridRetriever", "VectorStore", "EvidenceCompiler", "AnswerCascade", "ActiveVerifier"}
+        if not required_orchestration.issubset(orchestration):
+            failures.append({"phase": 10, "reason": f"production answer orchestration incomplete: {sorted(required_orchestration - orchestration)}"})
+
+    p11 = results.get(11)
+    if p11:
+        d = p11.details or {}
+        if int(d.get("mutants_applicable") or 0) < 8 or float(d.get("kill_score") or 0) < 1.0:
+            failures.append({"phase": 11, "reason": "mutation suite does not have at least eight applicable fully killed mutants"})
+        targets = {str(row.get("target")) for row in d.get("mutation_results") or [] if row.get("target")}
+        if len(targets) < 2:
+            failures.append({"phase": 11, "reason": "mutation suite does not span multiple production modules"})
+
+    p13 = results.get(13)
+    if p13 and not p13.details.get("known_causal_fixture_verified"):
+        failures.append({"phase": 13, "reason": "causal graph has no verified known-causal fixture"})
+    if p13 and not p13.details.get("known_failure_injection_verified", False):
+        failures.append({"phase": 13, "reason": "causal graph has no real failure-injection propagation experiment"})
+
+    p14 = results.get(14)
+    if p14:
+        d = p14.details or {}
+        metrics = d.get("stage_metrics") or {}
+        if not metrics or any(int(row.get("samples") or 0) < 5 for row in metrics.values()):
+            failures.append({"phase": 14, "reason": "performance intelligence lacks >=5 samples for every measured stage"})
+        baseline_path = ROOT / "tests" / "support" / "performance_baseline.json"
+        if not baseline_path.exists():
+            failures.append({"phase": 14, "reason": "performance regression baseline file is missing"})
+
+    p15 = results.get(15)
+    if p15:
+        d = p15.details or {}
+        if int(d.get("sample_count") or 0) < 3 or int(d.get("repetitions") or 0) < 3:
+            failures.append({"phase": 15, "reason": "resource observation has insufficient independent samples"})
+        if not d.get("pipeline_exercised"):
+            failures.append({"phase": 15, "reason": "resource phase does not identify exercised production pipeline"})
+
+    p16 = results.get(16)
+    if p16:
+        d = p16.details or {}
+        for key in ("durable_state_verified", "index_integrity_verified", "gold_labels_independent_of_corpus_text"):
+            if d.get(key) is not True:
+                failures.append({"phase": 16, "reason": f"missing production ingestion evidence: {key}"})
+        if float(d.get("retrieval_recall") or 0) < 0.80:
+            failures.append({"phase": 16, "reason": "production ingestion retrieval recall is below 0.80"})
+    return failures
+
+
 def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> PhaseResult:
     runner = _runner(); base = runner._base_phase17_strict(phase, results)
     required: dict[int, tuple[str, ...]] = {
         1: ("domains",), 2: ("collected_tests",), 3: ("chain",), 4: ("input_contract", "transformation_contract", "output_contract"),
-        5: ("violations",), 6: ("field_survival", "token_survival"), 7: ("variant_results",), 8: ("checks",),
+        5: ("violations",), 6: ("field_surfaces", "measurements"), 7: ("variant_results",), 8: ("checks",),
         9: ("lexical_recall_at_3", "semantic_recall_at_3"), 10: ("canonical_engine_executed", "answer_generated", "verification_allow"),
         11: ("mutants_applicable", "kill_score"), 12: ("unique_fingerprints", "self_test_equivalent_inputs_same", "self_test_different_module_different"),
         13: ("nodes", "edges", "known_causal_fixture_verified"), 14: ("stage_metrics", "repetitions"),
@@ -65,6 +181,9 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
         details = item.details or {}
         for key in keys:
             if key not in details or details[key] in (None, "", [], {}): evidence_failures.append({"phase": number, "required": key})
+
+    evidence_failures.extend(_semantic_phase_contracts(results))
+
     require_live_ocr = os.getenv("REQUIRE_REAL_OCR", "0").strip().lower() in {"1", "true", "yes", "on"}
     if require_live_ocr and not (results.get(7) and results[7].details.get("real_ocr_verified") is True): evidence_failures.append({"phase": 7, "required": "real_ocr_verified=true"})
     require_live_llm = os.getenv("REQUIRE_LIVE_OLLAMA", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -75,10 +194,11 @@ def phase17_strict_completion(phase: Any, results: dict[int, PhaseResult]) -> Ph
         if p15.get("certification_mode") != "24h_observation" or float(p15.get("observed_seconds") or 0) < 86400: evidence_failures.append({"phase": 15, "required": "24h_observation with >=86400 observed_seconds"})
     unique = sorted({entry["phase"] for entry in evidence_failures})
     base.details["phase_by_phase_evidence_contract"] = {"required_phases": list(required), "failures": evidence_failures}
+    base.details["semantic_evidence_failures"] = evidence_failures
     base.details["implementation_coverage"] = "17/17" if not evidence_failures and base.status == "PASS" else f"{17 - len(unique)}/17"
     base.details["fully_implemented_phase_numbers"] = [] if evidence_failures or base.status != "PASS" else list(range(1, 18))
     base.details["live_certification_requirements"] = {"real_ocr": require_live_ocr, "live_ollama": require_live_llm, "24h_resources": require_24h}
     if evidence_failures:
         base.details.setdefault("evidence_failures", []).extend(evidence_failures); base.details["runtime_non_pass_phases"] = sorted(set(base.details.get("runtime_non_pass_phases", [])) | set(unique)); base.status = "FAIL"; base.score = 0.0
-        base.failures.append({"location": "phase 17 phase-by-phase evidence contract", "exception": "Incomplete17PhaseImplementation", "message": str(evidence_failures)})
+        base.failures.append({"location": "phase 17 semantic evidence contract", "exception": "Incomplete17PhaseImplementation", "message": str(evidence_failures)})
     return base
