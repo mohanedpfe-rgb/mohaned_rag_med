@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from rag_project.citations.citation_manager import CitationManager
 from rag_project.embeddings.embedding_service import EmbeddingService
+from rag_project.generation.llm_client import OllamaLLMClient
 from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
 from rag_project.retrieval.hybrid_retriever import HybridRetriever
 from rag_project.storage.vector_store import VectorStore
@@ -35,7 +36,6 @@ class _Settings:
 class _ProbeSystem:
     def __init__(self, root: Path) -> None:
         self.settings = _Settings(root)
-        self.llm = _DeterministicLLM()
         self.citation_manager = CitationManager()
         self.conversation_memory = None
         self._med_selected_hits = []
@@ -48,12 +48,21 @@ class _ProbeSystem:
             test_mode=True,
         )
         self.vector_store = VectorStore(root / "vector_db", collection_name="phase10")
-        self.retriever = HybridRetriever(
-            self.vector_store,
-            self.embedding_service,
-            lexical_mode="hybrid",
-            vector_weight=0.7,
-        )
+        self.retriever = HybridRetriever(self.vector_store, self.embedding_service, lexical_mode="hybrid", vector_weight=0.7)
+        self.live_ollama = os.getenv("DIAGNOSTIC_LIVE_OLLAMA", "0").strip().lower() in {"1", "true", "yes", "on"}
+        if self.live_ollama:
+            self.llm = OllamaLLMClient(
+                os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+                os.getenv("GENERATION_MODEL", "llama3.2:3b"),
+                timeout_seconds=60,
+                max_output_tokens=512,
+                circuit_threshold=2,
+                circuit_open_seconds=15,
+            )
+            self.generation_backend = "ollama"
+        else:
+            self.llm = _DeterministicLLM()
+            self.generation_backend = "deterministic_test"
 
 
 def _seed_real_retrieval(system: _ProbeSystem) -> int:
@@ -63,21 +72,14 @@ def _seed_real_retrieval(system: _ProbeSystem) -> int:
     ids = []
     for chunk in chunks:
         chunk_id = f"{chunk.doc_id}:{chunk.chunk_index}:{chunk.representation_type}"
-        metadatas.append({
-            **dict(chunk.metadata or {}),
-            "document_id": chunk.doc_id,
-            "chunk_id": chunk_id,
-            "version_id": "phase10-v1",
-            "page_numbers": list(chunk.page_numbers or []),
-            "index_state": "READY",
-        })
+        metadatas.append({**dict(chunk.metadata or {}), "document_id": chunk.doc_id, "chunk_id": chunk_id, "version_id": "phase10-v1", "page_numbers": list(chunk.page_numbers or []), "index_state": "READY"})
         ids.append(chunk_id)
     embeddings = system.embedding_service.embed_texts(documents)
     system.vector_store.add_documents(documents, metadatas, embeddings, ids)
     return len(chunks)
 
 
-def phase10_canonical_answer_engine(phase: Any) -> PhaseResult:
+def phase10_canonical_answer_engine(phase: object) -> PhaseResult:
     result = _result(phase)
     root = Path(tempfile.mkdtemp(prefix="rag_phase10_answer_engine_"))
     try:
@@ -98,7 +100,8 @@ def phase10_canonical_answer_engine(phase: Any) -> PhaseResult:
             "production_entrypoint": "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer",
             "answer_generated": bool(answer),
             "generation_path": response.get("generation_path"),
-            "generation_backend_calls": system.llm.calls,
+            "generation_backend": system.generation_backend,
+            "generation_backend_calls": getattr(system.llm, "calls", 1),
             "retrieval_hits": len(hits),
             "seeded_index_records": seeded,
             "retrieval_backend": "VectorStore + HybridRetriever + deterministic EmbeddingService test backend",
@@ -109,45 +112,25 @@ def phase10_canonical_answer_engine(phase: Any) -> PhaseResult:
             "route_intent": route.get("intent"),
             "canonical_engine_executed": True,
             "retrieval_stub_used": False,
-            "production_orchestration": [
-                "SafetyGate",
-                "QueryRouter",
-                "MultiTierRetriever",
-                "HybridRetriever",
-                "VectorStore",
-                "EvidenceCompiler",
-                "AnswerCascade",
-                "ActiveVerifier",
-                "ResponseFormatter",
-                "FeedbackLogger",
-            ],
+            "live_ollama_opt_in": system.live_ollama,
+            "production_orchestration": ["SafetyGate", "QueryRouter", "MultiTierRetriever", "HybridRetriever", "VectorStore", "EvidenceCompiler", "AnswerCascade", "ActiveVerifier", "ResponseFormatter", "FeedbackLogger"],
         }
-        required = all(
-            [
-                result.details["answer_generated"],
-                result.details["retrieval_hits"] > 0,
-                result.details["citations_present"],
-                result.details["citation_ids_valid"],
-                result.details["verification_allow"],
-                result.details["canonical_engine_executed"],
-                not result.details["retrieval_stub_used"],
-            ]
-        )
+        required = all([
+            result.details["answer_generated"],
+            result.details["retrieval_hits"] > 0,
+            result.details["citations_present"],
+            result.details["citation_ids_valid"],
+            result.details["verification_allow"],
+            result.details["canonical_engine_executed"],
+            result.details["retrieval_stub_used"] is False,
+        ])
         result.score = 1.0 if required else 0.0
         result.status = "PASS" if required else "FAIL"
         if not required:
-            result.failures.append({
-                "location": "MedEvidenceProEngine.answer -> MultiTierRetriever -> HybridRetriever -> VectorStore",
-                "exception": "CanonicalAnswerEngineContractFailure",
-                "message": str(result.details),
-            })
+            result.failures.append({"location": "MedEvidenceProEngine.answer -> MultiTierRetriever -> HybridRetriever -> VectorStore", "exception": "CanonicalAnswerEngineContractFailure", "message": str(result.details)})
     except Exception as exc:
         result.status = "FAIL"
-        result.failures.append({
-            "location": "phase 10 canonical answer engine",
-            "exception": type(exc).__name__,
-            "message": str(exc),
-        })
+        result.failures.append({"location": "phase 10 canonical answer engine", "exception": type(exc).__name__, "message": str(exc)})
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return result
