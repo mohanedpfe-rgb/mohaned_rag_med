@@ -1,0 +1,57 @@
+name: 24h Resource Certification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  resource-24h:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1450
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+      - name: Validate installed environment
+        run: python -m pip check
+      - name: Compile resource diagnostic system
+        run: python -m compileall -q rag_project/testing scripts
+      - name: Run bounded-independent 24h production resource workload
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+          DIAGNOSTIC_RESOURCE_MODE: "24h"
+          DIAGNOSTIC_RESOURCE_SECONDS: "86400"
+          REQUIRE_24H_CERTIFICATION: "true"
+        run: |
+          mkdir -p artifacts
+          python scripts/test_doctor.py --phases 15 --json artifacts/resource-24h.json
+      - name: Require 24h observation evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/resource-24h.json").read_text(encoding="utf-8"))
+          phase = next(item for item in report.get("phases", []) if item.get("number") == 15)
+          details = phase.get("details", {})
+          assert phase.get("status") == "PASS", phase
+          assert details.get("certification_mode") == "24h_observation", phase
+          assert float(details.get("observed_seconds", 0)) >= 86400, phase
+          assert int(details.get("sample_count", 0)) >= 3, phase
+          assert int(details.get("repetitions", 0)) >= 3, phase
+          assert int(details.get("successful_ingestions", 0)) >= 3, phase
+          print("24H RESOURCE CERTIFICATION VERIFIED")
+          PY
+      - name: Publish 24h certification artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-24h-certification
+          path: artifacts/resource-24h.json
+          if-no-files-found: ignore
