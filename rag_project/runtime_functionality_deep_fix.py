@@ -135,6 +135,49 @@ def _filter_false_numeric_contradictions(original):
     return wrapped
 
 
+def _wrap_contextual_numeric_contradictions(original):
+    """Keep numeric conflicts only when the compared claims discuss the same fact."""
+    def wrapped(claims: Any):
+        claim_list = list(claims or ())
+        base = dict(original(claim_list) or {})
+        try:
+            from rag_project.intelligence import evidence_guard
+            extract = evidence_guard.extract_measurements
+            compatible = evidence_guard._measurement_compatible
+            token_fn = evidence_guard.meaningful_tokens
+        except Exception:
+            return base
+        numeric_claims = []
+        for claim in claim_list:
+            text = str(getattr(claim, "text", "") or "")
+            measurements = extract(text)
+            if measurements:
+                stripped = re.sub(r"\[S\d+\]", " ", text)
+                stripped = evidence_guard.MEASURE.sub(" ", stripped)
+                tokens = set(token_fn(stripped))
+                numeric_claims.append((measurements, tokens, text))
+        conflicts = []
+        for i, (left_values, left_tokens, _) in enumerate(numeric_claims):
+            for right_values, right_tokens, _ in numeric_claims[i + 1:]:
+                shared = left_tokens & right_tokens
+                if len(shared) < 2:
+                    continue
+                comparable = [(a, b) for a in left_values for b in right_values]
+                mismatching = [(a, b) for a, b in comparable if not compatible(a, b)]
+                if not mismatching:
+                    continue
+                conflicts.append({
+                    "left": [f"{value} {unit}" for value, unit in left_values],
+                    "right": [f"{value} {unit}" for value, unit in right_values],
+                    "shared_terms": sorted(shared)[:8],
+                })
+                if len(conflicts) >= 8:
+                    return {"has_contradiction": True, "conflicts": conflicts, "agreement": .65}
+        return {"has_contradiction": bool(conflicts), "conflicts": conflicts, "agreement": .65 if conflicts else 1.0}
+    wrapped._functionality_contextual_numeric_guard = True
+    return wrapped
+
+
 def _functionality_sentences(text: Any) -> list[str]:
     out=[]
     for part in re.split(r"(?<=[.!?؟])\s+|\n+", str(text or "")):
@@ -214,10 +257,13 @@ def install() -> None:
         original_contradiction=med_evidence_pro.EvidenceCompiler._detect_contradiction
         if not getattr(original_contradiction,"_functionality_unit_contradiction_guard",False):
             med_evidence_pro.EvidenceCompiler._detect_contradiction=staticmethod(_filter_false_numeric_contradictions(original_contradiction))
+        current_contradiction=med_evidence_pro.EvidenceCompiler._detect_contradiction
+        if not getattr(current_contradiction,"_functionality_contextual_numeric_guard",False):
+            med_evidence_pro.EvidenceCompiler._detect_contradiction=staticmethod(_wrap_contextual_numeric_contradictions(current_contradiction))
         if evidence_guard is not None:
             original_guard_contradiction = evidence_guard.detect_contradiction
             if not getattr(original_guard_contradiction,"_functionality_contradiction_guard",False):
                 evidence_guard.detect_contradiction = _wrap_contradiction_detection(original_guard_contradiction)
         _INSTALLED=True
 
-__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_functionality_sentences","_filter_false_numeric_contradictions","_wrap_numeric_verifier","_wrap_contradiction_detection"]
+__all__=["install","_wrap_retrieval_cache_fallthrough","_wrap_retrieval_skip_health_probe","_citation_complete_without_shared_state","_wrap_generate","_wrap_route","_functionality_sentences","_filter_false_numeric_contradictions","_wrap_numeric_verifier","_wrap_contradiction_detection","_wrap_contextual_numeric_contradictions"]
