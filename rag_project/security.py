@@ -208,10 +208,7 @@ def postprocess_medical_output(result: dict) -> dict:
         return result
     answer = str(result.get("answer") or "")
     citations = _safe_sequence(result.get("citations"))
-    high_risk = re.search(
-        r"(?i)(?:\b(?:dose|dosage|mg|mcg|ml|prescri\w*|inject\w*|opioid\w*|chemotherapy\w*|suicid\w*|overdose\w*|emergency\w*)\b|\btake\s+\d+\b|\banticoagul\w*\b|\bpregnan\w*\b|\binsulin\b)",
-        answer,
-    )
+    high_risk = re.search(r"(?i)(?:\b(?:dose|dosage|mg|mcg|ml|prescri\w*|inject\w*|opioid\w*|chemotherapy\w*|suicid\w*|overdose\w*|emergency\w*)\b|\btake\s+\d+\b|\banticoagul\w*\b|\bpregnan\w*\b|\binsulin\b)", answer)
     if high_risk and not citations:
         result = dict(result)
         result["answer"] = "I can't provide a clinically actionable recommendation without cited evidence from the indexed documents. Please verify the relevant source before acting."
@@ -287,7 +284,15 @@ def harden_system(system):
         question = validate_query(question)
         if not consume_rate_limit("answer", limit=30, window_seconds=60): raise RuntimeError("Too many questions in a short period. Please wait a moment and retry.")
         if not acquire_answer_slot(0.1): raise RuntimeError("Too many concurrent answer jobs. Please retry shortly.")
-        try: return postprocess_medical_output(original_answer(question, *args, **kwargs))
-        finally: release_answer_slot()
+        metadata_filter = kwargs.get("metadata_filter")
+        if metadata_filter is None and args:
+            metadata_filter = args[0]
+        previous_scope = getattr(system, "_active_metadata_filter", None)
+        system._active_metadata_filter = dict(metadata_filter or {})
+        try:
+            return postprocess_medical_output(original_answer(question, *args, **kwargs))
+        finally:
+            system._active_metadata_filter = previous_scope
+            release_answer_slot()
     system.clear_pdf_data = guarded_clear; system.apply_settings_in_place = guarded_apply; system.ingest_directory = guarded_ingest_directory; system.ingest_file = guarded_ingest_file; system.answer = guarded_answer; system._bookrag_security_hardened = True
     return system
