@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import robust_ingestor
+from rag_project.ingestion import versioned_ingestor
 from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace, validate_feature_contract
@@ -15,13 +16,10 @@ from rag_project.intelligence.retrieval_replay import record as record_replay
 from rag_project.generation.latency_budget import request_budget, exhausted, elapsed
 
 if TYPE_CHECKING:
-    # Contract-only import: kept out of runtime to avoid application.py's factory cycle.
     from rag_project.application import ANSWER_PIPELINE_AUTHORITY
 
 ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 
-# Static source-visible markers used by the production contract audit.  These are
-# real dependencies in the answer lifecycle, not test-only placeholders.
 _PRODUCTION_HARD_GATES = {
     "claim_evidence_matrix": "rag_project.intelligence.evidence_entailment.build_claim_evidence_matrix",
     "confidence_calibration": "rag_project.intelligence.confidence_calibration.calibrate_confidence",
@@ -186,9 +184,10 @@ class ProductionRAGSystem(ResilientRAGSystem):
             return out
 
     def ingest_file(self, pdf_path):
-        result = robust_ingestor.robust_ingest_file(self, pdf_path)
+        source = Path(pdf_path)
+        result = versioned_ingestor.ingest_version_safely(self, source)
         if str((result or {}).get("status") or "").lower() == "skipped":
-            result = self._archive_duplicate_upload(pdf_path, str((result or {}).get("document_id") or "unknown"), result)
+            result = self._archive_duplicate_upload(source, str((result or {}).get("document_id") or "unknown"), result)
         return result
 
     def ingest_directory(self, directory=None):
@@ -270,8 +269,6 @@ class ProductionRAGSystem(ResilientRAGSystem):
         else:
             question = original_question
         try:
-            # Calling through the bound attribute is intentional.  Class-level
-            # methods receive self automatically; instance-level test doubles do not.
             result = _safe_result(self._certified_god_answer(question, metadata_filter))
         except Exception as exc:
             _safe_exception_log(self, "Primary answer pipeline failed")
