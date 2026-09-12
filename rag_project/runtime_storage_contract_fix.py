@@ -249,18 +249,10 @@ def _get_documents(self: Any, where: dict[str, Any] | None = None) -> dict[str, 
 def _wrap_write_method(name: str):
     def decorator(original: Any):
         def wrapped(self: Any, *args: Any, **kwargs: Any):
-            result = original(self, *args, **kwargs)
-            if name == "add_documents":
-                if len(args) >= 4:
-                    _upsert(self, args[0], args[1], args[3])
-                else:
-                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
-            elif name == "add_lexical_documents":
-                if len(args) >= 3:
-                    _upsert(self, args[0], args[1], args[2])
-                else:
-                    _upsert(self, kwargs.get("documents"), kwargs.get("metadatas"), kwargs.get("ids"))
-            return result
+            # VectorStore.add_documents() and add_lexical_documents() already
+            # call the authoritative _upsert_lexical_records hook. Re-upserting
+            # here created duplicate READY rows and staging/build identities.
+            return original(self, *args, **kwargs)
         wrapped.__name__ = getattr(original, "__name__", name)
         wrapped.__qualname__ = getattr(original, "__qualname__", name)
         wrapped._storage_contract_fix = True
