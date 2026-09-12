@@ -24,6 +24,27 @@ def assert_status(result: dict[str, Any], allowed: set[str]) -> None:
     assert status in normalized, f"status={status!r}, allowed={sorted(normalized)}"
 
 
+def assert_exact_status(result: dict[str, Any], expected: str) -> None:
+    actual = str(result.get("status") or "").upper()
+    expected_upper = expected.upper()
+    assert actual == expected_upper, f"expected exact status {expected_upper!r}, got {actual!r}"
+
+
+def assert_exact_path(result: dict[str, Any], expected: str) -> None:
+    actual = str(result.get("generation_path") or "").upper()
+    expected_upper = expected.upper()
+    assert actual == expected_upper, f"expected exact generation path {expected_upper!r}, got {actual!r}"
+    plan_path = str((result.get("answer_plan") or {}).get("selected_path") or "").upper()
+    if plan_path:
+        assert plan_path == expected_upper, f"answer plan path {plan_path!r} diverges from generation path {actual!r}"
+
+
+def assert_pipeline_authority(result: dict[str, Any]) -> None:
+    authority = str(result.get("pipeline_authority") or result.get("implementation_authority") or "")
+    assert authority == "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine", authority
+    assert result.get("canonical_pipeline_executed") is True
+
+
 def _citation_markers(result: dict[str, Any]) -> list[str]:
     answer = str(result.get("answer") or "")
     return re.findall(r"\[S\d+\]", answer, flags=re.I)
@@ -80,15 +101,16 @@ def assert_citations_valid(result: dict[str, Any]) -> None:
 
 def assert_grounded(result: dict[str, Any]) -> None:
     assert_citations_valid(result)
-    verification = result.get("verification") or result.get("grounding") or result.get("final_verification") or {}
     status = str(result.get("status") or "").upper()
     if status in SUCCESS_STATUSES:
+        verification = result.get("verification") or result.get("grounding") or result.get("final_verification") or {}
         ratio = verification.get("supported_ratio")
-        if ratio is not None:
-            assert float(ratio) >= 0.60, f"grounding ratio too low: {ratio}"
-        answer = str(result.get("answer") or "").strip()
-        assert answer, "successful answer must not be empty"
-        assert verification.get("allow") is not False, verification
+        assert ratio is not None, "successful answer must expose a measured supported_ratio"
+        assert float(ratio) >= 0.70, f"grounding ratio too low: {ratio}"
+        assert verification.get("allow") is True, verification
+        assert str(result.get("generation_path") or ""), "successful answer must expose exact generation path"
+        assert_pipeline_authority(result)
+        assert str(result.get("answer") or "").strip(), "successful answer must not be empty"
 
 
 def assert_no_llm_called(llm_spy: Any) -> None:
@@ -108,6 +130,12 @@ def assert_llm_called_with_small_context(llm_spy: Any, max_tokens: int = 700) ->
             assert float(kwargs["temperature"]) == 0.0
 
 
+def assert_prompt_excludes(llm_spy: Any, forbidden: Iterable[str]) -> None:
+    prompts = "\n".join(str(call.get("prompt") or "") for call in getattr(llm_spy, "calls", []))
+    for token in forbidden:
+        assert str(token) not in prompts, f"forbidden content leaked into LLM prompt: {token!r}"
+
+
 def assert_latency_under(result: dict[str, Any], seconds: float) -> None:
     latency = result.get("latency_ms")
     if latency is None:
@@ -118,8 +146,7 @@ def assert_latency_under(result: dict[str, Any], seconds: float) -> None:
 
 
 def assert_extractive_path(result: dict[str, Any]) -> None:
-    path = str(result.get("generation_path") or (result.get("answer_plan") or {}).get("selected_path") or "").upper()
-    assert path in {"PATH_A_EXTRACTIVE", "PATH_A_VERIFIED_FALLBACK"}, f"unexpected extractive path: {path!r}"
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
 
 
 def assert_abstained(result: dict[str, Any]) -> None:
@@ -133,6 +160,14 @@ def assert_numeric_preserved(result: dict[str, Any], expected_numbers: Iterable[
     answer = str(result.get("answer") or "")
     for expected in expected_numbers:
         assert str(expected) in answer, f"missing exact numeric token {expected!r}"
+
+
+def assert_rank_contains(hits: Iterable[Any], token: str, top_k: int = 3) -> None:
+    ordered = list(hits)[:top_k]
+    needle = str(token).casefold()
+    assert any(needle in str(getattr(hit, "text", "")).casefold() for hit in ordered), (
+        f"expected {token!r} within top {top_k} hits; got {[getattr(hit, 'text', '') for hit in ordered]!r}"
+    )
 
 
 def assert_entities_present(result: dict[str, Any], entities: Iterable[str]) -> None:
@@ -158,7 +193,7 @@ def assert_document_ready(system: Any, document_id: str) -> dict[str, Any]:
     assert status == "READY", f"document status is {status!r}, expected READY"
     assert index_state == "READY", f"document index_state is {index_state!r}, expected READY"
     assert int(document.get("total_pages") or 0) > 0, document
-    assert int(document.get("current_page") or 0) >= int(document.get("total_pages") or 0), document
+    assert int(document.get("current_page") or 0) == int(document.get("total_pages") or 0), document
     return document
 
 
@@ -168,6 +203,10 @@ def assert_no_history_contamination(system: Any, question: str) -> None:
     history = list(getattr(memory, "history", []) or [])
     occurrences = sum(1 for item in history if question.casefold() in str(item).casefold())
     assert occurrences <= 1, f"question appears too many times in conversation memory: {occurrences}"
+
+
+def assert_memory_unchanged(before: Iterable[Any], after: Iterable[Any]) -> None:
+    assert list(before) == list(after), "conversation memory changed during a non-storable answer"
 
 
 def timed_call(callable_, *args, **kwargs):
