@@ -55,6 +55,37 @@ def invalidate_stale_cache(system: Any, question: str) -> bool:
     return True
 
 
+def _is_safe_success(result: dict[str, Any]) -> bool:
+    """Require the public success envelope to contain verifiable evidence."""
+    if str(result.get("status") or "").upper() not in _SUCCESS:
+        return False
+    if not str(result.get("answer") or "").strip():
+        return False
+    hits = list(result.get("hits") or [])
+    if not hits:
+        return False
+    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else {}
+    if verification.get("allow") is False or grounding.get("allow") is False:
+        return False
+    markers = re.findall(r"\[S\d+\]", str(result.get("answer") or ""), flags=re.I)
+    citations = result.get("citations") or []
+    return bool(markers or citations)
+
+
+def _force_safe_abstention(result: dict[str, Any], reason: str) -> dict[str, Any]:
+    out = dict(result)
+    out["status"] = "GENERATION_ABSTAIN"
+    out["answer"] = "I could not safely verify the indexed evidence for this answer, so the answer was withheld."
+    out["citations"] = []
+    out["needs_review"] = True
+    safety = dict(out.get("runtime_safety") or {})
+    safety["rejected_success_contract"] = True
+    safety["rejection_reason"] = reason
+    out["runtime_safety"] = safety
+    return out
+
+
 def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[str, Any] | None:
     original_verification = dict(result.get("verification") or {})
     # If the verifier blocked claims, this is an evidence-safety rejection, not
@@ -136,16 +167,17 @@ def execute_with_runtime_safety(system: Any, question: str, answer_fn: Callable[
     if not cached_result_is_fresh(system, hits):
         result["hits"] = ready_hits(system, hits)
         if str(result.get("status") or "").upper() in _SUCCESS:
-            result["status"] = "GENERATION_ABSTAIN"
-            result["answer"] = "The indexed evidence changed state while this request was running, so the previous result was withheld."
-            result["citations"] = []
-            result["needs_review"] = True
+            result = _force_safe_abstention(result, "stale_or_non_ready_evidence")
+    if not _is_safe_success(result) and str(result.get("status") or "").upper() in _SUCCESS:
+        result = _force_safe_abstention(result, "incomplete_success_envelope")
     if str(result.get("status") or "").upper() == "GENERATION_ABSTAIN":
         recovered = _verified_extractive_recovery(system, result)
         if recovered is not None:
             result = recovered
+    if str(result.get("status") or "").upper() in _SUCCESS and not _is_safe_success(result):
+        result = _force_safe_abstention(result, "recovery_did_not_prove_success")
     result.setdefault("runtime_safety", {})
-    result["runtime_safety"].update({"ready_evidence_enforced": True, "stale_cache_invalidated": invalidated})
+    result["runtime_safety"].update({"ready_evidence_enforced": True, "stale_cache_invalidated": invalidated, "success_contract_enforced": True})
     return result
 
 
