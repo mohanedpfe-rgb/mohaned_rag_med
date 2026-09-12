@@ -119,8 +119,11 @@ def _redact_trace_value(value: Any, *, key: str = "") -> Any:
         return tuple(_redact_trace_value(item, key=key) for item in value)
     if isinstance(value, set):
         return {_redact_trace_value(item, key=key) for item in value}
-    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-        return redact_sensitive_text(str(value))
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        redacted = redact_sensitive_text(str(value))
+        return redacted if redacted != str(value) else value
     return value
 
 
