@@ -32,8 +32,8 @@ EXPECTED_OWNERS = (
     PhaseOwnership(13, "cascade", "strict_causal_phase", "rag_project.testing.strict_causal_phase", "runtime_binding"),
     PhaseOwnership(14, "performance", "phase14_production_benchmark", "rag_project.testing.production_benchmark_probes", "runtime_dispatch"),
     PhaseOwnership(15, "resources", "strict_resource_stability", "rag_project.testing.strict_runtime_contracts", "runtime_binding"),
-    PhaseOwnership(16, "golden_benchmark", "phase16_production_ingestion_benchmark", "rag_project.testing.production_path_probes", "runtime_dispatch"),
-    PhaseOwnership(17, "certification", "phase17_strict_completion", "rag_project.testing.strict_runtime_contracts", "runtime_binding"),
+    PhaseOwnership(16, "golden_benchmark", "strict_phase16_production_ingestion_benchmark", "rag_project.testing.strict_phase16_production", "runtime_binding"),
+    PhaseOwnership(17, "certification", "phase17_strict_completion", "rag_project.testing.strict_phase17_final", "runtime_binding"),
 )
 
 
@@ -69,8 +69,9 @@ def validate_runtime_ownership() -> dict[str, Any]:
     from rag_project.testing.production_benchmark_probes import phase14_production_benchmark
     from rag_project.testing.production_diagnostic_probes import phase12_stable_fingerprinting
     from rag_project.testing.production_document_probes import phase7_production_pdf_lab
-    from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
     from rag_project.testing.production_retrieval_probes import phase9_independent_retrieval
+    from rag_project.testing.strict_phase16_production import strict_phase16_production_ingestion_benchmark
+    from rag_project.testing.strict_phase17_final import phase17_strict_completion
     from rag_project.testing.strict_runtime_contracts import strict_resource_stability
     from rag_project.testing.strict_information_loss import strict_information_loss
     from rag_project.testing.strict_foundation_phases import strict_diagnostic_chain, strict_contract_triangulation, strict_cross_layer_invariants
@@ -93,7 +94,7 @@ def validate_runtime_ownership() -> dict[str, Any]:
         13: (globals_map.get("strict_causal_phase"), "global binding"),
         14: (globals_map.get("phase14_production_benchmark"), "global binding"),
         15: (globals_map.get("strict_resource_stability"), "global binding"),
-        16: (globals_map.get("phase16_production_ingestion_benchmark"), "global binding"),
+        16: (globals_map.get("strict_phase16_production_ingestion_benchmark"), "global binding"),
         17: (globals_map.get("phase17_strict_completion"), "global binding"),
     }
     expected = {
@@ -111,7 +112,8 @@ def validate_runtime_ownership() -> dict[str, Any]:
         13: strict_causal_phase,
         14: phase14_production_benchmark,
         15: strict_resource_stability,
-        16: phase16_production_ingestion_benchmark,
+        16: strict_phase16_production_ingestion_benchmark,
+        17: phase17_strict_completion,
     }
     failures: list[dict[str, Any]] = []
     phase_numbers = [p.number for p in runner.PHASES]
@@ -138,20 +140,12 @@ def validate_runtime_ownership() -> dict[str, Any]:
         elif owner.number in expected and value is not expected[owner.number]:
             row["status"] = "FAIL"
             failures.append({"phase": owner.number, "reason": "incorrect runtime authoritative callable", "expected_qualname": _qualname(expected[owner.number]), "actual_qualname": actual_qualname})
-        elif owner.number != 17 and actual_module != owner.module:
+        elif actual_module != owner.module:
             row["status"] = "FAIL"
             failures.append({"phase": owner.number, "reason": "authoritative callable resolved from unexpected module", "expected_module": owner.module, "actual_module": actual_module})
         rows.append(row)
 
-    p17 = resolved[17][0]
-    if p17 is None or not getattr(p17, "_provenance_wrapped", False):
-        failures.append({"phase": 17, "reason": "certification callable is not provenance wrapped"})
-    elif _module(p17) != "rag_project.testing.strict_runtime_contracts":
-        failures.append({"phase": 17, "reason": "certification provenance wrapper comes from an unexpected module", "actual_module": _module(p17)})
-    else:
-        rows[-1]["provenance_wrapped"] = True
-
-    return {"contract_version": "17-phase-implementation-ownership-v6", "phase_count": 17, "phase_numbers": phase_numbers, "dispatch_numbers": sorted(dispatch_numbers), "expected_dispatch_numbers": list(range(1, 18)), "hardened_runtime_bindings_verified": all(resolved[n][0] is expected[n] for n in expected), "ownership_rows": rows, "failures": failures, "pass": not failures}
+    return {"contract_version": "17-phase-implementation-ownership-v7", "phase_count": 17, "phase_numbers": phase_numbers, "dispatch_numbers": sorted(dispatch_numbers), "expected_dispatch_numbers": list(range(1, 18)), "hardened_runtime_bindings_verified": all(resolved[n][0] is expected[n] for n in expected), "ownership_rows": rows, "failures": failures, "pass": not failures}
 
 
 __all__ = ["EXPECTED_OWNERS", "PhaseOwnership", "validate_runtime_ownership"]
