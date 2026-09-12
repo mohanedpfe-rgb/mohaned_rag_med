@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import platform
 import statistics
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -47,6 +51,27 @@ def _load_baseline() -> dict[str, Any]:
     if not isinstance(payload, dict) or not payload:
         raise RuntimeError("performance baseline is empty")
     return payload
+
+
+def _environment_provenance() -> dict[str, Any]:
+    lockfile = ROOT / "requirements.lock"
+    try:
+        lock_digest = hashlib.sha256(lockfile.read_bytes()).hexdigest() if lockfile.exists() else None
+    except OSError:
+        lock_digest = None
+    try:
+        git_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, timeout=10, check=True).stdout.strip()
+    except Exception:
+        git_head = None
+    return {
+        "git_head_sha": git_head,
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "device_mode": __import__("os").getenv("DEVICE_MODE"),
+        "embedding_mode": __import__("os").getenv("EMBEDDING_TEST_MODE"),
+        "requirements_lock_sha256": lock_digest,
+    }
 
 
 def _regression_metrics(metrics: dict[str, dict[str, Any]], baseline: dict[str, Any]) -> dict[str, Any]:
@@ -123,6 +148,8 @@ def phase14_production_benchmark(phase: Any) -> PhaseResult:
         metrics = {stage: _stats(values) for stage, values in stage_samples.items()}
         baseline = _load_baseline()
         regression = _regression_metrics(metrics, baseline)
+        baseline_type = baseline.get("baseline_type")
+        historical = bool(baseline.get("historical_measurement"))
         result.details = {
             "evidence_level": "real_pdf_to_retrieval_benchmark",
             "production_path_strict": True,
@@ -142,6 +169,11 @@ def phase14_production_benchmark(phase: Any) -> PhaseResult:
             ],
             "baseline_path": str(BASELINE.relative_to(ROOT)),
             "baseline_loaded": True,
+            "baseline_type": baseline_type,
+            "historical_baseline_available": historical,
+            "baseline_schema_version": baseline.get("schema_version"),
+            "baseline_environment": baseline.get("environment"),
+            "benchmark_environment": _environment_provenance(),
             "regression_budget_multiplier": 1.25,
             "regression_comparisons": regression["comparisons"],
             "regression_failures": regression["failures"],
