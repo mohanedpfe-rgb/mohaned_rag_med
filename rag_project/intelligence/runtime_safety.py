@@ -12,6 +12,30 @@ from rag_project.intelligence.med_evidence_pro import RetrievalHit, SemanticCach
 _SUCCESS = {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
+def _versions_match(record: dict[str, Any], metadata: dict[str, Any]) -> bool:
+    """Validate hit/state identity while supporting the pre-fix vector metadata format.
+
+    The state store's ``version_id`` is the ingestion/version fingerprint, while older
+    vector rows used the content hash in that same metadata field.  A legacy row is
+    accepted only when its value exactly equals the READY state's content hash.  This
+    preserves fail-closed behavior while allowing already-indexed documents to remain
+    usable without forcing an immediate full rebuild.
+    """
+    record_version = str(record.get("version_id") or "")
+    hit_version = str(metadata.get("version_id") or "")
+    if not record_version or not hit_version:
+        return True
+    if record_version == hit_version:
+        return True
+    legacy_content_hash = str(record.get("content_hash") or "")
+    if legacy_content_hash and hit_version == legacy_content_hash:
+        return True
+    metadata_content_hash = str(metadata.get("content_hash") or "")
+    if metadata_content_hash and legacy_content_hash and metadata_content_hash == legacy_content_hash:
+        return True
+    return False
+
+
 def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
     state_store = getattr(system, "state_store", None)
     if state_store is None:
@@ -27,9 +51,7 @@ def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
             continue
         if str(record.get("index_state", "")).upper() != "READY":
             continue
-        record_version = str(record.get("version_id") or "")
-        hit_version = str(meta.get("version_id") or "")
-        if record_version and hit_version and record_version != hit_version:
+        if not _versions_match(record, meta):
             continue
         out.append(hit)
     return out
