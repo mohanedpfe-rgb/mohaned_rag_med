@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -40,7 +41,9 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     )
     clean_system.llm = fake_ollama_fast
 
+    started = time.perf_counter()
     result = clean_system.answer(case["question"])
+    wall_clock = time.perf_counter() - started
 
     assert_exact_status(result, expected_status)
     if expected_path == "NO_GENERATION_PATH":
@@ -55,9 +58,11 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     for token in must_not_contain:
         assert token not in answer_folded, f"gold case {case['id']} leaked forbidden content {token!r}: {answer!r}"
 
-    assert_latency_under(result, float(case["max_latency_s"]))
+    max_latency = float(case["max_latency_s"])
+    assert wall_clock <= max_latency, f"gold case {case['id']} wall-clock latency {wall_clock:.3f}s exceeded {max_latency:.3f}s"
 
     if expected_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+        assert_latency_under(result, max_latency)
         assert_citations_valid(result)
         assert_grounded(result)
         assert_pipeline_authority(result)
