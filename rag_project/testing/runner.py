@@ -13,7 +13,6 @@ import tempfile
 from . import deep_diagnostics as core
 from .advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, metamorphic
 from .robust_probes import information_loss, retrieval_microscope
-from .strict_phases import phase10_production_generation
 from .strict_v2 import phase7_real_pdf_lab, phase15_resource_stability
 from .production_answer_probes import phase10_canonical_answer_engine
 from .production_benchmark_probes import phase14_production_benchmark
@@ -100,15 +99,7 @@ def _hardened_fingerprinting(spec: core.PhaseSpec, results: dict[int, core.Phase
     multiplicity = {}
     for row in fingerprints:
         multiplicity[row["fingerprint"]] = multiplicity.get(row["fingerprint"], 0) + 1
-    result.details = {
-        "evidence_level": "structured_runtime_failure_fingerprint",
-        "algorithm": "normalized project frame + exception + normalized message + SHA-256 digest",
-        "unique_fingerprints": len(multiplicity),
-        "failure_count": len(fingerprints),
-        "fingerprints": fingerprints[:100],
-        "multiplicity": multiplicity,
-        "evidence_phases": sorted(results),
-    }
+    result.details = {"evidence_level": "structured_runtime_failure_fingerprint", "algorithm": "normalized project frame + exception + normalized message + SHA-256 digest", "unique_fingerprints": len(multiplicity), "failure_count": len(fingerprints), "fingerprints": fingerprints[:100], "multiplicity": multiplicity, "evidence_phases": sorted(results)}
     result.score = 1.0
     result.duration_s = round(core.time.time() - result.started_at, 3)
     return result
@@ -145,8 +136,7 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
         result.score = 1.0 if all(0.0 < e["confidence"] <= 1.0 for e in edges) and (not nodes or roots) else 0.0
         result.status = "PASS" if result.score == 1.0 else "FAIL"
     except Exception as exc:
-        result.status = "FAIL"
-        result.failures.append({"location": "phase 13 hardened causal graph", "exception": type(exc).__name__, "message": str(exc)})
+        result.status = "FAIL"; result.failures.append({"location": "phase 13 hardened causal graph", "exception": type(exc).__name__, "message": str(exc)})
     result.duration_s = round(core.time.time() - result.started_at, 3)
     return result
 
@@ -157,25 +147,17 @@ def _phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) 
 
 class UnifiedDiagnosticEngine(core.DiagnosticEngine):
     """Dependency-aware engine with production-path execution for all 17 phases."""
-
     def _blocked(self, spec: core.PhaseSpec) -> core.PhaseResult | None:
         missing = [dep for dep in spec.dependencies if dep not in self.results]
-        if not missing:
-            return None
-        result = core.PhaseResult(spec.number, spec.key, spec.name, status="BLOCKED", blocked_by=sorted(missing), started_at=core.time.time())
-        result.failures.append({"location": f"phase:{missing[0]}", "exception": "DependencyMissing", "message": "prerequisite phase result was not produced"})
-        return result
-
+        if not missing: return None
+        result = core.PhaseResult(spec.number, spec.key, spec.name, status="BLOCKED", blocked_by=sorted(missing), started_at=core.time.time()); result.failures.append({"location": f"phase:{missing[0]}", "exception": "DependencyMissing", "message": "prerequisite phase result was not produced"}); return result
     def _upstream_failure_context(self, spec: core.PhaseSpec, result: core.PhaseResult) -> core.PhaseResult:
         failed = [dep for dep in spec.dependencies if self.results.get(dep) and self.results[dep].status == "FAIL"]
-        if failed:
-            result.details.setdefault("upstream_failed_phases", failed)
+        if failed: result.details.setdefault("upstream_failed_phases", failed)
         return result
-
     def _execute(self, spec: core.PhaseSpec) -> core.PhaseResult:
         blocked = self._blocked(spec)
-        if blocked:
-            return blocked
+        if blocked: return blocked
         if spec.number == 1: result = self._phase1(spec)
         elif spec.number == 2: result = core._fast_health(spec)
         elif spec.number == 3: result = diagnostic_chain(spec)
@@ -195,7 +177,6 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         elif spec.number == 17: result = phase17_strict_completion(spec, self.results)
         else: raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
         return self._upstream_failure_context(spec, result)
-
     def run(self, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
         started = core.time.time(); wanted = set(phases or range(1,18))
         if self.mode == "fast": wanted &= {1,2,3,4,5,6,8,11,12,13,17}
@@ -211,8 +192,7 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
             causes = core.fingerprint_failures(ordered); cascade = core.compress_cascade(ordered, causes)
             status = "PASS" if not any(p.status != "PASS" for p in ordered) else "FAIL"
             return core.DiagnosticReport(started_at=started, elapsed_s=round(core.time.time()-started,3), status=status, phases=ordered, root_causes=causes, cascade=cascade, architecture=self.architecture)
-        finally:
-            core.PHASES = original
+        finally: core.PHASES = original
 
 
 def run_all(*, mode: str = "all", timeout_scale: float = 1.0, fail_fast: bool = False, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
