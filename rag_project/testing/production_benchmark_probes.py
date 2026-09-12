@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import statistics
 import tempfile
 import time
@@ -12,6 +13,9 @@ from rag_project.ingestion.robust_ingestor import robust_ingest_file
 from rag_project.testing.advanced_phases import _result
 from rag_project.testing.production_path_probes import _ProductionIngestionProbeSystem
 from rag_project.testing.deep_diagnostics import PhaseResult
+
+ROOT = Path(__file__).resolve().parents[2]
+BASELINE = ROOT / "tests" / "support" / "performance_baseline.json"
 
 
 def _write_pdf(path: Path, repetition: int) -> None:
@@ -34,6 +38,43 @@ def _stats(values: list[float]) -> dict[str, Any]:
         "p95_ms": round(ordered[max(0, int(len(values) * 0.95) - 1)], 3),
         "max_ms": round(max(values), 3),
     }
+
+
+def _load_baseline() -> dict[str, Any]:
+    if not BASELINE.exists():
+        raise FileNotFoundError(BASELINE)
+    payload = json.loads(BASELINE.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError("performance baseline is empty")
+    return payload
+
+
+def _regression_metrics(metrics: dict[str, dict[str, Any]], baseline: dict[str, Any]) -> dict[str, Any]:
+    comparison: dict[str, Any] = {}
+    failures: list[str] = []
+    for stage, current in metrics.items():
+        ref = baseline.get(stage)
+        if not isinstance(ref, dict) or ref.get("p95_ms") in (None, ""):
+            failures.append(f"missing baseline p95_ms for {stage}")
+            continue
+        try:
+            ceiling = float(ref["p95_ms"])
+        except (TypeError, ValueError):
+            failures.append(f"invalid baseline p95_ms for {stage}")
+            continue
+        observed = float(current["p95_ms"])
+        ratio = observed / max(ceiling, 1e-9)
+        comparison[stage] = {
+            "observed_p95_ms": observed,
+            "baseline_p95_ms": ceiling,
+            "ratio": round(ratio, 3),
+            "budget_multiplier": 1.25,
+            "within_budget": observed <= ceiling * 1.25,
+            "baseline_basis": ref.get("basis", "unspecified"),
+        }
+        if observed > ceiling * 1.25:
+            failures.append(f"{stage}: observed p95 {observed:.3f}ms exceeds baseline budget {ceiling * 1.25:.3f}ms")
+    return {"comparisons": comparison, "failures": failures, "pass": not failures}
 
 
 def phase14_production_benchmark(phase: Any) -> PhaseResult:
@@ -80,6 +121,8 @@ def phase14_production_benchmark(phase: Any) -> PhaseResult:
             stage_samples["semantic_retrieval"].append((time.perf_counter() - started) * 1000)
 
         metrics = {stage: _stats(values) for stage, values in stage_samples.items()}
+        baseline = _load_baseline()
+        regression = _regression_metrics(metrics, baseline)
         result.details = {
             "evidence_level": "real_pdf_to_retrieval_benchmark",
             "production_path_strict": True,
@@ -97,9 +140,21 @@ def phase14_production_benchmark(phase: Any) -> PhaseResult:
                 "VectorStore.search_lexical",
                 "VectorStore.search",
             ],
+            "baseline_path": str(BASELINE.relative_to(ROOT)),
+            "baseline_loaded": True,
+            "regression_budget_multiplier": 1.25,
+            "regression_comparisons": regression["comparisons"],
+            "regression_failures": regression["failures"],
+            "regression_pass": regression["pass"],
         }
-        result.score = 1.0 if result.details["minimum_samples_per_stage"] >= repetitions else 0.0
+        result.score = 1.0 if result.details["minimum_samples_per_stage"] >= repetitions and regression["pass"] else 0.0
         result.status = "PASS" if result.score == 1.0 else "FAIL"
+        if result.status == "FAIL":
+            result.failures.append({
+                "location": "phase 14 production benchmark baseline comparison",
+                "exception": "PerformanceRegression",
+                "message": str(regression["failures"]),
+            })
     except Exception as exc:
         result.status = "FAIL"
         result.failures.append({"location": "phase 14 canonical production benchmark", "exception": type(exc).__name__, "message": str(exc)})
