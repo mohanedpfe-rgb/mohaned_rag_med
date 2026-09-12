@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import pytest
 
+from rag_project.security import validate_storage_path
 from tests.high_level.helpers import assert_exact_status
 
 
 @pytest.mark.high_level
-def test_security__path_traversal_upload_is_rejected_before_index_publication(clean_system, tmp_path):
-    traversal = tmp_path / ".." / "outside.pdf"
-    traversal.write_bytes(b"%PDF-1.4 invalid payload")
-
-    with pytest.raises(ValueError, match="Unsupported or missing PDF|outside"):
-        clean_system.ingest_file(traversal)
+def test_security__path_traversal_storage_configuration_is_rejected():
+    root = __import__("pathlib").Path("/tmp/bookrag-security-root")
+    outside = root / ".." / "outside" / "data"
+    with pytest.raises(ValueError, match="must remain inside"):
+        validate_storage_path(root, outside, "incoming_dir")
 
 
 @pytest.mark.high_level
