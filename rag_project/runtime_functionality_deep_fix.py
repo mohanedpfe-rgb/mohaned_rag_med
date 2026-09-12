@@ -107,13 +107,19 @@ def _numeric_unit_equivalent(left: str, right: str) -> bool:
 def _wrap_numeric_verifier(original):
     def wrapped(self: Any, answer: str, hits: Any, route: Any, compiled: dict[str, Any]):
         result = dict(original(self, answer, hits, route, compiled) or {})
-        if not result.get("numeric_mismatch") or not answer or not hits: return result
+        if not answer or not hits or not bool(getattr(route, "numeric_sensitivity", False)):
+            return result
         answer_values = [m.group(0) for m in _NUMERIC_RE.finditer(answer)]
         evidence_values = [m.group(0) for hit in hits for m in _NUMERIC_RE.finditer(str(getattr(hit, "text", "") or ""))]
-        if not answer_values or not evidence_values: return result
-        if not all(any(_numeric_unit_equivalent(a, e) for e in evidence_values) for a in answer_values): return result
+        if not answer_values or not evidence_values:
+            return result
+        all_supported = all(any(_numeric_unit_equivalent(a, e) for e in evidence_values) for a in answer_values)
         grounding = result.get("grounding") if isinstance(result.get("grounding"), dict) else {}
         final = result.get("final_answer") if isinstance(result.get("final_answer"), dict) else {}
+        if not all_supported:
+            result["numeric_mismatch"] = True
+            result["allow"] = False
+            return result
         result["numeric_mismatch"] = False
         result["allow"] = bool(grounding.get("allow")) and bool(final.get("allow", True))
         return result
