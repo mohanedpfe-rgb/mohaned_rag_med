@@ -72,7 +72,7 @@ class QueryRouter:
         elif mechanism:intent="mechanism"
         elif table:intent="table"
         else:intent=plan.intent or semantic.primary_intent or "factual"
-        template="dosage" if numeric else "comparison" if comparison else "table" if table else "mechanism" if mechanism else None; follow_up=bool(re.search(r"\b(it|this|that|they|them|what about|how about|and|also)\b|^(و|ثم|et|puis)\b",q)); variants=tuple(dict.fromkeys([plan.normalized,*plan.variants]))[:8]
+        template="dosage" if numeric else "comparison" if comparison else "table" if table else "mechanism" if mechanism else None; follow_up=bool(re.search(r"\b(it|this|that|they|them|what about|how about|and|also)\b|^(و|ثم|et|puis)\b",q)); variants=tuple(dict.fromkeys([plan.normalized,*plan.variants])); variant_limit=2 if complexity<.35 and not plan.needs_multi_hop else 4; variants=variants[:variant_limit]
         return RouteMetadata(intent,complexity,entities,numeric,temporal,conditional,follow_up,safety.confidence_threshold,template,1200 if complexity<.65 else 2000,plan.needs_multi_hop or complexity>=.65,variants)
 
 class SemanticCache:
@@ -152,33 +152,59 @@ class MultiTierRetriever:
             key=(str(hit.doc_id),hashlib.sha1(hit.text.encode("utf-8","ignore")).hexdigest()[:12]); old=by_key.get(key)
             if old is None or hit.score>old.score:by_key[key]=hit
         return sorted(by_key.values(),key=lambda x:x.score,reverse=True)[:limit]
+    @staticmethod
+    def _intent_rank(hits:Sequence[RetrievalHit],question:str,route:RouteMetadata)->list[RetrievalHit]:
+        tokens=set(meaningful_tokens(question)); entities=[_norm(entity) for entity in route.entities]
+        ranked=[]
+        for hit in hits:
+            text=_norm(hit.text); score=float(hit.score)
+            token_hits=sum(1 for token in tokens if len(token)>=3 and token in text)
+            score += min(.18,.03*token_hits)
+            entity_hits=sum(1 for entity in entities if entity and entity in text)
+            score += min(.22,.08*entity_hits)
+            if route.template_type=="table" and ("table" in text or str((hit.metadata or {}).get("representation_type",""))=="table"):
+                score += .40
+            if route.numeric_sensitivity and re.search(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)\b",hit.text,flags=re.I):
+                score += .30
+            ranked.append((score,hit))
+        ranked.sort(key=lambda item:item[0],reverse=True)
+        output=[]
+        for rank_score,hit in ranked[:24]:
+            metadata=dict(hit.metadata or {}); metadata["ranking_score"]=round(rank_score,6)
+            output.append(RetrievalHit(hit.doc_id,hit.text,metadata,rank_score,hit.vector_score,hit.lexical_score))
+        return output
     def retrieve(self,question:str,route:RouteMetadata,where:dict[str,Any]|None=None)->tuple[list[RetrievalHit],dict[str,Any]]:
-        cached=self.cache.get(question)
+        cache_allowed=where is None
+        cached=self.cache.get(question) if cache_allowed else None
         if cached:
-            restored=self.cache.restore(cached);return restored,{"tier":"CACHE","cache_hit":True,"early_exit":True,"tier0_confidence":self._confidence(restored,route.entities),"retrieval_latency_ms":.2,"candidate_count":len(restored)}
+            restored=self._intent_rank(self.cache.restore(cached),question,route);return restored,{"tier":"CACHE","cache_hit":True,"early_exit":True,"tier0_confidence":self._confidence(restored,route.entities),"retrieval_latency_ms":.2,"candidate_count":len(restored),"queries":1}
         started=time.perf_counter(); retriever=getattr(self.system,"retriever",None)
-        if retriever is None:return [],{"tier":"NONE","cache_hit":False,"early_exit":False,"candidate_count":0,"retrieval_latency_ms":0.}
+        if retriever is None:return [],{"tier":"NONE","cache_hit":False,"early_exit":False,"candidate_count":0,"retrieval_latency_ms":0.,"queries":0}
         queries=[question]; q_norm=_norm(question)
         for token,variants in SYNONYMS.items():
             if re.search(rf"\b{re.escape(token)}\b",q_norm):queries.extend(variants)
-        queries=list(dict.fromkeys(queries))[:4]; tier0=[]
+        max_query_variants=2 if route.complexity<.35 and not route.needs_multi_hop else 4
+        queries=list(dict.fromkeys(queries,*route.query_variants if route.query_variants else []))[:max_query_variants]
+        tier0=[]
         with ThreadPoolExecutor(max_workers=min(4,len(queries))) as pool:
             futures=[pool.submit(self._lexical_hits,retriever,q,max(12,getattr(getattr(self.system,"settings",None),"top_k",8)*3),where) for q in queries]
             for future in as_completed(futures):
                 try:tier0.extend(future.result())
                 except Exception:pass
-        tier0=self._merge(tier0,16); c0=self._confidence(tier0,route.entities)
+        tier0=self._intent_rank(self._merge(tier0,16),question,route); c0=self._confidence(tier0,route.entities)
         if c0>=.75:
-            self.cache.put(question,tier0);return tier0,{"tier":"TIER0_EXIT","cache_hit":False,"early_exit":True,"tier0_confidence":round(c0,4),"tier1_confidence":None,"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier0),"queries":len(queries)}
-        queries=list(dict.fromkeys([question,*route.query_variants[:4]]))[:5]; tier1=list(tier0)
+            if cache_allowed:self.cache.put(question,tier0)
+            return tier0,{"tier":"TIER0_EXIT","cache_hit":False,"early_exit":True,"tier0_confidence":round(c0,4),"tier1_confidence":None,"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier0),"queries":len(queries)}
+        queries=list(dict.fromkeys([question,*route.query_variants]))[:max_query_variants if route.complexity<.35 and not route.needs_multi_hop else 5]; tier1=list(tier0)
         with ThreadPoolExecutor(max_workers=min(4,len(queries))) as pool:
             futures=[pool.submit(retriever.retrieve,q,max(10,getattr(getattr(self.system,"settings",None),"top_k",8)*3),where) for q in queries]
             for future in as_completed(futures):
                 try:tier1.extend(future.result() or [])
                 except Exception:pass
-        tier1=self._merge(tier1,20); c1=self._confidence(tier1,route.entities)
+        tier1=self._intent_rank(self._merge(tier1,20),question,route); c1=self._confidence(tier1,route.entities)
         if c1>=.80 or (not route.needs_multi_hop and len(tier1)>=3):
-            self.cache.put(question,tier1);return tier1,{"tier":"TIER1","cache_hit":False,"early_exit":c1>=.80,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier1),"queries":len(queries)}
+            if cache_allowed:self.cache.put(question,tier1)
+            return tier1,{"tier":"TIER1","cache_hit":False,"early_exit":c1>=.80,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier1),"queries":len(queries)}
         if route.needs_multi_hop and route.complexity>.60:
             subqueries=list(dict.fromkeys([*route.query_variants,f"{question} mechanism",f"{question} causes",f"{question} treatment"]))[:8]; tier2=list(tier1)
             with ThreadPoolExecutor(max_workers=min(4,len(subqueries))) as pool:
@@ -186,8 +212,11 @@ class MultiTierRetriever:
                 for future in as_completed(futures):
                     try:tier2.extend(future.result() or [])
                     except Exception:pass
-            tier2=self._merge(tier2,24);self.cache.put(question,tier2);return tier2,{"tier":"TIER2","cache_hit":False,"early_exit":False,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier2),"queries":len(subqueries)}
-        self.cache.put(question,tier1);return tier1,{"tier":"TIER1","cache_hit":False,"early_exit":False,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier1),"queries":len(queries)}
+            tier2=self._intent_rank(self._merge(tier2,24),question,route)
+            if cache_allowed:self.cache.put(question,tier2)
+            return tier2,{"tier":"TIER2","cache_hit":False,"early_exit":False,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier2),"queries":len(subqueries)}
+        if cache_allowed:self.cache.put(question,tier1)
+        return tier1,{"tier":"TIER1","cache_hit":False,"early_exit":False,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier1),"queries":len(queries)}
 
 @dataclass(frozen=True)
 class EvidenceClaim:
@@ -307,7 +336,7 @@ class MedEvidenceProEngine:
         if not hits or not compiled.get("claims"):
             result={"status":"NOT_SUPPORTED","answer":"I could not find sufficient indexed evidence to answer this question safely.","citations":[],"hits":hits,"confidence":{"level":"none","evidence_confidence":0.},"safety":asdict(safety),"route":asdict(route),"retrieval":retrieval_state,"evidence":{"claim_count":0}}; self.feedback.log(clean,result,(time.perf_counter()-started)*1000); return result
         answer,generation_path,generation_meta=self.cascade.generate(clean,route,compiled); verification=self.verifier.verify(answer,hits,route,compiled) if answer else {"allow":False,"checked":True,"supported_ratio":0.,"claim_count":0,"blocked_claims":0,"numeric_mismatch":False,"contradiction":compiled.get("contradiction",{})}
-        if not verification.get("allow"):
+        if not verification.get("allow") or generation_path=="PATH_HYBRID_FALLBACK":
             fallback=self.cascade._extractive(compiled,max_sentences=6); fallback_verification=self.verifier.verify(fallback,hits,route,compiled) if fallback else verification
             if fallback and fallback_verification.get("allow") and (route.complexity<.80 or generation_path=="PATH_HYBRID_FALLBACK"): answer,generation_path,generation_meta=fallback,"PATH_A_VERIFIED_FALLBACK",{"attempted":True,"fallback":True}; verification=fallback_verification
             else:
