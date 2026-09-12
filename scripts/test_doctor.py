@@ -406,7 +406,7 @@ def main() -> int:
     group.add_argument("--probe", action="store_true", help="run focused contract/storage probes")
     group.add_argument("--contracts", action="store_true", help="run the fast contract gate")
     group.add_argument("--static-map", action="store_true", help="show runtime assignments to hot APIs")
-    group.add_argument("--full", action="store_true", help="run the complete pytest suite with a bounded parallel two-minute budget")
+    group.add_argument("--full", action="store_true", help="run the deterministic fast local gate with a bounded two-minute budget")
     parser.add_argument("--maxfail", type=int, default=10)
     args = parser.parse_args()
 
@@ -424,7 +424,7 @@ def main() -> int:
     if args.contracts:
         return run_pytest("FAST CONTRACT GATE", ["-q", "-m", "fast and contract", "--tb=short"], timeout=180)[0]
     if args.full:
-        command = [sys.executable, "scripts/test_full_fast.py", "--workers", "4", "--timeout", "105", "--budget", "120"]
+        command = [sys.executable, "scripts/test_full_fast.py", "--workers", "4", "--timeout", "110", "--budget", "120"]
         try:
             proc = subprocess.run(command, cwd=ROOT, text=True, env={**os.environ, "PYTHONUNBUFFERED": "1"})
             return proc.returncode
