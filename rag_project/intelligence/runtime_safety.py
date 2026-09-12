@@ -9,12 +9,10 @@ from rag_project.intelligence.evidence_guard import grounding_decision, verify_c
 from rag_project.intelligence.final_answer_contract import verify_final_answer
 from rag_project.intelligence.med_evidence_pro import RetrievalHit, SemanticCache
 
-
 _SUCCESS = {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
 def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
-    """Return only hits whose authoritative document state and index metadata are READY."""
     state_store = getattr(system, "state_store", None)
     if state_store is None:
         return []
@@ -25,9 +23,7 @@ def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
             continue
         document_id = str(getattr(hit, "doc_id", "") or meta.get("document_id", ""))
         record = state_store.get_document(document_id) if document_id else None
-        if not isinstance(record, dict):
-            continue
-        if not state_store.is_ready_status(record.get("status")):
+        if not isinstance(record, dict) or not state_store.is_ready_status(record.get("status")):
             continue
         if str(record.get("index_state", "")).upper() != "READY":
             continue
@@ -40,14 +36,10 @@ def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
 
 
 def cached_result_is_fresh(system: Any, hits: Sequence[RetrievalHit]) -> bool:
-    """A cache payload is usable only when every hit still belongs to a READY version."""
-    if not hits:
-        return False
-    return len(ready_hits(system, hits)) == len(hits)
+    return bool(hits) and len(ready_hits(system, hits)) == len(hits)
 
 
 def invalidate_stale_cache(system: Any, question: str) -> bool:
-    """Delete an answer-cache entry when any cached evidence is no longer READY."""
     settings = getattr(system, "settings", None)
     root = getattr(settings, "project_root", None)
     if root is None:
@@ -64,7 +56,6 @@ def invalidate_stale_cache(system: Any, question: str) -> bool:
 
 
 def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[str, Any] | None:
-    """Recover from generation failure only when an extractive answer verifies end-to-end."""
     hits = ready_hits(system, list(result.get("hits") or []))
     if not hits:
         return None
@@ -96,6 +87,7 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         citations = manager.validate(built, hits) if manager else []
     except Exception:
         citations = []
+    original_verification = dict(result.get("verification") or {})
     recovered = dict(result)
     recovered["status"] = "SUCCESS_WITH_WARNINGS"
     recovered["answer"] = fallback
@@ -112,16 +104,11 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         "claim_count": len(checks),
         "blocked_claims": sum(1 for check in checks if getattr(check, "status", "") in {"UNSUPPORTED", "WEAK", "NUMERIC_MISMATCH", "CONTRADICTED"}),
         "numeric_mismatch": False,
-        "contradiction": (recovered.get("verification") or {}).get("contradiction", {}),
+        "contradiction": dict(original_verification.get("contradiction") or {}),
     }
     recovered["grounding"] = dict(grounding)
     recovered["final_verification"] = final
-    recovered["recovery"] = {
-        "attempted": True,
-        "pipeline_error": "RuntimeError",
-        "grounded_extractive_fallback": True,
-        "verification": "semantic_claim_verification",
-    }
+    recovered["recovery"] = {"attempted": True, "pipeline_error": "RuntimeError", "grounded_extractive_fallback": True, "verification": "semantic_claim_verification"}
     phases = dict(recovered.get("phase_implementation") or {})
     phases["degraded_to_recovery"] = True
     recovered["phase_implementation"] = phases
@@ -135,7 +122,6 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
 
 
 def execute_with_runtime_safety(system: Any, question: str, answer_fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    """Execute the canonical answer function once, invalidate stale cache, then retry once if needed."""
     invalidated = invalidate_stale_cache(system, question)
     result = dict(answer_fn() or {})
     hits = list(result.get("hits") or [])
