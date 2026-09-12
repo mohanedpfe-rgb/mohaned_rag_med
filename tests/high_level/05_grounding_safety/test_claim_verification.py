@@ -20,7 +20,7 @@ def test_grounding__supported_answer_is_verified_above_seventy_percent_with_exac
 
 
 @pytest.mark.high_level
-def test_grounding__unsupported_llm_claim_is_exactly_rejected_without_surviving_claims(clean_system, fake_ollama_fast):
+def test_grounding__unsupported_llm_claim_is_exactly_rejected_after_constrained_generation(clean_system, fake_ollama_fast):
     fake_ollama_fast.response = (
         "Metformin cures every form of cancer and eliminates diabetes permanently. [S1]"
     )
@@ -31,7 +31,8 @@ def test_grounding__unsupported_llm_claim_is_exactly_rejected_without_surviving_
     )
 
     assert_exact_status(result, "GENERATION_ABSTAIN")
-    assert not result.get("generation_path") or str(result.get("generation_path")).startswith("PATH_C")
+    assert_exact_path(result, "PATH_C_CONSTRAINED_LLM")
+    assert fake_ollama_fast.calls
     assert_abstained(result)
     answer = str(result.get("answer") or "").casefold()
     assert "cures every form of cancer" not in answer
