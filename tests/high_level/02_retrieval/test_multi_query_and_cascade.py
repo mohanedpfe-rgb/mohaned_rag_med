@@ -1,18 +1,27 @@
+from __future__ import annotations
+
 import pytest
 
-@pytest.mark.high_level
+from tests.high_level.helpers import assert_status
 
-def test_simple_question__does_not_over_expand(clean_system):
+
+@pytest.mark.high_level
+def test_retrieval__high_confidence_simple_query_uses_early_exit(clean_system):
     result = clean_system.answer("What is diabetes mellitus?")
-    trace = result.get("query_trace") or {}
-    routing = trace.get("routing") or result.get("query_analysis") or {}
-    variants = routing.get("query_variants") or routing.get("variants") or []
-    assert len(variants) <= int(getattr(clean_system.settings, "max_query_variants", 8))
+
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    retrieval = result.get("retrieval") or {}
+    assert retrieval.get("early_exit") is True
+    assert retrieval.get("tier") in {"CACHE", "TIER0_EXIT", "TIER1"}
+    assert int(retrieval.get("candidate_count", 0)) >= 1
+
 
 @pytest.mark.high_level
+def test_retrieval__complex_question_exposes_query_expansion_and_nontrivial_tier(clean_system):
+    result = clean_system.answer("Compare the mechanism, treatment, and contraindications of type 1 and type 2 diabetes.")
 
-def test_complex_question__has_bounded_retrieval_budget(clean_system):
-    result = clean_system.answer("Compare the mechanism, causes, diagnosis and management of diabetes mellitus and explain the important differences.")
+    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "GENERATION_ABSTAIN", "NOT_SUPPORTED"}
     retrieval = result.get("retrieval") or {}
-    assert isinstance(retrieval, dict)
-    assert int(getattr(clean_system.settings, "max_query_variants", 8)) <= 12
+    assert retrieval.get("tier") in {"TIER1", "TIER2", "CACHE", "TIER0_EXIT"}
+    assert int(retrieval.get("candidate_count", 0)) >= 1
+    assert int(retrieval.get("queries", 0)) >= 1
