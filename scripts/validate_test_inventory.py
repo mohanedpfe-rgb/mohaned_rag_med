@@ -1,4 +1,4 @@
-"""Fail-closed inventory check for the two-plan testing requirements."""
+"""Fail-closed inventory check for the strict testing contract."""
 from __future__ import annotations
 
 import ast
@@ -74,7 +74,9 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
                 if is_assert_status and len(child.args) > 1:
                     expected = child.args[1]
                     if isinstance(expected, (ast.Set, ast.List, ast.Tuple)):
-                        soft_status_assertions.append(f"{path}:{node.name}: assert_status accepts {len(expected.elts)} statuses")
+                        soft_status_assertions.append(
+                            f"{path}:{node.name}: assert_status requires one literal status string, not {type(expected).__name__}"
+                        )
             if _uses_assert_one_of_statuses(node) and not ("pytest.mark.multi_outcome" in decorators or "multi_outcome" in decorators):
                 soft_status_assertions.append(f"{path}:{node.name}: assert_one_of_statuses requires @pytest.mark.multi_outcome")
         if marked_integration or is_integration_path:
