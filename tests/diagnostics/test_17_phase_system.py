@@ -3,25 +3,10 @@ from __future__ import annotations
 
 from rag_project.testing.deep_diagnostics import PhaseResult, build_architecture
 from rag_project.testing.runner import PHASES
-from rag_project.testing.advanced_phases import (
-    contract_triangulation,
-    cross_layer_invariants,
-    diagnostic_chain,
-    fingerprint_failures,
-    cascade_compression,
-    metamorphic,
-)
+from rag_project.testing.advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, fingerprint_failures, cascade_compression, metamorphic
 from rag_project.testing.robust_probes import information_loss, retrieval_microscope
-from rag_project.testing.strict_phases import (
-    phase10_production_generation,
-    phase11_mutation_testing,
-    phase13_causal_graph,
-    phase17_strict_certification,
-    wrap_phase7,
-    wrap_phase14,
-    wrap_phase15,
-)
-from rag_project.testing.final_probes import phase16_independent_gold
+from rag_project.testing.strict_phases import phase10_production_generation, phase11_mutation_testing, phase13_causal_graph
+from rag_project.testing.strict_v2 import phase7_real_pdf_lab, phase14_real_benchmark, phase15_resource_stability, phase16_real_pipeline
 
 
 def _phase(number: int):
@@ -38,28 +23,24 @@ def test_dependency_graph_is_forward_only() -> None:
         assert all(1 <= dependency < phase.number for dependency in phase.dependencies)
 
 
-def test_strict_phase_probes_are_executable() -> None:
-    probes = {
-        3: diagnostic_chain,
-        4: contract_triangulation,
-        5: cross_layer_invariants,
-        6: information_loss,
-        7: wrap_phase7,
-        8: metamorphic,
-        9: retrieval_microscope,
-        10: phase10_production_generation,
-        11: phase11_mutation_testing,
-        14: wrap_phase14,
-        15: wrap_phase15,
-        16: phase16_independent_gold,
-    }
+def test_production_path_completion_probes_are_executable() -> None:
+    probes = {7: phase7_real_pdf_lab, 14: phase14_real_benchmark, 15: phase15_resource_stability, 16: phase16_real_pipeline}
     for number, probe in probes.items():
         result = probe(_phase(number))
         assert result.status != "NOT_RUN", (number, result)
         assert result.details, number
+        assert result.details["evidence_level"]
 
 
-def test_phase_ten_exercises_production_generation_and_verification() -> None:
+def test_phase_seven_uses_real_pdf_extractor() -> None:
+    result = phase7_real_pdf_lab(_phase(7))
+    assert result.status == "PASS", result.failures
+    assert result.details["evidence_level"] == "real_pdf_extractor"
+    assert result.details["malformed_pdf_rejected"] is True
+    assert len(result.details["variant_results"]) >= 4
+
+
+def test_phase_ten_exercises_answer_generation_and_verification() -> None:
     result = phase10_production_generation(_phase(10))
     assert result.status == "PASS", result.failures
     assert result.details["answer_generated"] is True
@@ -90,6 +71,20 @@ def test_phase_nine_measures_retrieval_metrics_and_filtering() -> None:
     assert result.details["metadata_filter_correct"] is True
 
 
+def test_phase_fourteen_real_end_to_end_stage_benchmark() -> None:
+    result = phase14_real_benchmark(_phase(14))
+    assert result.status == "PASS", result.failures
+    assert result.details["evidence_level"] == "real_pdf_to_retrieval_benchmark"
+    assert result.details["minimum_samples_per_stage"] >= 7
+
+
+def test_phase_fifteen_real_subprocess_resource_observation() -> None:
+    result = phase15_resource_stability(_phase(15))
+    assert result.status == "PASS", result.failures
+    assert result.details["evidence_level"] == "real_subprocess_resource_observation"
+    assert result.details["sample_count"] >= 3
+
+
 def test_phase_thirteen_builds_evidence_backed_failure_graph() -> None:
     failures = {
         5: PhaseResult(5, "cross_layer_invariants", "Cross-layer", status="FAIL", failures=[{"location": "rag_project/storage/vector_store.py", "exception": "IdentityConservationFailure", "message": "document_id dropped"}]),
@@ -102,17 +97,19 @@ def test_phase_thirteen_builds_evidence_backed_failure_graph() -> None:
     assert result.details["candidate_roots"]
 
 
-def test_phase_sixteen_uses_separate_independent_corpus_and_labels() -> None:
-    result = phase16_independent_gold(_phase(16))
+def test_phase_sixteen_uses_real_pdf_ingestion_and_separate_gold_labels() -> None:
+    result = phase16_real_pipeline(_phase(16))
     assert result.status == "PASS", result.failures
+    assert result.details["evidence_level"] == "real_pdf_extraction_to_storage_retrieval"
     assert result.details["gold_labels_independent_of_corpus_text"] is True
-    assert result.details["corpus_document_count"] >= 5
+    assert result.details["corpus_documents"] >= 5
     assert result.details["retrieval_recall"] >= 0.8
 
 
 def test_phase_seventeen_rejects_fake_pass_matrix() -> None:
-    fake = {phase.number: PhaseResult(phase.number, phase.key, phase.name, status="PASS", details={}) for phase in PHASES}
-    certified = phase17_strict_certification(_phase(17), fake)
+    from rag_project.testing.runner import _phase17_strict
+    fake = {phase.number: PhaseResult(phase.number, phase.key, phase.name, status="PASS", details={}) for phase in PHASES if phase.number < 17}
+    certified = _phase17_strict(_phase(17), fake)
     assert certified.status == "FAIL"
     assert certified.details["implementation_coverage"] != "17/17"
     assert certified.details["evidence_failures"]
