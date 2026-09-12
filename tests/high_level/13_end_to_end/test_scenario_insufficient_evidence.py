@@ -1,8 +1,14 @@
+from __future__ import annotations
+
 import pytest
 
-@pytest.mark.high_level
+from tests.high_level.helpers import assert_abstained
 
-def test_insufficient_evidence__cleanly_abstains(clean_system):
-    result = clean_system.answer("What is the cure for xylomediasis?")
-    assert str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "REASONING_ABSTAIN", "ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY"}
-    assert "xylomediasis" not in str(result.get("answer") or "").casefold() or "no" in str(result.get("answer") or "").casefold()
+
+@pytest.mark.high_level
+def test_e2e_abstain__weak_or_absent_evidence_is_not_answered_as_fact(clean_system):
+    result = clean_system.answer("What is the definitive cure and exact molecular mechanism of xylomediasis?")
+
+    assert_abstained(result)
+    assert str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "GENERATION_ABSTAIN", "ANSWER_UNAVAILABLE", "ABSTAIN", "BLOCK"}
+    assert not (result.get("claims") or [])
