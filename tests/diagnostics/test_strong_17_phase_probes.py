@@ -58,6 +58,28 @@ def test_phase9_authoritative_retrieval_contract_uses_external_gold() -> None:
     assert result.details["semantic_recall_at_3"] >= 0.8
 
 
+def test_phase10_protocol_fixture_rejects_invalid_chat_requests() -> None:
+    import requests
+    from rag_project.testing.production_answer_probes import _LocalOllamaServer
+
+    server = _LocalOllamaServer()
+    try:
+        response = requests.post(
+            f"{server.base_url}/api/chat",
+            json={"model": "wrong-model", "messages": [{"role": "user", "content": "hello"}], "stream": False},
+            timeout=5,
+        )
+        assert response.status_code == 400
+        valid_shape = requests.post(
+            f"{server.base_url}/api/chat",
+            json={"model": "diagnostic-protocol:latest", "messages": [{"role": "user", "content": "hello"}], "stream": False},
+            timeout=5,
+        )
+        assert valid_shape.status_code == 200
+    finally:
+        server.close()
+
+
 def test_phase11_authoritative_mutation_contract_is_multi_module() -> None:
     result = run_full_mutation_suite(PHASES[10])
     assert result.status == "PASS", result.failures
