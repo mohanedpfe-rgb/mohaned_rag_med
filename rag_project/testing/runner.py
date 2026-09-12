@@ -149,12 +149,7 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
 
 def _phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
     result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time())
-    required_levels = {
-        7: "real_pdf_extractor",
-        14: "real_pdf_to_retrieval_benchmark",
-        15: "real_subprocess_resource_observation",
-        16: "real_pdf_extraction_to_storage_retrieval",
-    }
+    required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_pdf_extraction_to_storage_retrieval"}
     failures = []
     for number, level in required_levels.items():
         details = results.get(number).details if results.get(number) else {}
@@ -179,16 +174,16 @@ def _phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) 
             failures.append({"phase": number, "required_evidence_level": expected, "actual": details.get("evidence_level")})
     missing = sorted(set(range(1, 17)) - set(results))
     failures.extend({"phase": number, "required_evidence": "phase result"} for number in missing)
-    runtime_failures = sorted(n for n, p in results.items() if n != 17 and p.status == "FAIL")
-    failures.extend({"phase": n, "required_evidence": "runtime status PASS"} for n in runtime_failures)
+    non_pass = sorted(n for n, p in results.items() if n != 17 and p.status != "PASS")
+    failures.extend({"phase": n, "required_evidence": "phase status PASS", "actual_status": results[n].status} for n in non_pass)
     unique_failed_phases = {row["phase"] for row in failures}
     result.details = {
         "implementation_coverage": "17/17" if not failures else f"{17-len(unique_failed_phases)}/17",
         "phase_results_present": len(results)+1,
         "missing_phase_results": missing,
         "evidence_failures": failures,
-        "runtime_failures": runtime_failures,
-        "certification_basis": "production-path evidence + executable negative testing + causal/resource evidence",
+        "runtime_non_pass_phases": non_pass,
+        "certification_basis": "production-path evidence + executable negative testing + causal/resource evidence + every phase PASS",
         "fully_implemented_phase_numbers": [] if failures else list(range(1,18)),
     }
     result.score = 1.0 if not failures else max(0.0, 1.0-len(unique_failed_phases)/17.0)
@@ -241,30 +236,19 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
         return self._upstream_failure_context(spec, result)
 
     def run(self, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
-        started = core.time.time()
-        wanted = set(phases or range(1,18))
-        if self.mode == "fast":
-            wanted &= {1,2,3,4,5,6,8,11,12,13,17}
-        elif self.mode == "deep":
-            wanted &= set(range(1,18))
+        started = core.time.time(); wanted = set(phases or range(1,18))
+        if self.mode == "fast": wanted &= {1,2,3,4,5,6,8,11,12,13,17}
+        elif self.mode == "deep": wanted &= set(range(1,18))
         original = core.PHASES
         try:
-            core.PHASES = PHASES
-            self.results = {}
-            self.architecture = core.build_architecture()
+            core.PHASES = PHASES; self.results = {}; self.architecture = core.build_architecture()
             for spec in PHASES:
-                if spec.number not in wanted:
-                    continue
-                result = self._execute(spec)
-                self.results[spec.number] = result
-                if self.fail_fast and result.status == "FAIL":
-                    break
+                if spec.number not in wanted: continue
+                result = self._execute(spec); self.results[spec.number] = result
+                if self.fail_fast and result.status == "FAIL": break
             ordered = [self.results[n] for n in sorted(self.results)]
-            causes = core.fingerprint_failures(ordered)
-            cascade = core.compress_cascade(ordered, causes)
-            status = "PASS" if not any(p.status == "FAIL" for p in ordered) else "FAIL"
-            if status == "PASS" and any(p.status == "WARN" for p in ordered):
-                status = "WARN"
+            causes = core.fingerprint_failures(ordered); cascade = core.compress_cascade(ordered, causes)
+            status = "PASS" if not any(p.status != "PASS" for p in ordered) else "FAIL"
             return core.DiagnosticReport(started_at=started, elapsed_s=round(core.time.time()-started,3), status=status, phases=ordered, root_causes=causes, cascade=cascade, architecture=self.architecture)
         finally:
             core.PHASES = original
