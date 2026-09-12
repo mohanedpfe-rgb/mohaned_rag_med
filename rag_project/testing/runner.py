@@ -6,27 +6,22 @@ from typing import Iterable
 
 from . import deep_diagnostics as core
 from .advanced_phases import (
-    adversarial_documents,
     contract_triangulation,
     cross_layer_invariants,
     diagnostic_chain,
-    information_loss as legacy_information_loss,
     metamorphic,
-    performance as legacy_performance,
-    resources as legacy_resources,
-    retrieval_microscope as legacy_retrieval_microscope,
 )
 from .robust_probes import information_loss, retrieval_microscope
 from .strict_phases import (
     phase10_production_generation,
     phase11_mutation_testing,
     phase13_causal_graph,
-    phase16_independent_gold,
     phase17_strict_certification,
     wrap_phase7,
     wrap_phase14,
     wrap_phase15,
 )
+from .final_probes import phase16_independent_gold
 
 PHASES = tuple(
     replace(p, markers=("generation", "intelligence")) if p.number == 10 else
