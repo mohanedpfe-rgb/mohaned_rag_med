@@ -6,15 +6,16 @@ from .deep_diagnostics import DiagnosticReport, PhaseResult, RootCause
 from .runner import PHASES, UnifiedDiagnosticEngine, run_all
 from .architecture_contracts import install as _install_architecture_contract
 
-# Install Phase 1 ownership/dependency enforcement after the runner and its
-# production diagnostic module have been loaded, so the authoritative Phase 17
-# semantic contract uses the hardened implementation.
 _install_architecture_contract()
 
-# Install the final trend-aware resource contract after the runner exists so
-# phase 15 cannot fall back to the legacy first-vs-last resource probe.
 from . import strict_runtime_contracts as _strict_runtime_contracts
 _strict_runtime_contracts.install()
+
+# Final certification is deliberately a pure boundary: it validates the
+# already-executed 1..16 results and never re-runs phases inside Phase 17.
+from .strict_phase17_final import phase17_strict_completion as _strict_phase17_final
+from .runner import UnifiedDiagnosticEngine as _UnifiedDiagnosticEngine
+_UnifiedDiagnosticEngine._execute.__globals__["phase17_strict_completion"] = _strict_phase17_final
 
 __all__ = [
     "PHASES",
