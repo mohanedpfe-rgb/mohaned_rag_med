@@ -4,7 +4,7 @@ from rag_project.testing.full_mutation_probes import run_full_mutation_suite
 from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
 from rag_project.testing.production_retrieval_probes import phase9_independent_retrieval
 from rag_project.testing.production_document_probes import phase7_production_pdf_lab
-from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
+from rag_project.testing.strict_phase16_production import strict_phase16_production_ingestion_benchmark, validate_phase16_benchmark_data
 from rag_project.testing.production_benchmark_probes import phase14_production_benchmark
 from rag_project.testing.strict_runtime_contracts import strict_resource_stability
 
@@ -22,10 +22,18 @@ def test_strong_phase_wiring_is_authoritative() -> None:
         11: "run_full_mutation_suite",
         13: "strict_causal_phase",
         15: "strict_resource_stability",
+        16: "strict_phase16_production_ingestion_benchmark",
+        17: "phase17_strict_completion",
+    }
+    expected_modules = {
+        16: "rag_project.testing.strict_phase16_production",
+        17: "rag_project.testing.strict_phase17_final",
     }
     for phase, qualname in expected.items():
         assert rows[phase]["actual_qualname"] == qualname
         assert rows[phase]["status"] == "PASS"
+    for phase, module in expected_modules.items():
+        assert rows[phase]["actual_module"] == module
 
 
 def test_phase_registry_remains_exactly_seventeen() -> None:
@@ -64,17 +72,9 @@ def test_phase10_protocol_fixture_rejects_invalid_chat_requests() -> None:
 
     server = _LocalOllamaServer()
     try:
-        response = requests.post(
-            f"{server.base_url}/api/chat",
-            json={"model": "wrong-model", "messages": [{"role": "user", "content": "hello"}], "stream": False},
-            timeout=5,
-        )
+        response = requests.post(f"{server.base_url}/api/chat", json={"model": "wrong-model", "messages": [{"role": "user", "content": "hello"}], "stream": False}, timeout=5)
         assert response.status_code == 400
-        valid_shape = requests.post(
-            f"{server.base_url}/api/chat",
-            json={"model": "diagnostic-protocol:latest", "messages": [{"role": "user", "content": "hello"}], "stream": False},
-            timeout=5,
-        )
+        valid_shape = requests.post(f"{server.base_url}/api/chat", json={"model": "diagnostic-protocol:latest", "messages": [{"role": "user", "content": "hello"}], "stream": False}, timeout=5)
         assert valid_shape.status_code == 200
     finally:
         server.close()
@@ -107,11 +107,26 @@ def test_phase15_authoritative_resource_contract_is_trend_aware() -> None:
     assert result.details["fd_leak_ok"] is True
 
 
-def test_phase16_authoritative_ingestion_contract_has_evidence_grounding() -> None:
-    result = phase16_production_ingestion_benchmark(PHASES[15])
+def test_phase16_benchmark_integrity_negative_controls() -> None:
+    corpus = [{"doc_id": "a", "text": "text"}] * 8
+    gold = [{"id": "case", "question": "question", "expected_doc_ids": ["missing"], "expected_evidence_terms": ["term"]}] * 8
+    try:
+        validate_phase16_benchmark_data(corpus, gold)
+    except RuntimeError as exc:
+        assert "missing corpus ids" in str(exc)
+    else:
+        raise AssertionError("Phase 16 must reject gold references to missing corpus documents")
+
+
+def test_phase16_authoritative_ingestion_contract_is_independent_and_grounded() -> None:
+    result = strict_phase16_production_ingestion_benchmark(PHASES[15])
     assert result.status == "PASS", result.failures
     assert result.details["evidence_level"] == "real_production_robust_ingestion_to_storage_retrieval"
+    assert result.details["dataset_id"] == "phase16_production_independent_v2"
     assert result.details["gold_labels_independent_of_corpus_text"] is True
+    assert result.details["gold_integrity_contract_verified"] is True
+    assert result.details["gold_references_resolved"] is True
+    assert result.details["independent_from_phase9_dataset"] is True
     assert result.details["retrieval_recall"] >= 0.8
     assert result.details["evidence_grounding_case_rate"] >= 0.8
     assert result.details["evidence_term_recall"] >= 0.8
