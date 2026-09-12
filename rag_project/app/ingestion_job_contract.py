@@ -13,12 +13,12 @@ def summarize_ingestion_results(results: Iterable[dict[str, Any]]) -> tuple[int,
 
     The production service may expose READY/COMPLETED while older adapters expose
     success/skipped. The UI job state must count both forms consistently.
-    Unknown statuses are not silently classified as failures because that would
-    turn a newly introduced non-terminal state into a false error.
+    Unknown statuses are surfaced rather than silently presented as success.
     """
+    rows = list(results)
     completed = 0
     failed = 0
-    for item in results:
+    for item in rows:
         status = str(item.get("status") or "").strip().casefold()
         if status in _SUCCESS_STATUSES:
             completed += 1
@@ -29,6 +29,10 @@ def summarize_ingestion_results(results: Iterable[dict[str, Any]]) -> tuple[int,
         job_status = "FAILED"
     elif failed:
         job_status = "COMPLETED_WITH_FAILURES"
+    elif completed:
+        job_status = "COMPLETED"
+    elif rows:
+        job_status = "UNKNOWN"
     else:
         job_status = "COMPLETED"
     return completed, failed, job_status
