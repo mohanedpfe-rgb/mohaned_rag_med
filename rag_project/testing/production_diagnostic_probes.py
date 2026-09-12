@@ -41,8 +41,44 @@ def phase13_known_causal_graph(phase: Any, results: dict[int, PhaseResult]) -> P
     }
     try:
         known = runner._hardened_causal_graph(phase, synthetic); edges = {(edge["from"], edge["to"]) for edge in known.details["edges"]}; expected_chain = {("p5f0", "p9f0"), ("p9f0", "p10f0")}; chain_present = expected_chain.issubset(edges); root_present = "p5f0" in set(known.details["candidate_roots"])
-        base.details.update({"known_causal_fixture_verified": chain_present and root_present, "known_fixture_expected_edges": sorted(expected_chain), "known_fixture_observed_edges": sorted(edges)})
-        base.status = "PASS" if base.status == "PASS" and chain_present and root_present else "FAIL"; base.score = 1.0 if base.status == "PASS" else 0.0
+        known_failure_injection_verified = False
+        injected_edges: set[tuple[str, str]] = set()
+        try:
+            from rag_project.testing import advanced_phases
+            original_store_fixture = advanced_phases._store_fixture
+            class SharedInjectedFailure(RuntimeError):
+                pass
+            def failing_store_fixture(*args: Any, **kwargs: Any):
+                raise SharedInjectedFailure("controlled phase-13 shared dependency failure")
+            advanced_phases._store_fixture = failing_store_fixture
+            try:
+                injected_results = {
+                    5: advanced_phases.cross_layer_invariants(runner.PHASES[4]),
+                    9: advanced_phases.retrieval_microscope(runner.PHASES[8]),
+                    10: advanced_phases.rag_causality(runner.PHASES[9]),
+                }
+            finally:
+                advanced_phases._store_fixture = original_store_fixture
+            injected = runner._hardened_causal_graph(phase, injected_results)
+            injected_edges = {(edge["from"], edge["to"]) for edge in injected.details["edges"]}
+            injected_roots = set(injected.details["candidate_roots"])
+            failures_are_shared = all(
+                item.status == "FAIL"
+                and (item.failures and item.failures[0].get("exception") == "SharedInjectedFailure")
+                for item in injected_results.values()
+            )
+            known_failure_injection_verified = failures_are_shared and {("p5f0", "p9f0"), ("p5f0", "p10f0")} <= injected_edges and "p5f0" in injected_roots
+        except Exception:
+            known_failure_injection_verified = False
+        base.details.update({
+            "known_causal_fixture_verified": chain_present and root_present,
+            "known_fixture_expected_edges": sorted(expected_chain),
+            "known_fixture_observed_edges": sorted(edges),
+            "known_failure_injection_verified": known_failure_injection_verified,
+            "known_failure_injection_observed_edges": sorted(injected_edges),
+            "causal_validation_mode": "synthetic_fixture_plus_real_production_phase_fault_injection",
+        })
+        base.status = "PASS" if base.status == "PASS" and chain_present and root_present and known_failure_injection_verified else "FAIL"; base.score = 1.0 if base.status == "PASS" else 0.0
         if base.status == "FAIL": base.failures.append({"location": "phase 13 causal self-test", "exception": "CausalGraphContractFailure", "message": str(base.details)})
     except Exception as exc:
         base.status = "FAIL"; base.score = 0.0; base.failures.append({"location": "phase 13 causal self-test", "exception": type(exc).__name__, "message": str(exc)})
@@ -60,7 +96,6 @@ def _architecture_semantic_contract(details: dict[str, Any]) -> list[str]:
         failures.append("architecture reports no production Python modules")
     if int(details.get("test_files") or 0) <= 0:
         failures.append("architecture reports no test files")
-    # Independently parse project imports; Phase 1 must not certify only from counters.
     parse_errors = []
     import_edges = 0
     for path in (ROOT / "rag_project").rglob("*.py"):
