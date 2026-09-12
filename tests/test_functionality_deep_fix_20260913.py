@@ -5,9 +5,12 @@ from types import SimpleNamespace
 from rag_project.intelligence.med_evidence_pro import AnswerCascade, EvidenceClaim, RouteMetadata
 from rag_project.runtime_functionality_deep_fix import (
     _citation_complete_without_shared_state,
+    _filter_false_numeric_contradictions,
+    _functionality_sentences,
     _wrap_generate,
     _wrap_retrieval_cache_fallthrough,
     _wrap_retrieval_skip_health_probe,
+    _wrap_route,
 )
 
 
@@ -127,3 +130,61 @@ def test_citation_guard_uses_current_generation_limit_not_shared_state():
             del fix._TLS.citation_limit
         else:
             fix._TLS.citation_limit = previous
+
+
+def test_followup_guard_does_not_misclassify_compound_question():
+    def original(self, question, context, safety):
+        return replace_route(_route(), is_follow_up=True)
+
+    wrapped = _wrap_route(original)
+    route = wrapped(SimpleNamespace(), "What causes cirrhosis and how is it managed?", "", SimpleNamespace())
+    assert route.is_follow_up is False
+
+
+def test_followup_guard_preserves_explicit_followup():
+    def original(self, question, context, safety):
+        return replace_route(_route(), is_follow_up=False)
+
+    wrapped = _wrap_route(original)
+    route = wrapped(SimpleNamespace(), "And what about treatment?", "previous context", SimpleNamespace())
+    assert route.is_follow_up is True
+
+
+def replace_route(route: RouteMetadata, **changes) -> RouteMetadata:
+    from dataclasses import replace
+
+    return replace(route, **changes)
+
+
+def test_short_evidence_sentences_are_not_discarded():
+    assert _functionality_sentences("DKA.\nNo.") == ["DKA.", "No."]
+
+
+def test_equivalent_units_are_not_reported_as_contradiction():
+    original_result = {
+        "has_contradiction": True,
+        "conflicts": [{"left": ["1 g"], "right": ["1000 mg"]}],
+        "agreement": 0.65,
+    }
+
+    guarded = _filter_false_numeric_contradictions(lambda claims: original_result)
+    result = guarded([])
+
+    assert result["has_contradiction"] is False
+    assert result["conflicts"] == []
+    assert result["agreement"] == 1.0
+
+
+def test_real_numeric_contradiction_is_preserved():
+    original_result = {
+        "has_contradiction": True,
+        "conflicts": [{"left": ["500 mg"], "right": ["1000 mg"]}],
+        "agreement": 0.65,
+    }
+
+    guarded = _filter_false_numeric_contradictions(lambda claims: original_result)
+    result = guarded([])
+
+    assert result["has_contradiction"] is True
+    assert result["conflicts"]
+    assert result["agreement"] == 0.65
