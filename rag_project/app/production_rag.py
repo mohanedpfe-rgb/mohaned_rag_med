@@ -13,6 +13,7 @@ from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import sanitize_trace, validate_feature_contract
 from rag_project.intelligence.retrieval_replay import record as record_replay
+from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.generation.latency_budget import request_budget, exhausted, elapsed
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ def _safe_result(value: Any) -> dict[str, Any]:
 def _should_store_in_history(result: Any) -> bool:
     if not isinstance(result, dict) or not str(result.get("answer") or "").strip():
         return False
-    return str(result.get("status") or "").strip().upper() not in {"ANSWER_UNAVAILABLE", "SYSTEM_NOT_READY", "NOT_SUPPORTED", "REASONING_ABSTAIN"}
+    return str(result.get("status") or "").strip().upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
 def _norm_provenance_text(value: Any) -> str:
@@ -268,11 +269,15 @@ class ProductionRAGSystem(ResilientRAGSystem):
                 question = original_question
         else:
             question = original_question
-        try:
-            result = _safe_result(self._certified_god_answer(question, metadata_filter))
-        except Exception as exc:
-            _safe_exception_log(self, "Primary answer pipeline failed")
-            result = self._recovery_answer(question, metadata_filter, exc)
+
+        def _primary_answer() -> dict[str, Any]:
+            try:
+                return _safe_result(self._certified_god_answer(question, metadata_filter))
+            except Exception as exc:
+                _safe_exception_log(self, "Primary answer pipeline failed")
+                return self._recovery_answer(question, metadata_filter, exc)
+
+        result = execute_with_runtime_safety(self, question, _primary_answer)
         result = apply_medical_safety_policy(question, result, self.settings)
         result.setdefault("pipeline_authority", ANSWER_PIPELINE_AUTHORITY)
         result.setdefault("production_contract", {"feature_count": int(feature_contract.get("feature_count", 44)), "all_features_resolved": bool(feature_contract.get("all_resolved", False))})
