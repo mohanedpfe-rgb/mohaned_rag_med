@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.high_level.conftest import write_minimal_pdf
 from tests.high_level.helpers import assert_citations_valid, assert_grounded
 
 
@@ -51,3 +52,28 @@ def test_multilingual__language_queries_retrieve_indexed_medical_evidence(clean_
         if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             assert_grounded(result)
             assert_citations_valid(result)
+
+
+@pytest.mark.high_level
+def test_multilingual__english_query_retrieves_french_and_arabic_evidence_across_languages(clean_system, ready_multilingual_docs, tmp_path):
+    french = write_minimal_pdf(tmp_path / "fr_cross_language.pdf", [
+        "Le diabète est une maladie métabolique chronique avec hyperglycémie persistante."
+    ])
+    arabic = write_minimal_pdf(tmp_path / "ar_cross_language.pdf", [
+        "داء السكري هو اضطراب استقلابي مزمن يتميز بارتفاع سكر الدم."
+    ])
+    assert str(clean_system.ingest_file(french).get("status") or "").upper() == "READY"
+    assert str(clean_system.ingest_file(arabic).get("status") or "").upper() == "READY"
+
+    result = clean_system.answer("What does the indexed literature say about chronic diabetes?")
+    hits = result.get("hits") or []
+    assert hits
+    text = " ".join(str(getattr(hit, "text", "")) for hit in hits).casefold()
+    assert "diabète" in text or "السكري" in text, "English query did not retrieve non-English medical evidence"
+    route = result.get("route") or {}
+    assert route.get("language") == "en"
+    status = str(result.get("status") or "").upper()
+    assert status in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}
+    if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+        assert_grounded(result)
+        assert_citations_valid(result)
