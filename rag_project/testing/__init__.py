@@ -11,6 +11,11 @@ from .architecture_contracts import install as _install_architecture_contract
 # semantic contract uses the hardened implementation.
 _install_architecture_contract()
 
+# Install the final trend-aware resource contract after the runner exists so
+# phase 15 cannot fall back to the legacy first-vs-last resource probe.
+from . import strict_runtime_contracts as _strict_runtime_contracts
+_strict_runtime_contracts.install()
+
 __all__ = [
     "PHASES",
     "DiagnosticReport",
