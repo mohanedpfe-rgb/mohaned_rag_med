@@ -9,28 +9,26 @@
     "embedding_mode": "test_mode",
     "ci_intent": "portable deterministic certification"
   },
-  "stages": {
-    "canonical_ingestion": {
-      "p95_ms": 5000.0,
-      "basis": "deterministic CI certification ceiling"
-    },
-    "post_ingestion_validation": {
-      "p95_ms": 500.0,
-      "basis": "deterministic CI certification ceiling"
-    },
-    "lexical_retrieval": {
-      "p95_ms": 500.0,
-      "basis": "deterministic CI certification ceiling"
-    },
-    "semantic_retrieval": {
-      "p95_ms": 500.0,
-      "basis": "deterministic CI certification ceiling"
-    }
-  },
   "canonical_stage_keys": [
     "canonical_ingestion",
     "post_ingestion_validation",
     "lexical_retrieval",
     "semantic_retrieval"
-  ]
+  ],
+  "canonical_ingestion": {
+    "p95_ms": 5000.0,
+    "basis": "deterministic CI certification ceiling"
+  },
+  "post_ingestion_validation": {
+    "p95_ms": 500.0,
+    "basis": "deterministic CI certification ceiling"
+  },
+  "lexical_retrieval": {
+    "p95_ms": 500.0,
+    "basis": "deterministic CI certification ceiling"
+  },
+  "semantic_retrieval": {
+    "p95_ms": 500.0,
+    "basis": "deterministic CI certification ceiling"
+  }
 }
