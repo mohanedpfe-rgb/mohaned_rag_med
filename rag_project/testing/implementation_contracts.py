@@ -33,7 +33,7 @@ EXPECTED_OWNERS = (
     PhaseOwnership(14, "performance", "phase14_production_benchmark", "rag_project.testing.production_benchmark_probes", "runtime_dispatch"),
     PhaseOwnership(15, "resources", "strict_resource_stability", "rag_project.testing.strict_runtime_contracts", "runtime_binding"),
     PhaseOwnership(16, "golden_benchmark", "phase16_production_ingestion_benchmark", "rag_project.testing.production_path_probes", "runtime_dispatch"),
-    PhaseOwnership(17, "certification", "phase17_strict_completion", "rag_project.testing.production_diagnostic_probes", "runtime_binding"),
+    PhaseOwnership(17, "certification", "phase17_strict_completion", "rag_project.testing.strict_runtime_contracts", "runtime_binding"),
 )
 
 
@@ -126,12 +126,14 @@ def validate_runtime_ownership() -> dict[str, Any]:
     rows = []
     for owner in EXPECTED_OWNERS:
         value, binding_kind = resolved[owner.number]
+        actual_qualname = _qualname(value) if value is not None else None
+        actual_module = _module(value) if value is not None else None
         row = {
             "phase": owner.number,
             "key": owner.key,
             "expected_symbol": owner.authoritative_symbol,
-            "actual_qualname": _qualname(value) if value is not None else None,
-            "actual_module": _module(value) if value is not None else None,
+            "actual_qualname": actual_qualname,
+            "actual_module": actual_module,
             "binding_kind": binding_kind,
             "expected_module": owner.module,
             "expected_evidence_kind": owner.evidence_kind,
@@ -142,17 +144,22 @@ def validate_runtime_ownership() -> dict[str, Any]:
             failures.append({"phase": owner.number, "reason": "authoritative callable is missing", "expected": owner.authoritative_symbol})
         elif owner.number in expected and value is not expected[owner.number]:
             row["status"] = "FAIL"
-            failures.append({"phase": owner.number, "reason": "incorrect runtime authoritative callable", "expected_qualname": _qualname(expected[owner.number]), "actual_qualname": _qualname(value)})
+            failures.append({"phase": owner.number, "reason": "incorrect runtime authoritative callable", "expected_qualname": _qualname(expected[owner.number]), "actual_qualname": actual_qualname})
+        elif owner.number != 17 and actual_module != owner.module:
+            row["status"] = "FAIL"
+            failures.append({"phase": owner.number, "reason": "authoritative callable resolved from unexpected module", "expected_module": owner.module, "actual_module": actual_module})
         rows.append(row)
 
     p17 = resolved[17][0]
     if p17 is None or not getattr(p17, "_provenance_wrapped", False):
         failures.append({"phase": 17, "reason": "certification callable is not provenance wrapped"})
+    elif _module(p17) != "rag_project.testing.strict_runtime_contracts":
+        failures.append({"phase": 17, "reason": "certification provenance wrapper comes from an unexpected module", "actual_module": _module(p17)})
     else:
         rows[-1]["provenance_wrapped"] = True
 
     return {
-        "contract_version": "17-phase-implementation-ownership-v4",
+        "contract_version": "17-phase-implementation-ownership-v5",
         "phase_count": 17,
         "phase_numbers": phase_numbers,
         "dispatch_numbers": sorted(dispatch_numbers),
