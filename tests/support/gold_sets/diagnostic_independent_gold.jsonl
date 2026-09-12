@@ -1,5 +1,5 @@
-{"id":"case_diabetes","question":"What chronic disorder is characterized by persistent hyperglycemia and impaired insulin action?","expected_doc_ids":["doc_diabetes"]}
-{"id":"case_hba1c","question":"What does glycated hemoglobin HbA1c reflect?","expected_doc_ids":["doc_hba1c"]}
-{"id":"case_nephropathy","question":"What renal finding can accompany diabetic kidney disease?","expected_doc_ids":["doc_nephropathy"]}
-{"id":"case_hypertension","question":"How is hypertension defined in the reference corpus?","expected_doc_ids":["doc_hypertension"]}
-{"id":"case_anemia","question":"What are common causes of iron deficiency anemia?","expected_doc_ids":["doc_anemia"]}
+{"id":"case_diabetes","question":"What chronic disorder is characterized by persistent hyperglycemia and impaired insulin action?","expected_doc_ids":["doc_diabetes"],"expected_evidence_terms":["chronic metabolic disorder","persistent hyperglycemia","impaired insulin action"]}
+{"id":"case_hba1c","question":"What does glycated hemoglobin HbA1c reflect?","expected_doc_ids":["doc_hba1c"],"expected_evidence_terms":["average blood glucose exposure","two to three months","clinical context"]}
+{"id":"case_nephropathy","question":"What renal finding can accompany diabetic kidney disease?","expected_doc_ids":["doc_nephropathy"],"expected_evidence_terms":["albuminuria","declining estimated glomerular filtration rate","diabetic kidney disease"]}
+{"id":"case_hypertension","question":"How is hypertension defined in the reference corpus?","expected_doc_ids":["doc_hypertension"],"expected_evidence_terms":["persistently elevated blood pressure","validated technique","cardiovascular risk"]}
+{"id":"case_anemia","question":"What are common causes of iron deficiency anemia?","expected_doc_ids":["doc_anemia"],"expected_evidence_terms":["inadequate iron intake","impaired absorption","chronic blood loss"]}
