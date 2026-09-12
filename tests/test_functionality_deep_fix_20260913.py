@@ -9,6 +9,7 @@ from rag_project.runtime_functionality_deep_fix import (
     _citation_complete_without_shared_state,
     _filter_false_numeric_contradictions,
     _functionality_sentences,
+    _wrap_contradiction_detection,
     _wrap_contextual_numeric_contradictions,
     _wrap_generate,
     _wrap_numeric_verifier,
@@ -213,3 +214,19 @@ def test_numeric_contradiction_is_kept_for_same_fact_context():
     result = wrapped(claims)
     assert result["has_contradiction"] is True
     assert result["conflicts"][0]["left"] == ["5 mg"] and result["conflicts"][0]["right"] == ["10 mg"]
+
+
+def test_contradiction_guard_ignores_condition_specific_conflict_with_unrelated_context():
+    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
+    assert wrapped(
+        "Metformin is recommended.",
+        ["Metformin is not recommended during pregnancy."],
+    ) is False
+
+
+def test_contradiction_guard_preserves_direct_context_conflict():
+    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
+    assert wrapped(
+        "Metformin is recommended during pregnancy.",
+        ["Metformin is not recommended during pregnancy."],
+    ) is True
