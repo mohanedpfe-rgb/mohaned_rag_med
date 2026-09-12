@@ -46,6 +46,28 @@ def test_conversation__failed_answer_is_not_persisted(clean_system):
 
 
 @pytest.mark.high_level
+def test_conversation__production_blocked_outcome_is_not_persisted(clean_system, monkeypatch):
+    before = list(clean_system.conversation_memory.history)
+
+    def blocked_answer(*args, **kwargs):
+        return {
+            "status": "BLOCK",
+            "answer": "This unsafe answer must never be stored.",
+            "hits": [],
+            "citations": [],
+            "verification": {"allow": False, "blocked_claims": 1},
+            "grounding": {"allow": False},
+        }
+
+    monkeypatch.setattr(clean_system, "_certified_god_answer", blocked_answer)
+    result = clean_system.answer("Store nothing from this blocked request")
+
+    assert str(result.get("status") or "").upper() == "BLOCK"
+    assert clean_system.conversation_memory.history == before
+    assert all("Store nothing from this blocked request" not in question for question, _ in clean_system.conversation_memory.history)
+
+
+@pytest.mark.high_level
 def test_conversation__non_success_structured_outcomes_are_rejected_by_memory_primitive(clean_system):
     memory = clean_system.conversation_memory
     before = list(memory.history)
