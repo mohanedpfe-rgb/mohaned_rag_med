@@ -115,6 +115,26 @@ def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, 
 
 class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
     _certified_god_answer = _med_evidence_answer
+
+    def ingest_file(self, pdf_path):
+        result = dict(super().ingest_file(pdf_path) or {})
+        status = str(result.get("status") or "").upper()
+        if status in {"SUCCESS", "COMPLETED"}:
+            result["status"] = "READY"
+        elif status == "FAILED":
+            result["status"] = "FAILED"
+        return result
+
+    def ingest_directory(self, directory=None):
+        results = super().ingest_directory(directory)
+        normalized = []
+        for item in results:
+            row = dict(item or {})
+            if str(row.get("status") or "").upper() in {"SUCCESS", "COMPLETED"}:
+                row["status"] = "READY"
+            normalized.append(row)
+        return normalized
+
     def health_report(self):
         report = dict(super().health_report() or {}); pipeline = dict(report.get("pipeline") or {})
         pipeline.update({"explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline": "med_evidence_pro", "med_evidence_pro": True, "phase_count": 8, "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True, "semantic_cache": True, "answer_cascade": True, "active_verification": True, "feedback_logging": True, "operations_store": True, "ab_testing": True, "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True, "enterprise_roles": True})
