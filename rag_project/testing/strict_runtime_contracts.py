@@ -36,17 +36,35 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
     result.duration_s = round(time.time() - result.started_at, 3); return result
 
 
+def _with_provenance(original, phase, results):
+    result = original(phase, results)
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, timeout=10, check=True).stdout.strip()
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, text=True, capture_output=True, timeout=10, check=True).stdout.strip()
+        expected = os.getenv("GITHUB_SHA", "").strip()
+        provenance_ok = bool(sha) and not status and (not expected or sha == expected)
+        result.details["certification_provenance"] = {"git_head_sha": sha, "working_tree_clean": not bool(status), "expected_ci_sha": expected or None, "matches_expected_ci_sha": (not expected or sha == expected), "provenance_verified": provenance_ok}
+        if not provenance_ok:
+            result.status = "FAIL"; result.score = 0.0; result.failures.append({"location": "phase 17 certification provenance", "exception": "CertificationProvenanceFailure", "message": str(result.details["certification_provenance"])})
+    except Exception as exc:
+        result.status = "FAIL"; result.score = 0.0; result.failures.append({"location": "phase 17 certification provenance", "exception": type(exc).__name__, "message": str(exc)})
+    return result
+
+
 def install() -> None:
     from rag_project.testing import runner
     from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
     from rag_project.testing.full_mutation_probes import run_full_mutation_suite
     runner.phase15_resource_stability = strict_resource_stability
     runner.UnifiedDiagnosticEngine._execute.__globals__["phase15_resource_stability"] = strict_resource_stability
-    # The strengthened suites are the actual phase implementations, not merely
-    # Phase-17 post-hoc replacements.
     runner.UnifiedDiagnosticEngine._execute.__globals__["metamorphic"] = run_full_metamorphic_suite
     runner.UnifiedDiagnosticEngine._execute.__globals__["_hardened_mutation_phase"] = run_full_mutation_suite
     runner._hardened_mutation_phase = run_full_mutation_suite
+    original = runner.UnifiedDiagnosticEngine._execute.__globals__.get("phase17_strict_completion")
+    if original is not None and not getattr(original, "_provenance_wrapped", False):
+        def wrapped_phase17(phase, results): return _with_provenance(original, phase, results)
+        wrapped_phase17._provenance_wrapped = True
+        runner.UnifiedDiagnosticEngine._execute.__globals__["phase17_strict_completion"] = wrapped_phase17
 
 
 __all__ = ["strict_resource_stability", "install"]
