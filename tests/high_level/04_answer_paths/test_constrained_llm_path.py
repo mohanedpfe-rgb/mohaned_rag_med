@@ -43,3 +43,39 @@ def test_hard_question__passes_zero_temperature_to_llm(clean_system, fake_ollama
     for call in fake_ollama_fast.calls:
         assert float((call.get("kwargs") or {}).get("temperature", -1)) == 0.0
     assert_grounded(result)
+
+
+@pytest.mark.high_level
+def test_hard_question__llm_prompt_contains_only_retrieved_evidence_and_not_unretrieved_fixture_text(clean_system, fake_ollama_fast):
+    """The synthesis model must receive a bounded evidence context, not the whole indexed corpus."""
+    fake_ollama_fast.response = "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. [S1]"
+    clean_system.llm = fake_ollama_fast
+
+    result = clean_system.answer(
+        "Explain what diabetes mellitus is and how HbA1c is used for glycemic control."
+    )
+
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    assert_llm_called_with_small_context(fake_ollama_fast, max_tokens=700)
+    prompt = "\n".join(str(call.get("prompt") or "") for call in fake_ollama_fast.calls)
+    assert "Evidence" in prompt or "evidence" in prompt
+    assert "Diabetes mellitus is a chronic metabolic disorder" in prompt
+    assert "500 mg twice daily" not in prompt, "LLM prompt leaked unrelated corpus evidence"
+    assert_grounded(result)
+    assert_citations_valid(result)
+
+
+@pytest.mark.high_level
+def test_hard_question__grounded_llm_response_must_reference_retrieved_source_marker(clean_system, fake_ollama_fast):
+    fake_ollama_fast.response = "The indexed evidence describes diabetes mellitus as a chronic metabolic disorder characterized by hyperglycemia. [S1]"
+    clean_system.llm = fake_ollama_fast
+
+    result = clean_system.answer(
+        "Explain the mechanism and clinical significance of diabetes mellitus from the indexed evidence."
+    )
+
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    assert result.get("hits"), "LLM success must preserve retrieved evidence"
+    assert "[S1]" in str(result.get("answer") or ""), result
+    assert_citations_valid(result)
+    assert_grounded(result)
