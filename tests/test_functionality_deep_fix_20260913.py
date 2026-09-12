@@ -9,6 +9,7 @@ from rag_project.runtime_functionality_deep_fix import (
     _citation_complete_without_shared_state,
     _filter_false_numeric_contradictions,
     _functionality_sentences,
+    _wrap_contextual_numeric_contradictions,
     _wrap_generate,
     _wrap_numeric_verifier,
     _wrap_retrieval_cache_fallthrough,
@@ -174,3 +175,24 @@ def test_runtime_success_contract_accepts_canonical_nested_grounding():
         "citations": [{"valid": True}],
     }
     assert _is_safe_success(result) is True
+
+
+def test_numeric_contradiction_requires_same_fact_context():
+    claims = [
+        EvidenceClaim("The recommended dose is 5 mg.", (1,), True),
+        EvidenceClaim("The trial enrolled 1000 patients.", (2,), True),
+    ]
+    wrapped = _wrap_contextual_numeric_contradictions(lambda rows: {"has_contradiction": True, "conflicts": [{"left": ["5 mg"], "right": ["1000 mg"]}], "agreement": 0.65})
+    result = wrapped(claims)
+    assert result["has_contradiction"] is False and result["conflicts"] == [] and result["agreement"] == 1.0
+
+
+def test_numeric_contradiction_is_kept_for_same_fact_context():
+    claims = [
+        EvidenceClaim("The recommended dose is 5 mg.", (1,), True),
+        EvidenceClaim("The recommended dose is 10 mg.", (2,), True),
+    ]
+    wrapped = _wrap_contextual_numeric_contradictions(lambda rows: {"has_contradiction": False, "conflicts": [], "agreement": 1.0})
+    result = wrapped(claims)
+    assert result["has_contradiction"] is True
+    assert result["conflicts"][0]["left"] == ["5 mg"] and result["conflicts"][0]["right"] == ["10 mg"]
