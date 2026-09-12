@@ -111,7 +111,7 @@ def _is_safe_success(result: dict[str, Any]) -> bool:
     if not str(result.get("generation_path") or "").strip():
         return False
     citations = list(result.get("citations") or [])
-    return _valid_citations(citations) or _valid_source_markers(str(result.get("answer") or ""), hits)
+    return _valid_citations(citations)
 
 
 def _force_safe_abstention(result: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -163,7 +163,7 @@ def _verified_extractive_recovery(system: Any, result: dict[str, Any]) -> dict[s
         citations = manager.validate(built, hits) if manager else []
     except Exception:
         citations = []
-    if not _valid_citations(citations) and not _valid_source_markers(fallback, hits):
+    if not _valid_citations(citations):
         return None
     recovered = dict(result)
     recovered["status"] = "SUCCESS_WITH_WARNINGS"
