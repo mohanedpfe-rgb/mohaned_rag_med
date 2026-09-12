@@ -4,6 +4,7 @@ import argparse
 import gc
 import json
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -59,29 +60,32 @@ def main() -> int:
     iterations = 0
     successes = 0
 
-    with tempfile.TemporaryDirectory(prefix="rag_resource_production_") as td:
-        root = Path(td)
-        system = _ProductionIngestionProbeSystem(root)
-        source_dir = root / "source"
-        source_dir.mkdir(parents=True, exist_ok=True)
-        while time.monotonic() < deadline:
+    while time.monotonic() < deadline:
+        root = Path(tempfile.mkdtemp(prefix=f"rag_resource_production_{iterations}_"))
+        try:
+            system = _ProductionIngestionProbeSystem(root)
+            source_dir = root / "source"
+            source_dir.mkdir(parents=True, exist_ok=True)
             source = source_dir / f"resource_{iterations}.pdf"
             _write_probe_pdf(source, iterations)
             outcome = robust_ingest_file(system, source)
             if outcome.get("status") == "success":
                 successes += 1
-            current_rss = rss(os.getpid())
-            current_fd = fd_count(os.getpid())
-            if current_rss is not None:
-                samples.append(current_rss)
-            if current_fd is not None:
-                fds.append(current_fd)
-            iterations += 1
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
             gc.collect()
+
+        current_rss = rss(os.getpid())
+        current_fd = fd_count(os.getpid())
+        if current_rss is not None:
+            samples.append(current_rss)
+        if current_fd is not None:
+            fds.append(current_fd)
+        iterations += 1
 
     observed = time.monotonic() - started
     payload = {
-        "workload": "canonical robust_ingest_file PDF -> extraction -> chunking -> embedding -> validation -> READY loop",
+        "workload": "canonical robust_ingest_file isolated PDF -> extraction -> chunking -> embedding -> validation -> READY lifecycle",
         "observed_seconds": observed,
         "sample_count": len(samples),
         "iterations": iterations,
