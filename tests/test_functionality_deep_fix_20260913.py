@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import SimpleNamespace
+from types import SimpleNamespace
 
 from rag_project.intelligence.med_evidence_pro import AnswerCascade, EvidenceClaim, RouteMetadata
 from rag_project.runtime_functionality_deep_fix import (
