@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_citations_valid, assert_status
+from tests.high_level.helpers import assert_citations_valid, assert_document_ready, assert_exact_path, assert_exact_status
 
 
 @pytest.mark.high_level
@@ -14,23 +14,25 @@ def test_storage__only_ready_document_version_is_searchable(clean_system, tmp_pa
 
     ready_result = clean_system.ingest_file(ready)
     failed_result = clean_system.ingest_file(failed)
-    assert_status(ready_result, {"READY"})
-    assert str(failed_result.get("status") or "").upper() not in {"READY", "COMPLETED"}
+    assert_exact_status(ready_result, "READY")
+    assert_exact_status(failed_result, "FAILED")
 
     failed_document_id = str(failed_result.get("document_id") or failed_result.get("id") or "")
-    if failed_document_id:
-        record = clean_system.state_store.get_document(failed_document_id)
-        assert record is not None
-        assert not clean_system.state_store.is_ready_status(record.get("status"))
-        with clean_system.state_store._connect() as connection:
-            page_count = connection.execute(
-                "SELECT COUNT(*) FROM pages WHERE document_id = ?",
-                (failed_document_id,),
-            ).fetchone()[0]
-        assert int(page_count or 0) == 0
+    assert failed_document_id
+    record = clean_system.state_store.get_document(failed_document_id)
+    assert record is not None
+    assert str(record.get("status") or "").upper() == "FAILED"
+    assert str(record.get("index_state") or "").upper() == "FAILED"
+    with clean_system.state_store._connect() as connection:
+        page_count = connection.execute(
+            "SELECT COUNT(*) FROM pages WHERE document_id = ?",
+            (failed_document_id,),
+        ).fetchone()[0]
+    assert int(page_count or 0) == 0
 
     answer = clean_system.answer("What is READY_ONLY_MARKER_42?")
-    assert_status(answer, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    assert_exact_status(answer, "SUCCESS")
+    assert_exact_path(answer, "PATH_A_EXTRACTIVE")
     hits = answer.get("hits") or []
     assert hits
     hit_docs = {str(getattr(hit, "doc_id", "")) for hit in hits}
@@ -47,13 +49,9 @@ def test_storage__embedding_identity_matches_runtime_for_ready_index(clean_syste
 
 @pytest.mark.high_level
 def test_storage__ready_document_state_has_no_partial_index_flag(clean_system, ready_document):
-    document_id = str((clean_system.state_store.get_by_path(str(ready_document)) or {}).get("document_id") or "")
-    assert document_id
+    document = clean_system.state_store.get_by_path(str(ready_document)) or {}
+    document_id = str(document.get("document_id") or "")
+    assert_document_ready(clean_system, document_id)
     record = clean_system.state_store.get_document(document_id)
     assert record is not None
-    assert clean_system.state_store.is_ready_status(record.get("status"))
-    assert str(record.get("status") or "").upper() == "READY"
-    assert str(record.get("index_state") or "").upper() == "READY"
-    assert int(record.get("total_pages") or 0) > 0
-    assert int(record.get("current_page") or 0) >= int(record.get("total_pages") or 0)
-    assert str(record.get("current_stage") or "").upper() in {"READY", "COMPLETED", "VALIDATING_INDEX"}
+    assert str(record.get("current_stage") or "").upper() == "READY"
