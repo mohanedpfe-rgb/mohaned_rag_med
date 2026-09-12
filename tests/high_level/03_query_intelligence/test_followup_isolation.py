@@ -29,7 +29,9 @@ def test_followup_query__does_not_duplicate_previous_question_in_memory(clean_sy
     first = clean_system.answer("What is diabetes mellitus?")
     second = clean_system.answer("What about HbA1c?")
     assert_exact_status(first, "SUCCESS")
+    assert_exact_path(first, "PATH_A_EXTRACTIVE")
     assert_exact_status(second, "SUCCESS")
+    assert_exact_path(second, "PATH_A_EXTRACTIVE")
 
     memory = getattr(clean_system, "conversation_memory", None)
     assert memory is not None
