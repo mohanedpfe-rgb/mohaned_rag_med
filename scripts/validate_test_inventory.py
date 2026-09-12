@@ -140,14 +140,10 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
             for child in ast.walk(node):
                 if not isinstance(child, ast.Call):
                     continue
-                if _call_name(child) != "assert_status" or len(child.args) < 2:
-                    continue
-                expected = child.args[1]
-                if not isinstance(expected, ast.Constant) or not isinstance(expected.value, str):
-                    if not is_gold_runner:
-                        soft_status_assertions.append(
-                            f"{path}:{node.name}: assert_status expected value must be one literal status string"
-                        )
+                if _call_name(child) == "assert_status" and not is_gold_runner:
+                    soft_status_assertions.append(
+                        f"{path}:{node.name}: legacy assert_status() is forbidden; use assert_exact_status()"
+                    )
 
             if _uses_assert_one_of_statuses(node) and not (
                 "pytest.mark.multi_outcome" in decorators or "multi_outcome" in decorators
@@ -167,18 +163,14 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
                 and _calls_answer(node)
                 and _success_status_expected(node)
             ):
-                required = {
-                    "assert_exact_status": "exact success status assertion",
-                    "assert_exact_path": "exact generation path assertion",
-                    "assert_citations_valid": "citation validation",
-                    "assert_grounded": "grounding verification",
-                    "assert_pipeline_authority": "pipeline authority verification",
-                }
-                for helper, description in required.items():
-                    if not _has_call(node, {helper}):
-                        success_contract_violations.append(
-                            f"{path}:{node.name}: missing {helper} ({description})"
-                        )
+                if not _has_call(node, {"assert_exact_status"}):
+                    success_contract_violations.append(
+                        f"{path}:{node.name}: successful answer requires assert_exact_status()"
+                    )
+                if not _has_call(node, {"assert_exact_path"}):
+                    success_contract_violations.append(
+                        f"{path}:{node.name}: successful answer requires assert_exact_path(); this helper locks path+grounding+citations+authority"
+                    )
 
         if marked_integration or is_integration_path:
             integration += 1
