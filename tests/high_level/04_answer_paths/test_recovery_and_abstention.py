@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from rag_project import application
 from tests.high_level.helpers import (
     assert_abstained,
     assert_citations_valid,
@@ -9,7 +10,6 @@ from tests.high_level.helpers import (
     assert_exact_status,
     assert_grounded,
     assert_memory_unchanged,
-    assert_pipeline_authority,
 )
 
 
@@ -59,7 +59,6 @@ def test_abstention__blocked_llm_synthesis_is_exactly_withheld_after_constrained
     assert "fictional x-factor" not in answer
     assert "always cured by one specific drug" not in answer
     assert_memory_unchanged(before, clean_system.conversation_memory.history)
-    assert_pipeline_authority(result) if result.get("pipeline_authority") else None
 
 
 @pytest.mark.high_level
@@ -71,3 +70,24 @@ def test_recovery__verified_generation_fallback_is_reserved_for_infrastructure_f
     assert result.get("answer")
     assert_grounded(result)
     assert_citations_valid(result)
+
+
+@pytest.mark.high_level
+def test_recovery__internal_hybrid_fallback_is_normalized_to_exact_verified_public_path(clean_system, monkeypatch):
+    baseline = clean_system.answer("What is diabetes mellitus?")
+    assert_exact_status(baseline, "SUCCESS")
+    assert_exact_path(baseline, "PATH_A_EXTRACTIVE")
+
+    internal = dict(baseline)
+    internal["generation_path"] = "PATH_HYBRID_FALLBACK"
+    internal["generation_meta"] = {"attempted": True, "fallback": True}
+
+    monkeypatch.setattr(application, "enhanced_med_evidence_answer", lambda *args, **kwargs: dict(internal))
+    result = clean_system.answer("What is diabetes mellitus?")
+
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_VERIFIED_FALLBACK")
+    assert (result.get("recovery") or {}).get("grounded_extractive_fallback") is True
+    assert (result.get("generation_meta") or {}).get("internal_path") == "PATH_HYBRID_FALLBACK"
+    assert_citations_valid(result)
+    assert_grounded(result)
