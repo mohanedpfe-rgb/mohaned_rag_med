@@ -273,9 +273,10 @@ def _cited_evidence(claim: str, evidence_blocks: Sequence[str], source_ids: Sequ
     if not markers:
         return list(evidence_blocks), list(source_ids)
     index_by_id = {str(source_id).casefold(): index for index, source_id in enumerate(source_ids)}
-    selected_indices = [index_by_id[marker.casefold()] for marker in markers if marker.casefold() in index_by_id]
-    if not selected_indices:
+    marker_keys = [marker.casefold() for marker in markers]
+    if any(marker not in index_by_id for marker in marker_keys):
         return [], []
+    selected_indices = [index_by_id[marker] for marker in marker_keys]
     unique_indices = list(dict.fromkeys(selected_indices))
     return [str(evidence_blocks[index]) for index in unique_indices if index < len(evidence_blocks)], [str(source_ids[index]) for index in unique_indices if index < len(source_ids)]
 
@@ -307,34 +308,3 @@ def verify_claims(answer, evidence_blocks: Sequence[str], source_ids: Sequence[s
             status, reason = "UNSUPPORTED", "No meaningful evidence support."
         checks.append(ClaimCheck(claim, round(max(best, numeric_bridge), 4), status, sources, bool(num["mismatch"]), contra, reason))
     return checks
-
-
-def evidence_confidence(*, retrieval: float, rerank: float, entailment: float, quality: float, contradiction: float = 0.0, ocr_penalty: float = 0.0) -> float:
-    return round(max(0.0, min(1.0, 0.24 * retrieval + 0.26 * rerank + 0.30 * entailment + 0.20 * quality - 0.40 * contradiction - 0.20 * ocr_penalty)), 4)
-
-
-def contradiction_report(claims):
-    bad = [c for c in claims if c.contradiction or c.status == "CONTRADICTED"]
-    return {"has_contradiction": bool(bad), "count": len(bad), "claims": [c.to_dict() for c in bad]}
-
-
-def citation_firewall(answer, claim_checks: Iterable[ClaimCheck]):
-    checks = list(claim_checks)
-    bad = [c for c in checks if c.status in {"UNSUPPORTED", "NUMERIC_MISMATCH", "CONTRADICTED"} or c.contradiction]
-    if not bad:
-        return answer, False
-    safe = [c for c in checks if c.status in {"SUPPORTED", "PARTIAL", "ENTAILED"} and not c.contradiction]
-    lines = ["Verified findings:"] if safe else []
-    lines += [f'- {c.claim} {" ".join(f"[{s}]" for s in c.sources)}'.strip() for c in safe]
-    lines.append("Some generated details were withheld because they could not be verified against the indexed evidence.")
-    return "\n".join(lines), True
-
-
-def grounding_decision(claims, *, min_supported_ratio=0.60):
-    if not claims:
-        return {"allow": False, "reason": "No claims were extracted from the generated answer.", "supported_ratio": 0.0}
-    supported_statuses = {"SUPPORTED", "PARTIAL", "ENTAILED"}
-    safe = sum(c.status in supported_statuses and not c.contradiction for c in claims)
-    blocked = sum(c.status in {"UNSUPPORTED", "WEAK", "NUMERIC_MISMATCH", "CONTRADICTED"} or c.contradiction for c in claims)
-    ratio = safe / len(claims)
-    return {"allow": ratio >= min_supported_ratio and blocked == 0, "reason": "Grounding threshold passed." if ratio >= min_supported_ratio and blocked == 0 else "Grounding threshold failed.", "supported_ratio": round(ratio, 4), "blocked_claims": blocked}
