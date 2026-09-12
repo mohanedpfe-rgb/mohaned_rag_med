@@ -9,6 +9,19 @@ from pathlib import Path
 MIN_TOTAL_TEST_FUNCTIONS = 500
 MIN_INTEGRATION_TEST_FUNCTIONS = 150
 MIN_HIGH_LEVEL_TEST_FUNCTIONS = 80
+MIN_GOLD_CASES = 20
+GOLD_REQUIRED_FIELDS = {
+    "id",
+    "question",
+    "language",
+    "expected_status",
+    "expected_path",
+    "must_contain",
+    "must_not_contain",
+    "must_cite",
+    "max_latency_s",
+    "must_not_call_llm",
+}
 TEST_NAME_PATTERN = re.compile(r"^test_[a-z0-9_]+__.+$")
 EXPECTED_HIGH_LEVEL_PHASES = (
     "01_ingestion", "02_retrieval", "03_query_intelligence", "04_answer_paths",
@@ -55,6 +68,42 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str]]:
     return total, high_level, integration, invalid_names, missing_marks
 
 
+def _gold_contract(root: Path) -> dict[str, object]:
+    path = root / "tests" / "support" / "gold_sets" / "core.jsonl"
+    errors: list[str] = []
+    cases: list[dict[str, object]] = []
+    try:
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                errors.append(f"line {line_number}: invalid JSON ({exc.msg})")
+                continue
+            if not isinstance(item, dict):
+                errors.append(f"line {line_number}: case must be an object")
+                continue
+            missing = sorted(GOLD_REQUIRED_FIELDS - set(item))
+            if missing:
+                errors.append(f"line {line_number}: missing fields {missing}")
+            cases.append(item)
+    except OSError as exc:
+        errors.append(f"cannot read gold set: {exc}")
+    ids = [str(item.get("id", "")) for item in cases]
+    duplicate_ids = sorted({value for value in ids if value and ids.count(value) > 1})
+    if duplicate_ids:
+        errors.append(f"duplicate gold case ids: {duplicate_ids}")
+    return {
+        "path": str(path),
+        "gold_case_count": len(cases),
+        "meets_gold_floor": len(cases) >= MIN_GOLD_CASES,
+        "gold_contract_errors": errors,
+        "gold_unique_ids": not duplicate_ids,
+        "ready": len(cases) >= MIN_GOLD_CASES and not errors,
+    }
+
+
 def inspect(root: Path) -> dict[str, object]:
     tests = root / "tests"
     high_level_root = tests / "high_level"
@@ -88,6 +137,7 @@ def inspect(root: Path) -> dict[str, object]:
             missing_phases.append(phase)
 
     effective_integration = integration + high_level
+    gold = _gold_contract(root)
     result: dict[str, object] = {
         "test_files": files,
         "total_test_functions": total,
@@ -107,11 +157,13 @@ def inspect(root: Path) -> dict[str, object]:
         "meets_13_phase_plan": not missing_phases and not unexpected_phase_dirs,
         "meets_test_naming_contract": not invalid_names,
         "meets_high_level_marker_contract": not missing_marks,
+        "gold_set": gold,
+        "meets_gold_contract": bool(gold["ready"]),
     }
     result["ready"] = bool(
         result["meets_total_500"] and result["meets_integration_150"] and result["meets_high_level_floor"]
         and result["meets_13_phase_plan"] and result["meets_test_naming_contract"]
-        and result["meets_high_level_marker_contract"]
+        and result["meets_high_level_marker_contract"] and result["meets_gold_contract"]
     )
     return result
 
