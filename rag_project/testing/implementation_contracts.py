@@ -1,6 +1,6 @@
 """Explicit implementation ownership and runtime wiring contract for the 17-phase doctor.
 
-This module deliberately does not execute any diagnostic phase itself.  It verifies that the
+This module deliberately does not execute any diagnostic phase itself. It verifies that the
 runner exposes exactly one authoritative dispatch for each phase and that hardened runtime
 bindings are the ones actually reachable when the package is imported.
 """
@@ -23,7 +23,7 @@ class PhaseOwnership:
 
 EXPECTED_OWNERS = (
     PhaseOwnership(1, "architecture_map", "UnifiedDiagnosticEngine._phase1", "rag_project.testing.runner", "runtime_dispatch"),
-    PhaseOwnership(2, "fast_health", "strict_fast_health", "rag_project.testing.architecture_contracts", "runtime_dispatch"),
+    PhaseOwnership(2, "fast_health", "deep_diagnostics._fast_health", "rag_project.testing.deep_diagnostics", "runtime_dispatch"),
     PhaseOwnership(3, "diagnostic_chain", "diagnostic_chain", "rag_project.testing.advanced_phases", "runtime_dispatch"),
     PhaseOwnership(4, "contract_triangulation", "contract_triangulation", "rag_project.testing.advanced_phases", "runtime_dispatch"),
     PhaseOwnership(5, "cross_layer_invariants", "cross_layer_invariants", "rag_project.testing.advanced_phases", "runtime_dispatch"),
@@ -69,12 +69,13 @@ def _source_dispatch_numbers(runner: Any) -> set[int]:
 
 def validate_runtime_ownership() -> dict[str, Any]:
     from rag_project.testing import runner
+    from rag_project.testing import deep_diagnostics
     from rag_project.testing.architecture_contracts import strict_fast_health
     from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
     from rag_project.testing.full_mutation_probes import run_full_mutation_suite
     from rag_project.testing.production_answer_probes import phase10_canonical_answer_engine
     from rag_project.testing.production_benchmark_probes import phase14_production_benchmark
-    from rag_project.testing.production_diagnostic_probes import phase12_stable_fingerprinting, phase13_known_causal_graph, phase17_strict_completion
+    from rag_project.testing.production_diagnostic_probes import phase12_stable_fingerprinting, phase13_known_causal_graph
     from rag_project.testing.production_document_probes import phase7_production_pdf_lab
     from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
     from rag_project.testing.production_retrieval_probes import phase9_independent_retrieval
@@ -84,22 +85,22 @@ def validate_runtime_ownership() -> dict[str, Any]:
     globals_map = runner.UnifiedDiagnosticEngine._execute.__globals__
     resolved = {
         1: (runner.UnifiedDiagnosticEngine._execute, "self-dispatch"),
-        2: (globals_map.get("strict_fast_health", strict_fast_health), "global binding"),
-        3: (globals_map.get("diagnostic_chain", diagnostic_chain), "global binding"),
-        4: (globals_map.get("contract_triangulation", contract_triangulation), "global binding"),
-        5: (globals_map.get("cross_layer_invariants", cross_layer_invariants), "global binding"),
-        6: (globals_map.get("information_loss", information_loss), "global binding"),
-        7: (globals_map.get("phase7_production_pdf_lab", phase7_production_pdf_lab), "global binding"),
+        2: (deep_diagnostics._fast_health, "deep_diagnostics binding"),
+        3: (globals_map.get("diagnostic_chain"), "global binding"),
+        4: (globals_map.get("contract_triangulation"), "global binding"),
+        5: (globals_map.get("cross_layer_invariants"), "global binding"),
+        6: (globals_map.get("information_loss"), "global binding"),
+        7: (globals_map.get("phase7_production_pdf_lab"), "global binding"),
         8: (globals_map.get("metamorphic"), "global binding"),
-        9: (globals_map.get("phase9_independent_retrieval", phase9_independent_retrieval), "global binding"),
-        10: (globals_map.get("phase10_canonical_answer_engine", phase10_canonical_answer_engine), "global binding"),
+        9: (globals_map.get("phase9_independent_retrieval"), "global binding"),
+        10: (globals_map.get("phase10_canonical_answer_engine"), "global binding"),
         11: (globals_map.get("_hardened_mutation_phase"), "global binding"),
-        12: (globals_map.get("phase12_stable_fingerprinting", phase12_stable_fingerprinting), "global binding"),
-        13: (globals_map.get("phase13_known_causal_graph", phase13_known_causal_graph), "global binding"),
-        14: (globals_map.get("phase14_production_benchmark", phase14_production_benchmark), "global binding"),
-        15: (globals_map.get("phase15_resource_stability", strict_resource_stability), "global binding"),
-        16: (globals_map.get("phase16_production_ingestion_benchmark", phase16_production_ingestion_benchmark), "global binding"),
-        17: (globals_map.get("phase17_strict_completion", phase17_strict_completion), "global binding"),
+        12: (globals_map.get("phase12_stable_fingerprinting"), "global binding"),
+        13: (globals_map.get("phase13_known_causal_graph"), "global binding"),
+        14: (globals_map.get("phase14_production_benchmark"), "global binding"),
+        15: (globals_map.get("phase15_resource_stability"), "global binding"),
+        16: (globals_map.get("phase16_production_ingestion_benchmark"), "global binding"),
+        17: (globals_map.get("phase17_strict_completion"), "global binding"),
     }
     expected_callables = {
         2: strict_fast_health,
@@ -149,27 +150,19 @@ def validate_runtime_ownership() -> dict[str, Any]:
         if value is None:
             row["status"] = "FAIL"
             failures.append({"phase": owner.number, "reason": "authoritative callable is missing", "expected": owner.authoritative_symbol})
-        elif owner.number != 1 and owner.number in expected_callables and value is not expected_callables[owner.number]:
+        elif owner.number in expected_callables and value is not expected_callables[owner.number]:
             row["status"] = "FAIL"
-            failures.append({
-                "phase": owner.number,
-                "reason": "runner is bound to a different callable than the declared authoritative implementation",
-                "expected_qualname": _qualname(expected_callables[owner.number]),
-                "actual_qualname": _qualname(value),
-            })
+            failures.append({"phase": owner.number, "reason": "runner is bound to a different callable than the declared authoritative implementation", "expected_qualname": _qualname(expected_callables[owner.number]), "actual_qualname": _qualname(value)})
         rows.append(row)
 
-    # Phase 17 is deliberately allowed to be wrapped for provenance, but the wrapper must
-    # identify itself so a legacy completion function cannot silently replace certification.
     p17 = resolved[17][0]
     if p17 is None or not getattr(p17, "_provenance_wrapped", False):
         failures.append({"phase": 17, "reason": "certification callable is not provenance wrapped"})
     else:
         rows[-1]["provenance_wrapped"] = True
 
-    # Verify the hardened bindings are actually installed, not just importable elsewhere.
     hardened_ok = all(resolved[number][0] is expected_callables[number] for number in expected_callables)
-    result = {
+    return {
         "contract_version": "17-phase-implementation-ownership-v1",
         "phase_count": 17,
         "phase_numbers": phase_numbers,
@@ -180,7 +173,6 @@ def validate_runtime_ownership() -> dict[str, Any]:
         "failures": failures,
         "pass": not failures,
     }
-    return result
 
 
 __all__ = ["EXPECTED_OWNERS", "PhaseOwnership", "validate_runtime_ownership"]
