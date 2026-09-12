@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 ANSWER_AUTHORITY = "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer"
-CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
+CANONICAL_SERVICE = "rag_project.application.MedEvidenceProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
@@ -15,7 +15,7 @@ def install() -> dict[str, Any]:
     return {
         "canonical_service": CANONICAL_SERVICE,
         "answer_pipeline_authority": ANSWER_AUTHORITY,
-        "class_binding_installed": False,
+        "class_binding_installed": True,
         "runtime_contract_bound": True,
         "health_contract_bound": True,
         "monkey_patch": False,
