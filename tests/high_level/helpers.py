@@ -132,10 +132,11 @@ def assert_llm_called_with_small_context(llm_spy: Any, max_tokens: int = 700) ->
     calls = getattr(llm_spy, "calls", [])
     assert calls, "expected at least one LLM call"
     for call in calls:
-        prompt = str(call.get("prompt", ""))
-        approx_tokens = max(1, len(prompt.split()))
-        assert approx_tokens <= max_tokens, f"LLM context too large: ~{approx_tokens} tokens"
         kwargs = call.get("kwargs") or {}
+        user_prompt = str(call.get("prompt", ""))
+        system_prompt = str(kwargs.get("system_prompt") or "")
+        approx_tokens = max(1, len(f"{system_prompt} {user_prompt}".split()))
+        assert approx_tokens <= max_tokens, f"LLM request context too large: ~{approx_tokens} tokens"
         if "temperature" in kwargs:
             assert float(kwargs["temperature"]) == 0.0
 
