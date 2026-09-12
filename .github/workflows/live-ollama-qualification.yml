@@ -1,0 +1,79 @@
+name: Live Ollama Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Ollama model to qualify"
+        required: false
+        default: "llama3.2:3b"
+
+jobs:
+  live-ollama-phase10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+      - name: Start Ollama
+        run: |
+          nohup ollama serve > /tmp/ollama.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null
+      - name: Pull qualification model
+        env:
+          MODEL: ${{ inputs.model }}
+        run: ollama pull "$MODEL"
+      - name: Run authoritative Phase 10 with live Ollama
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+          REQUIRE_LIVE_OLLAMA: "true"
+          DIAGNOSTIC_LIVE_OLLAMA: "1"
+          GENERATION_MODEL: ${{ inputs.model }}
+        run: |
+          mkdir -p artifacts
+          python scripts/test_doctor.py --phase 10 --json artifacts/live-ollama-phase10.json
+      - name: Require live Ollama evidence
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/live-ollama-phase10.json").read_text(encoding="utf-8"))
+          phase = next(item for item in report.get("phases", []) if item.get("number") == 10)
+          details = phase.get("details", {})
+          assert phase.get("status") == "PASS", phase
+          assert details.get("generation_backend") == "ollama_external", phase
+          assert details.get("live_ollama_required") is True, phase
+          assert details.get("live_ollama_verified") is True, phase
+          assert details.get("ollama_protocol_roundtrip_verified") is True, phase
+          assert details.get("answer_generated") is True, phase
+          print("LIVE OLLAMA PHASE 10 QUALIFICATION VERIFIED")
+          PY
+      - name: Publish live Ollama artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-ollama-phase10
+          path: artifacts/live-ollama-phase10.json
+          if-no-files-found: ignore
+      - name: Publish Ollama log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ollama-log
+          path: /tmp/ollama.log
+          if-no-files-found: ignore
