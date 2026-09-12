@@ -49,7 +49,7 @@ def test_ingestion__changed_content_publishes_new_version_and_supersedes_old(cle
     write_minimal_pdf(processed_path, ["VERSION_TWO_NEW_MARKER: new controlled evidence."])
 
     replacement = clean_system.ingest_file(processed_path)
-    assert_exact_status(replacement, "SUCCESS")
+    assert_exact_status(replacement, "READY")
     new_document_id = str(replacement.get("document_id") or replacement.get("id") or "")
     assert new_document_id
     assert new_document_id != old_document_id
