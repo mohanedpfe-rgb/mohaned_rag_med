@@ -24,6 +24,13 @@ def test_e2e_multilingual__english_french_arabic_library_supports_queries(clean_
         assert_citations_valid(result)
         assert_grounded(result)
 
+        route = result.get("route") or {}
+        assert route.get("language") == language, (language, route)
+        assert 0.0 <= float(route.get("language_confidence", -1.0)) <= 1.0
+        trace = result.get("query_trace") or {}
+        assert trace.get("language") == language
+        assert trace.get("pipeline_authority") == result.get("pipeline_authority")
+
         combined = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or [])
         assert expected.casefold() in combined.casefold(), f"{language} query lost its cross-language evidence"
         assert result.get("pipeline_authority")
