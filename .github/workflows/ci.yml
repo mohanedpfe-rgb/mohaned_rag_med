@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  diagnostic-fast-gate:
+  diagnostic-17-phase-gate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,18 +20,34 @@ jobs:
           python -m pip install --require-hashes -r requirements.lock
       - name: Validate installed environment
         run: python -m pip check
-      - name: Run authoritative fast diagnostic
+      - name: Compile diagnostic system
+        run: python -m compileall -q rag_project/testing
+      - name: Run authoritative full 17-phase diagnostic
         env:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
-        run: python scripts/test_doctor.py --fast --fail-fast --json artifacts/diagnostic-fast.json
-      - name: Publish fast diagnostic artifact
+        run: python scripts/test_doctor.py --deep --json artifacts/diagnostic-17-phase.json
+      - name: Require 17/17 implementation coverage
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("artifacts/diagnostic-17-phase.json").read_text(encoding="utf-8"))
+          phases = report.get("phases", [])
+          assert len(phases) == 17, f"expected 17 phase results, got {len(phases)}"
+          phase17 = next(item for item in phases if item["number"] == 17)
+          assert phase17["details"].get("implementation_coverage") == "17/17", phase17
+          assert not phase17["details"].get("missing_phase_results"), phase17
+          assert phase17["status"] in {"PASS", "WARN"}, phase17
+          print("17/17 diagnostic implementation coverage verified")
+          PY
+      - name: Publish 17-phase diagnostic artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: diagnostic-fast
-          path: artifacts/diagnostic-fast.json
+          name: diagnostic-17-phase
+          path: artifacts/diagnostic-17-phase.json
           if-no-files-found: ignore
 
   high-level-behavior:
