@@ -3,11 +3,17 @@ from __future__ import annotations
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_citations_valid, assert_grounded, assert_status
+from tests.high_level.helpers import (
+    assert_citations_valid,
+    assert_exact_path,
+    assert_exact_status,
+    assert_grounded,
+    assert_pipeline_authority,
+)
 
 
 @pytest.mark.high_level
-def test_e2e_multi_document__library_search_returns_only_relevant_source(clean_system, tmp_path):
+def test_e2e_multi_document__library_search_returns_exact_target_document_only(clean_system, tmp_path):
     source_a = write_minimal_pdf(tmp_path / "cardiology.pdf", [
         "DOC_CARDIO: myocardial infarction is a myocardial injury caused by ischemia.",
     ])
@@ -20,7 +26,8 @@ def test_e2e_multi_document__library_search_returns_only_relevant_source(clean_s
     assert str(result_b.get("status") or "").upper() == "READY"
 
     result = clean_system.answer("What does DOC_ENDO state about diabetes mellitus?")
-    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
+    assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
     hits = result.get("hits") or []
     assert hits
     text = " ".join(str(getattr(hit, "text", "")) for hit in hits)
@@ -28,6 +35,7 @@ def test_e2e_multi_document__library_search_returns_only_relevant_source(clean_s
     assert "DOC_CARDIO" not in text
     assert_citations_valid(result)
     assert_grounded(result)
+    assert_pipeline_authority(result)
 
     endocrine_id = str(result_b.get("document_id") or result_b.get("id") or "")
     assert endocrine_id
