@@ -46,8 +46,7 @@ def _hardened_mutation_phase(phase: core.PhaseSpec) -> core.PhaseResult:
                 proc = subprocess.run([sys.executable, "-m", "pytest", "-q", str(test_file)], cwd=ROOT, text=True, capture_output=True, timeout=60)
                 mutants.append({"name": name, "returncode": proc.returncode, "killed": proc.returncode != 0, "stdout": proc.stdout[-700:], "stderr": proc.stderr[-700:]})
         applicable = len(mutants); killed = sum(int(item["killed"]) for item in mutants); score = killed / max(applicable, 1)
-        result.details = {"strategy": "four executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}
-        result.score = round(score, 3); result.status = "PASS" if applicable == 4 and killed == applicable else "FAIL"
+        result.details = {"strategy": "four executable source mutants + independent pytest process per mutant", "mutants_applicable": applicable, "mutants_killed": killed, "kill_score": round(score, 3), "mutation_results": mutants, "target": str(target.relative_to(ROOT)), "real_pytest_subprocess": True}; result.score = round(score, 3); result.status = "PASS" if applicable == 4 and killed == applicable else "FAIL"
         if result.status == "FAIL": result.failures.append({"location": str(target.relative_to(ROOT)), "exception": "SurvivingMutant", "message": f"kill score={score:.3f}"})
     except Exception as exc:
         result.status = "FAIL"; result.failures.append({"location": "phase 11 hardened mutation suite", "exception": type(exc).__name__, "message": str(exc)})
@@ -58,12 +57,10 @@ def _hardened_fingerprinting(spec: core.PhaseSpec, results: dict[int, core.Phase
     result = core.PhaseResult(spec.number, spec.key, spec.name, status="PASS", started_at=core.time.time()); fingerprints = []
     for number, phase_result in sorted(results.items()):
         for index, failure in enumerate(phase_result.failures):
-            location = str(failure.get("location") or "unknown").replace("\\", "/"); exception = str(failure.get("exception") or "UnknownFailure"); message = re.sub(r"0x[0-9a-fA-F]+|\b\d+(?:\.\d+)?\b", "#", str(failure.get("message") or failure.get("detail") or "")); normalized = "|".join((location.split(":", 1)[0], exception, " ".join(message.casefold().split()))); digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
-            fingerprints.append({"id": f"p{number}f{index}", "phase": number, "fingerprint": digest, "location": location, "exception": exception, "normalized_message": message})
+            location = str(failure.get("location") or "unknown").replace("\\", "/"); exception = str(failure.get("exception") or "UnknownFailure"); message = re.sub(r"0x[0-9a-fA-F]+|\b\d+(?:\.\d+)?\b", "#", str(failure.get("message") or failure.get("detail") or "")); normalized = "|".join((location.split(":", 1)[0], exception, " ".join(message.casefold().split()))); digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]; fingerprints.append({"id": f"p{number}f{index}", "phase": number, "fingerprint": digest, "location": location, "exception": exception, "normalized_message": message})
     multiplicity = {}
     for row in fingerprints: multiplicity[row["fingerprint"]] = multiplicity.get(row["fingerprint"], 0) + 1
-    result.details = {"evidence_level": "structured_runtime_failure_fingerprint", "algorithm": "normalized project frame + exception + normalized message + SHA-256 digest", "unique_fingerprints": len(multiplicity), "failure_count": len(fingerprints), "fingerprints": fingerprints[:100], "multiplicity": multiplicity, "evidence_phases": sorted(results)}
-    result.score = 1.0; result.duration_s = round(core.time.time() - result.started_at, 3); return result
+    result.details = {"evidence_level": "structured_runtime_failure_fingerprint", "algorithm": "normalized project frame + exception + normalized message + SHA-256 digest", "unique_fingerprints": len(multiplicity), "failure_count": len(fingerprints), "fingerprints": fingerprints[:100], "multiplicity": multiplicity, "evidence_phases": sorted(results)}; result.score = 1.0; result.duration_s = round(core.time.time() - result.started_at, 3); return result
 
 
 def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
@@ -84,19 +81,20 @@ def _hardened_causal_graph(spec: core.PhaseSpec, results: dict[int, core.PhaseRe
 
 
 def _base_phase17_strict(spec: core.PhaseSpec, results: dict[int, core.PhaseResult]) -> core.PhaseResult:
-    result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time()); required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_pdf_extraction_to_storage_retrieval"}; failures = []
+    result = core.PhaseResult(spec.number, spec.key, spec.name, started_at=core.time.time()); required_levels = {7: "real_pdf_extractor", 14: "real_pdf_to_retrieval_benchmark", 15: "real_subprocess_resource_observation", 16: "real_production_robust_ingestion_to_storage_retrieval"}; failures = []
     for number, level in required_levels.items():
         details = results.get(number).details if results.get(number) else {}
         if details.get("evidence_level") != level: failures.append({"phase": number, "required_evidence_level": level, "actual": details.get("evidence_level")})
     p10 = results.get(10)
-    for key in ("answer_generated", "citations_present", "citation_ids_valid", "verification_allow"):
-        if not p10 or not p10.details.get(key): failures.append({"phase": 10, "required_evidence": key})
+    for key in ("answer_generated", "citations_present", "citation_ids_valid", "verification_allow", "canonical_engine_executed", "retrieval_stub_used"):
+        if not p10 or key not in p10.details or not p10.details.get(key): failures.append({"phase": 10, "required_evidence": key})
+    if p10 and p10.details.get("retrieval_stub_used") is False: pass
     p11 = results.get(11)
     if not p11 or p11.details.get("kill_score") != 1.0 or p11.details.get("mutants_applicable", 0) < 4 or not p11.details.get("real_pytest_subprocess"): failures.append({"phase": 11, "required_evidence": ">=4 executable mutants, 100% kill, real pytest subprocess"})
     p15 = results.get(15)
-    if not p15 or p15.details.get("repetitions", 0) < 3 or not p15.details.get("pipeline_exercised"): failures.append({"phase": 15, "required_evidence": "repeated resource workload and monitored production storage/search"})
+    if not p15 or p15.details.get("repetitions", 0) < 3 or not p15.details.get("pipeline_exercised"): failures.append({"phase": 15, "required_evidence": "repeated resource workload and monitored production ingestion"})
     p16 = results.get(16)
-    if not p16 or not p16.details.get("gold_labels_independent_of_corpus_text") or p16.details.get("retrieval_recall", 0) < 0.8: failures.append({"phase": 16, "required_evidence": "independent gold retrieval recall >= 0.8"})
+    if not p16 or not p16.details.get("gold_labels_independent_of_corpus_text") or p16.details.get("retrieval_recall", 0) < 0.8 or not p16.details.get("durable_state_verified") or not p16.details.get("index_integrity_verified"): failures.append({"phase": 16, "required_evidence": "canonical robust ingestion, durable READY state, validated index, independent gold recall >= 0.8"})
     for number, expected in ((12, "structured_runtime_failure_fingerprint"), (13, "graph_causal_hypothesis")):
         details = results.get(number).details if results.get(number) else {}
         if details.get("evidence_level") != expected: failures.append({"phase": number, "required_evidence_level": expected, "actual": details.get("evidence_level")})
