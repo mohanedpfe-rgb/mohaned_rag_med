@@ -39,15 +39,16 @@ def _decorator_name(node: ast.AST) -> str:
     return ""
 
 
-def _functions(path: Path) -> tuple[int, int, int, list[str], list[str]]:
+def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[str]]:
     try:
         source_text = path.read_text(encoding="utf-8")
         tree = ast.parse(source_text, filename=str(path))
     except (OSError, SyntaxError):
-        return 0, 0, 0, [], []
+        return 0, 0, 0, [], [], []
     total = high_level = integration = 0
     invalid_names: list[str] = []
     missing_marks: list[str] = []
+    soft_status_assertions: list[str] = []
     is_high_level_file = "high_level" in {p.lower() for p in path.parts}
     is_integration_path = "/integration/" in str(path).replace("\\", "/")
     for node in ast.walk(tree):
@@ -61,11 +62,23 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str]]:
             high_level += 1
             if not marked_high_level:
                 missing_marks.append(f"{path}:{node.name}")
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                if _decorator_name(child.func) not in {"assert_status"} and not (
+                    isinstance(child.func, ast.Name) and child.func.id == "assert_status"
+                ):
+                    continue
+                if not child.args:
+                    continue
+                expected = child.args[1] if len(child.args) > 1 else None
+                if isinstance(expected, (ast.Set, ast.List, ast.Tuple)) and len(expected.elts) != 1:
+                    soft_status_assertions.append(f"{path}:{node.name}: assert_status accepts {len(expected.elts)} statuses")
         if marked_integration or is_integration_path:
             integration += 1
         if not TEST_NAME_PATTERN.match(node.name):
             invalid_names.append(f"{path}:{node.name}")
-    return total, high_level, integration, invalid_names, missing_marks
+    return total, high_level, integration, invalid_names, missing_marks, soft_status_assertions
 
 
 def _gold_contract(root: Path) -> dict[str, object]:
@@ -110,15 +123,16 @@ def inspect(root: Path) -> dict[str, object]:
     total = high_level = integration = files = 0
     invalid_names: list[str] = []
     missing_marks: list[str] = []
+    soft_status_assertions: list[str] = []
     phase_function_counts = {phase: 0 for phase in EXPECTED_HIGH_LEVEL_PHASES}
     missing_phases: list[str] = []
     unexpected_phase_dirs: list[str] = []
 
     for path in tests.rglob("test_*.py"):
         files += 1
-        a, b, c, bad_names, bad_marks = _functions(path)
+        a, b, c, bad_names, bad_marks, soft_status = _functions(path)
         total += a; high_level += b; integration += c
-        invalid_names.extend(bad_names); missing_marks.extend(bad_marks)
+        invalid_names.extend(bad_names); missing_marks.extend(bad_marks); soft_status_assertions.extend(soft_status)
         try:
             relative = path.relative_to(high_level_root)
         except ValueError:
@@ -151,19 +165,22 @@ def inspect(root: Path) -> dict[str, object]:
         "unexpected_high_level_phase_directories": unexpected_phase_dirs,
         "invalid_test_names": sorted(invalid_names),
         "missing_high_level_marks": sorted(missing_marks),
+        "soft_status_assertions": sorted(soft_status_assertions),
         "meets_total_500": total >= MIN_TOTAL_TEST_FUNCTIONS,
         "meets_integration_150": effective_integration >= MIN_INTEGRATION_TEST_FUNCTIONS,
         "meets_high_level_floor": high_level >= MIN_HIGH_LEVEL_TEST_FUNCTIONS,
         "meets_13_phase_plan": not missing_phases and not unexpected_phase_dirs,
         "meets_test_naming_contract": not invalid_names,
         "meets_high_level_marker_contract": not missing_marks,
+        "meets_exact_status_contract": not soft_status_assertions,
         "gold_set": gold,
         "meets_gold_contract": bool(gold["ready"]),
     }
     result["ready"] = bool(
         result["meets_total_500"] and result["meets_integration_150"] and result["meets_high_level_floor"]
         and result["meets_13_phase_plan"] and result["meets_test_naming_contract"]
-        and result["meets_high_level_marker_contract"] and result["meets_gold_contract"]
+        and result["meets_high_level_marker_contract"] and result["meets_exact_status_contract"]
+        and result["meets_gold_contract"]
     )
     return result
 
