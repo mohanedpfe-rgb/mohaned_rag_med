@@ -1,16 +1,19 @@
-"""Production-facing entry point for the unified 17-phase test diagnostics.
-
-This module supplies the phase-specific scheduling policy that keeps every phase
-bounded and meaningful. It deliberately reuses the core implementation in
-``deep_diagnostics`` while preventing empty-marker phases from accidentally
-executing the entire repository.
-"""
+"""Authoritative entry point for the unified 17-phase RAG diagnostic system."""
 from __future__ import annotations
 
 from dataclasses import replace
 from typing import Iterable
 
 from . import deep_diagnostics as core
+from .advanced_phases import (
+    cross_layer_invariants,
+    golden_benchmark,
+    information_loss,
+    metamorphic,
+    mutation_detection,
+    performance,
+    resources,
+)
 
 
 PHASES = tuple(
@@ -22,7 +25,29 @@ PHASES = tuple(
 
 
 class UnifiedDiagnosticEngine(core.DiagnosticEngine):
-    """Dependency-aware engine with safe, bounded execution for all 17 phases."""
+    """Dependency-aware engine with bounded, project-aware execution for every phase."""
+
+    def _blocked(self, spec: core.PhaseSpec) -> core.PhaseResult | None:
+        missing = [dep for dep in spec.dependencies if dep not in self.results]
+        failed = [dep for dep in spec.dependencies if self.results.get(dep) and self.results[dep].status == "FAIL"]
+        if not missing and not failed:
+            return None
+        blockers = sorted(set(missing + failed))
+        result = core.PhaseResult(
+            spec.number,
+            spec.key,
+            spec.name,
+            status="BLOCKED",
+            blocked_by=blockers,
+            started_at=core.time.time(),
+        )
+        reason = "missing prerequisite phase results" if missing else "upstream prerequisite failed"
+        result.failures.append({
+            "location": f"phase:{blockers[0]}",
+            "exception": "DependencyBlocked",
+            "message": f"{reason}; downstream execution would mostly create non-diagnostic symptoms",
+        })
+        return result
 
     def _execute(self, spec: core.PhaseSpec) -> core.PhaseResult:
         blocked = self._blocked(spec)
@@ -32,36 +57,36 @@ class UnifiedDiagnosticEngine(core.DiagnosticEngine):
             return self._phase1(spec)
         if spec.number == 2:
             return core._fast_health(spec)
-        if spec.number in {3, 4, 7, 9, 10, 14, 16}:
-            timeout = {
-                3: 90,
-                4: 150,
-                7: 240,
-                9: 240,
-                10: 300,
-                14: 180,
-                16: 420,
-            }[spec.number]
+        if spec.number in {3, 4, 7, 9, 10}:
+            timeout = {3: 90, 4: 150, 7: 240, 9: 240, 10: 300}[spec.number]
             return core._pytest_phase(spec, timeout=int(timeout * self.timeout_scale), maxfail=8)
         if spec.number == 5:
-            return core._static_contracts(spec)
+            return cross_layer_invariants(spec)
         if spec.number == 6:
-            return core._information_loss(spec)
+            return information_loss(spec)
         if spec.number == 8:
-            return core._metamorphic(spec)
+            return metamorphic(spec)
         if spec.number == 11:
-            return core._mutation_probe(spec)
+            return mutation_detection(spec)
+        if spec.number == 12:
+            return self._phase_analysis(spec, "fingerprinting")
+        if spec.number == 13:
+            return self._phase_analysis(spec, "cascade")
+        if spec.number == 14:
+            return performance(spec)
         if spec.number == 15:
-            return core._resource_probe(spec)
-        if spec.number in {12, 13, 17}:
-            return self._phase_analysis(spec, {12: "fingerprinting", 13: "cascade", 17: "certification"}[spec.number])
+            return resources(spec)
+        if spec.number == 16:
+            return golden_benchmark(spec)
+        if spec.number == 17:
+            return self._phase_analysis(spec, "certification")
         raise RuntimeError(f"unimplemented diagnostic phase: {spec.number}")
 
     def run(self, phases: Iterable[int] | None = None) -> core.DiagnosticReport:
         started = core.time.time()
         wanted = set(phases or range(1, 18))
         if self.mode == "fast":
-            wanted &= {1, 2, 3, 4, 5, 12, 13, 17}
+            wanted &= {1, 2, 3, 4, 5, 6, 12, 13, 17}
         elif self.mode == "deep":
             wanted &= set(range(1, 18))
         original = core.PHASES
