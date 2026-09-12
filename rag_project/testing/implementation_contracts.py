@@ -19,9 +19,9 @@ class PhaseOwnership:
 EXPECTED_OWNERS = (
     PhaseOwnership(1, "architecture_map", "UnifiedDiagnosticEngine._phase1", "rag_project.testing.runner", "runtime_dispatch"),
     PhaseOwnership(2, "fast_health", "deep_diagnostics._fast_health", "rag_project.testing.deep_diagnostics", "runtime_dispatch"),
-    PhaseOwnership(3, "diagnostic_chain", "diagnostic_chain", "rag_project.testing.advanced_phases", "runtime_dispatch"),
-    PhaseOwnership(4, "contract_triangulation", "contract_triangulation", "rag_project.testing.advanced_phases", "runtime_dispatch"),
-    PhaseOwnership(5, "cross_layer_invariants", "cross_layer_invariants", "rag_project.testing.advanced_phases", "runtime_dispatch"),
+    PhaseOwnership(3, "diagnostic_chain", "strict_diagnostic_chain", "rag_project.testing.strict_foundation_phases", "runtime_binding"),
+    PhaseOwnership(4, "contract_triangulation", "strict_contract_triangulation", "rag_project.testing.strict_foundation_phases", "runtime_binding"),
+    PhaseOwnership(5, "cross_layer_invariants", "strict_cross_layer_invariants", "rag_project.testing.strict_foundation_phases", "runtime_binding"),
     PhaseOwnership(6, "information_loss", "strict_information_loss", "rag_project.testing.strict_information_loss", "runtime_binding"),
     PhaseOwnership(7, "adversarial_documents", "phase7_production_pdf_lab", "rag_project.testing.production_document_probes", "runtime_dispatch"),
     PhaseOwnership(8, "metamorphic", "run_full_metamorphic_suite", "rag_project.testing.full_metamorphic_probes", "runtime_binding"),
@@ -46,8 +46,7 @@ def _module(value: Any) -> str:
 
 
 def _source_dispatch_numbers(runner: Any) -> set[int]:
-    source = inspect.getsource(runner.UnifiedDiagnosticEngine._execute)
-    tree = ast.parse(source)
+    tree = ast.parse(inspect.getsource(runner.UnifiedDiagnosticEngine._execute))
     numbers: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "number" and len(node.comparators) == 1:
@@ -70,77 +69,27 @@ def validate_runtime_ownership() -> dict[str, Any]:
     from rag_project.testing.production_retrieval_probes import phase9_independent_retrieval
     from rag_project.testing.strict_runtime_contracts import strict_resource_stability
     from rag_project.testing.strict_information_loss import strict_information_loss
-    from rag_project.testing.advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain
+    from rag_project.testing.strict_foundation_phases import strict_diagnostic_chain, strict_contract_triangulation, strict_cross_layer_invariants
 
-    globals_map = runner.UnifiedDiagnosticEngine._execute.__globals__
-    resolved = {
-        1: (runner.UnifiedDiagnosticEngine._execute, "self-dispatch"),
-        2: (deep_diagnostics._fast_health, "deep_diagnostics binding"),
-        3: (globals_map.get("diagnostic_chain"), "global binding"),
-        4: (globals_map.get("contract_triangulation"), "global binding"),
-        5: (globals_map.get("cross_layer_invariants"), "global binding"),
-        6: (globals_map.get("information_loss"), "global binding"),
-        7: (globals_map.get("phase7_production_pdf_lab"), "global binding"),
-        8: (globals_map.get("metamorphic"), "global binding"),
-        9: (globals_map.get("phase9_independent_retrieval"), "global binding"),
-        10: (globals_map.get("phase10_canonical_answer_engine"), "global binding"),
-        11: (globals_map.get("_hardened_mutation_phase"), "global binding"),
-        12: (globals_map.get("phase12_stable_fingerprinting"), "global binding"),
-        13: (globals_map.get("phase13_known_causal_graph"), "global binding"),
-        14: (globals_map.get("phase14_production_benchmark"), "global binding"),
-        15: (globals_map.get("phase15_resource_stability"), "global binding"),
-        16: (globals_map.get("phase16_production_ingestion_benchmark"), "global binding"),
-        17: (globals_map.get("phase17_strict_completion"), "global binding"),
-    }
-    expected_callables = {
-        2: strict_fast_health,
-        3: diagnostic_chain,
-        4: contract_triangulation,
-        5: cross_layer_invariants,
-        6: strict_information_loss,
-        7: phase7_production_pdf_lab,
-        8: run_full_metamorphic_suite,
-        9: phase9_independent_retrieval,
-        10: phase10_canonical_answer_engine,
-        11: run_full_mutation_suite,
-        12: phase12_stable_fingerprinting,
-        13: phase13_known_causal_graph,
-        14: phase14_production_benchmark,
-        15: strict_resource_stability,
-        16: phase16_production_ingestion_benchmark,
-    }
-    failures: list[dict[str, Any]] = []
-    phase_numbers = [phase.number for phase in runner.PHASES]
-    if phase_numbers != list(range(1, 18)) or len(set(phase_numbers)) != 17:
-        failures.append({"reason": "phase registry is not exactly 1..17", "actual": phase_numbers})
-    try:
-        dispatch_numbers = _source_dispatch_numbers(runner)
-    except (OSError, TypeError, IndentationError, SyntaxError) as exc:
-        dispatch_numbers = set()
-        failures.append({"reason": "unable to statically inspect UnifiedDiagnosticEngine._execute", "exception": type(exc).__name__})
-    if not set(range(1, 18)).issubset(dispatch_numbers):
-        failures.append({"reason": "runner dispatch source does not expose every phase number", "missing": sorted(set(range(1, 18)) - dispatch_numbers)})
-
-    rows = []
+    g = runner.UnifiedDiagnosticEngine._execute.__globals__
+    resolved = {1:(runner.UnifiedDiagnosticEngine._execute,"self-dispatch"),2:(deep_diagnostics._fast_health,"deep_diagnostics binding"),3:(g.get("diagnostic_chain"),"global binding"),4:(g.get("contract_triangulation"),"global binding"),5:(g.get("cross_layer_invariants"),"global binding"),6:(g.get("information_loss"),"global binding"),7:(g.get("phase7_production_pdf_lab"),"global binding"),8:(g.get("metamorphic"),"global binding"),9:(g.get("phase9_independent_retrieval"),"global binding"),10:(g.get("phase10_canonical_answer_engine"),"global binding"),11:(g.get("_hardened_mutation_phase"),"global binding"),12:(g.get("phase12_stable_fingerprinting"),"global binding"),13:(g.get("phase13_known_causal_graph"),"global binding"),14:(g.get("phase14_production_benchmark"),"global binding"),15:(g.get("phase15_resource_stability"),"global binding"),16:(g.get("phase16_production_ingestion_benchmark"),"global binding"),17:(g.get("phase17_strict_completion"),"global binding")}
+    expected = {2:strict_fast_health,3:strict_diagnostic_chain,4:strict_contract_triangulation,5:strict_cross_layer_invariants,6:strict_information_loss,7:phase7_production_pdf_lab,8:run_full_metamorphic_suite,9:phase9_independent_retrieval,10:phase10_canonical_answer_engine,11:run_full_mutation_suite,12:phase12_stable_fingerprinting,13:phase13_known_causal_graph,14:phase14_production_benchmark,15:strict_resource_stability,16:phase16_production_ingestion_benchmark}
+    failures=[]; phase_numbers=[p.number for p in runner.PHASES]
+    if phase_numbers != list(range(1,18)) or len(set(phase_numbers)) != 17: failures.append({"reason":"phase registry is not exactly 1..17","actual":phase_numbers})
+    try: dispatch_numbers=_source_dispatch_numbers(runner)
+    except Exception as exc: dispatch_numbers=set(); failures.append({"reason":"unable to statically inspect runner dispatch","exception":type(exc).__name__})
+    missing=set(range(1,18))-dispatch_numbers
+    if missing: failures.append({"reason":"runner dispatch source missing phase numbers","missing":sorted(missing)})
+    rows=[]
     for owner in EXPECTED_OWNERS:
-        value, binding_kind = resolved[owner.number]
-        row = {"phase": owner.number, "key": owner.key, "expected_symbol": owner.authoritative_symbol, "actual_qualname": _qualname(value) if value is not None else None, "actual_module": _module(value) if value is not None else None, "binding_kind": binding_kind, "expected_module": owner.module, "status": "PASS"}
-        if value is None:
-            row["status"] = "FAIL"
-            failures.append({"phase": owner.number, "reason": "authoritative callable is missing", "expected": owner.authoritative_symbol})
-        elif owner.number in expected_callables and value is not expected_callables[owner.number]:
-            row["status"] = "FAIL"
-            failures.append({"phase": owner.number, "reason": "runner is bound to a different callable than the declared authoritative implementation", "expected_qualname": _qualname(expected_callables[owner.number]), "actual_qualname": _qualname(value)})
+        value,kind=resolved[owner.number]; row={"phase":owner.number,"key":owner.key,"expected_symbol":owner.authoritative_symbol,"actual_qualname":_qualname(value) if value is not None else None,"actual_module":_module(value) if value is not None else None,"binding_kind":kind,"expected_module":owner.module,"status":"PASS"}
+        if value is None: row["status"]="FAIL"; failures.append({"phase":owner.number,"reason":"authoritative callable is missing","expected":owner.authoritative_symbol})
+        elif owner.number in expected and value is not expected[owner.number]: row["status"]="FAIL"; failures.append({"phase":owner.number,"reason":"incorrect runtime authoritative callable","expected_qualname":_qualname(expected[owner.number]),"actual_qualname":_qualname(value)})
         rows.append(row)
-
-    p17 = resolved[17][0]
-    if p17 is None or not getattr(p17, "_provenance_wrapped", False):
-        failures.append({"phase": 17, "reason": "certification callable is not provenance wrapped"})
-    else:
-        rows[-1]["provenance_wrapped"] = True
-
-    hardened_ok = all(resolved[number][0] is expected_callables[number] for number in expected_callables)
-    return {"contract_version": "17-phase-implementation-ownership-v1", "phase_count": 17, "phase_numbers": phase_numbers, "dispatch_numbers": sorted(dispatch_numbers), "expected_dispatch_numbers": list(range(1, 18)), "hardened_runtime_bindings_verified": hardened_ok, "ownership_rows": rows, "failures": failures, "pass": not failures}
+    p17=resolved[17][0]
+    if p17 is None or not getattr(p17,"_provenance_wrapped",False): failures.append({"phase":17,"reason":"certification callable is not provenance wrapped"})
+    else: rows[-1]["provenance_wrapped"]=True
+    return {"contract_version":"17-phase-implementation-ownership-v2","phase_count":17,"phase_numbers":phase_numbers,"dispatch_numbers":sorted(dispatch_numbers),"expected_dispatch_numbers":list(range(1,18)),"hardened_runtime_bindings_verified":all(resolved[n][0] is expected[n] for n in expected),"ownership_rows":rows,"failures":failures,"pass":not failures}
 
 
-__all__ = ["EXPECTED_OWNERS", "PhaseOwnership", "validate_runtime_ownership"]
+__all__=["EXPECTED_OWNERS","PhaseOwnership","validate_runtime_ownership"]
