@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from tests.high_level.helpers import (
@@ -13,8 +16,15 @@ from tests.high_level.helpers import (
 )
 
 
+def pytest_generate_tests(metafunc):
+    if "gold_case" not in metafunc.fixturenames:
+        return
+    root = Path(__file__).resolve().parents[1] / "support" / "gold_sets" / "core.jsonl"
+    cases = [json.loads(line) for line in root.read_text(encoding="utf-8").splitlines() if line.strip()]
+    metafunc.parametrize("gold_case", cases, ids=[str(case["id"]) for case in cases])
+
+
 @pytest.mark.high_level
-@pytest.mark.parametrize("gold_case", lambda gold_questions: gold_questions, indirect=True)
 def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, fake_ollama_fast, gold_case):
     case = gold_case
     expected_status = str(case["expected_status"]).upper()
@@ -22,7 +32,6 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     must_contain = [str(value).casefold() for value in case.get("must_contain", [])]
     must_not_contain = [str(value).casefold() for value in case.get("must_not_contain", [])]
 
-    # The spy is the only generation backend in the deterministic gold suite.
     terms = [str(value) for value in case.get("must_contain", [])]
     fake_ollama_fast.response = (
         "The indexed evidence supports these facts: "
@@ -34,7 +43,6 @@ def test_gold_case__matches_exact_status_path_content_and_latency(clean_system, 
     result = clean_system.answer(case["question"])
 
     assert_exact_status(result, expected_status)
-
     if expected_path == "NO_GENERATION_PATH":
         assert not result.get("generation_path"), result
     else:
