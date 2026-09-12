@@ -4,7 +4,14 @@ import pytest
 
 from rag_project.ingestion import versioned_ingestor
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_document_ready, assert_exact_status
+from tests.high_level.helpers import (
+    assert_citations_valid,
+    assert_document_ready,
+    assert_exact_path,
+    assert_exact_status,
+    assert_grounded,
+    assert_pipeline_authority,
+)
 
 
 @pytest.mark.high_level
@@ -67,6 +74,10 @@ def test_ingestion__changed_content_publishes_new_version_and_supersedes_old(cle
 
     result = clean_system.answer("What does VERSION_TWO_NEW_MARKER state?")
     assert_exact_status(result, "SUCCESS")
+    assert_exact_path(result, "PATH_A_EXTRACTIVE")
+    assert_citations_valid(result)
+    assert_grounded(result)
+    assert_pipeline_authority(result)
     hit_document_ids = {str(getattr(hit, "doc_id", "")) for hit in result.get("hits") or []}
     assert new_document_id in hit_document_ids
     assert old_document_id not in hit_document_ids
@@ -109,6 +120,10 @@ def test_ingestion__replacement_retirement_failure_rolls_back_to_last_known_good
 
     answer = clean_system.answer("What does VERSION_ONE_ROLLBACK_MARKER state?")
     assert_exact_status(answer, "SUCCESS")
+    assert_exact_path(answer, "PATH_A_EXTRACTIVE")
+    assert_citations_valid(answer)
+    assert_grounded(answer)
+    assert_pipeline_authority(answer)
     hit_document_ids = {str(getattr(hit, "doc_id", "")) for hit in answer.get("hits") or []}
     assert old_document_id in hit_document_ids
     assert replacement_document_id not in hit_document_ids
