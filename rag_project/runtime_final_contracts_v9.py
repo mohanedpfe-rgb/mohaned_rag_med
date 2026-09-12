@@ -3,6 +3,51 @@ from __future__ import annotations
 _INSTALLED = False
 
 
+def _install_canonical_god_mode_contract() -> None:
+    """Restore the public enhancer boundary after legacy runtime adapters.
+
+    V8 installs a compatibility wrapper, but later runtime layers may reload or
+    replace ``god_mode_100.enhance_result``.  The final installer is therefore
+    the authoritative boundary: it must leave a four-argument callable in
+    place for existing production/test callers.
+    """
+    import rag_project.intelligence.god_mode_100 as module
+
+    def enhance_result(system, question, base_result=None, metadata_filter=None):
+        if isinstance(base_result, dict):
+            base = dict(base_result)
+            complete = getattr(module, "complete_phases", None)
+            if callable(complete):
+                try:
+                    completed = complete(system, question, base, metadata_filter)
+                    if isinstance(completed, dict):
+                        base = completed
+                except Exception:
+                    pass
+            enhancer = getattr(module, "_diagnostic_enhance", None)
+            if callable(enhancer):
+                return enhancer(system, question, base, metadata_filter)
+            return base
+
+        # Backward-compatible three-argument call shape:
+        # enhance_result(system, question, metadata_filter)
+        effective_filter = base_result if base_result is not None else metadata_filter
+        canonical = getattr(module, "enhanced_god_answer", None)
+        if callable(canonical):
+            return canonical(system, question, effective_filter)
+
+        return {
+            "status": "ERROR",
+            "answer": "",
+            "citations": [],
+            "hits": [],
+            "pipeline_authority": "rag_project.intelligence.top_level_pipeline.complete_phases",
+        }
+
+    enhance_result._runtime_v9 = True
+    module.enhance_result = enhance_result
+
+
 def _safe_retire(system, document_id: str, requested_version: str) -> None:
     """Retire only versions proven stale; never delete the current content hash."""
     from pathlib import Path
@@ -81,4 +126,5 @@ def install() -> None:
     import rag_project.runtime_storage_contract_fix as storage_fix
     storage_fix._retire = _safe_retire
     test_embedding_guard()
+    _install_canonical_god_mode_contract()
     _INSTALLED = True
