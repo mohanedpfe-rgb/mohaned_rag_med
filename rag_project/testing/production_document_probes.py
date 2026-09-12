@@ -1,34 +1,41 @@
 from __future__ import annotations
 
-import io
 import os
+import struct
 import tempfile
 import time
+import zlib
 from pathlib import Path
 from typing import Any
 
 import fitz
-from PIL import Image, ImageDraw, ImageFont
 
 from rag_project.parsing.pdf_extractor import PDFExtractor
 from rag_project.testing.advanced_phases import _result
 from rag_project.testing.deep_diagnostics import PhaseResult
 
 
-def _png_with_text(text: str, width: int = 1200, height: int = 900) -> bytes:
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 54)
-    except Exception:
-        font = ImageFont.load_default()
-    draw.text((70, 90), text, fill="black", font=font)
-    buffer = io.BytesIO(); image.save(buffer, format="PNG"); return buffer.getvalue()
+def _png_bytes(width: int = 1200, height: int = 900) -> bytes:
+    rows: list[bytes] = []
+    for y in range(height):
+        row = bytearray([0])
+        for x in range(width):
+            inside = 70 <= x < width - 70 and 90 <= y < 780
+            value = 0 if inside and (y < 180 or (x % 17 == 0 and y < 420)) else 255
+            row.extend((value, value, value))
+        rows.append(bytes(row))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    signature = b"\x89PNG\r\n\x1a\n"
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return signature + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"".join(rows), level=6)) + chunk(b"IEND", b"")
 
 
 def _write_scanned_fixture(path: Path) -> None:
     document = fitz.open(); page = document.new_page(width=595, height=842)
-    page.insert_image(fitz.Rect(40, 50, 555, 790), stream=_png_with_text("HbA1c 6.5 percent\nDiabetes mellitus diagnosis"))
+    page.insert_image(fitz.Rect(40, 50, 555, 790), stream=_png_bytes())
     document.save(path); document.close()
 
 
