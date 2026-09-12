@@ -26,8 +26,8 @@ def test_unsupported_question__does_not_invent_evidence(clean_system):
 
 
 @pytest.mark.high_level
-def test_weak_generation__unsupported_llm_claims_are_blocked_and_answer_abstains(clean_system, fake_ollama_fast):
-    """Retrieved evidence must not be enough to let an unconstrained model invent facts."""
+def test_weak_generation__unsupported_llm_claims_are_blocked_and_verified_fallback_survives(clean_system, fake_ollama_fast):
+    """A bad synthesis must never leak hallucinated medical claims into the final answer."""
     fake_ollama_fast.response = (
         "Diabetes mellitus is caused by a fictional X-factor and is always cured by one specific drug. [S1]"
     )
@@ -37,13 +37,20 @@ def test_weak_generation__unsupported_llm_claims_are_blocked_and_answer_abstains
         "Explain the mechanism and management implications of diabetes mellitus using the indexed evidence."
     )
 
-    assert_status(result, {"GENERATION_ABSTAIN", "NOT_SUPPORTED", "ANSWER_UNAVAILABLE"})
-    assert fake_ollama_fast.calls, "a hard supported query must attempt constrained synthesis before failing closed"
-    assert not result.get("citations"), result
-    verification = result.get("verification") or {}
-    assert verification.get("allow") is False or str(result.get("status") or "").upper() != "SUCCESS"
-    assert_abstained(result)
-    assert "fictional x-factor" not in str(result.get("answer") or "").casefold()
+    assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS", "GENERATION_ABSTAIN"})
+    assert fake_ollama_fast.calls, "a hard supported query must attempt constrained synthesis"
+    answer = str(result.get("answer") or "").casefold()
+    assert "fictional x-factor" not in answer
+    assert "always cured by one specific drug" not in answer
+
+    status = str(result.get("status") or "").upper()
+    if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+        assert result.get("generation_path") in {"PATH_A_VERIFIED_FALLBACK", "PATH_HYBRID_FALLBACK"}, result
+        assert result.get("citations"), result
+        assert_grounded(result)
+        assert_citations_valid(result)
+    else:
+        assert_abstained(result)
 
 
 @pytest.mark.high_level
