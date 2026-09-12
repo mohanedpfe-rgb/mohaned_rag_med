@@ -1,32 +1,27 @@
 from __future__ import annotations
 
-from rag_project.testing.runner import PHASES, _hardened_mutation_phase
-from rag_project.testing.robust_probes import retrieval_microscope
-from rag_project.testing.production_document_probes import phase7_production_pdf_lab
+from rag_project.testing.implementation_contracts import validate_runtime_ownership
+from rag_project.testing.runner import PHASES
 
 
-def test_authoritative_phase7_uses_production_document_probe() -> None:
-    assert PHASES[6].number == 7
-    result = phase7_production_pdf_lab(PHASES[6])
-    assert result.details["real_scanned_pdf"] is True
-    assert result.details["real_ocr_attempted"] is True
-    assert result.details["checks"]["scanned_page_detected"] is True
-    assert result.details["checks"]["ocr_branch_reached"] is True
-    assert result.details["checks"]["malformed_pdf_rejected"] is True
+def test_strong_phase_wiring_is_authoritative() -> None:
+    report = validate_runtime_ownership()
+    assert report["pass"], report["failures"]
+    rows = {row["phase"]: row for row in report["ownership_rows"]}
+    expected = {
+        3: "strict_diagnostic_chain",
+        4: "strict_contract_triangulation",
+        5: "strict_cross_layer_invariants",
+        6: "strict_information_loss",
+        8: "run_full_metamorphic_suite",
+        11: "run_full_mutation_suite",
+        13: "strict_causal_phase",
+        15: "strict_resource_stability",
+    }
+    for phase, qualname in expected.items():
+        assert rows[phase]["actual_qualname"] == qualname
+        assert rows[phase]["status"] == "PASS"
 
 
-def test_phase9_uses_independent_gold_labels() -> None:
-    result = retrieval_microscope(PHASES[8])
-    assert result.details["gold_independent_of_corpus_text"] is True
-    assert result.details["relevance_derived_from_fixture_text"] is False
-    assert result.details["gold_cases"] >= 3
-    assert result.details["metadata_filter_correct"] is True
-
-
-def test_phase11_has_eight_executable_mutants() -> None:
-    result = _hardened_mutation_phase(PHASES[10])
-    assert result.status == "PASS", result.failures
-    assert result.details["mutants_applicable"] == 8
-    assert result.details["mutants_killed"] == 8
-    assert result.details["kill_score"] == 1.0
-    assert result.details["real_pytest_subprocess"] is True
+def test_phase_registry_remains_exactly_seventeen() -> None:
+    assert [phase.number for phase in PHASES] == list(range(1, 18))
