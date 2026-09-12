@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from rag_project.ingestion import versioned_ingestor
 from tests.high_level.conftest import write_minimal_pdf
 from tests.high_level.helpers import assert_document_ready, assert_status
 
@@ -69,3 +70,45 @@ def test_ingestion__changed_content_publishes_new_version_and_supersedes_old(cle
     hit_document_ids = {str(getattr(hit, "doc_id", "")) for hit in result.get("hits") or []}
     assert new_document_id in hit_document_ids
     assert old_document_id not in hit_document_ids
+
+
+@pytest.mark.high_level
+def test_ingestion__replacement_retirement_failure_rolls_back_to_last_known_good(monkeypatch, clean_system, tmp_path):
+    path = tmp_path / "versioned_retirement_failure.pdf"
+    write_minimal_pdf(path, ["VERSION_ONE_ROLLBACK_MARKER: last known good evidence."])
+    first = clean_system.ingest_file(path)
+    assert_status(first, {"READY"})
+    old_document_id = str(first.get("document_id") or first.get("id") or "")
+    assert old_document_id
+
+    processed_path = clean_system.settings.processed_dir / path.name
+    write_minimal_pdf(processed_path, ["VERSION_TWO_ABORTED_MARKER: should never become published evidence."])
+
+    def fail_retirement(*args, **kwargs):
+        raise RuntimeError("forced retirement failure")
+
+    monkeypatch.setattr(versioned_ingestor, "_retire_previous_version", fail_retirement)
+
+    result = clean_system.ingest_file(processed_path)
+    assert str(result.get("status") or "").upper() == "FAILED"
+    assert result.get("versioned_replacement") is True
+    assert result.get("previous_document_id") == old_document_id
+
+    old_record = clean_system.state_store.get_document(old_document_id)
+    assert old_record is not None
+    assert str(old_record.get("status") or "").upper() == "READY"
+    assert str(old_record.get("index_state") or "").upper() == "READY"
+
+    replacement_document_id = str(result.get("document_id") or "")
+    assert replacement_document_id
+    replacement_record = clean_system.state_store.get_document(replacement_document_id)
+    assert replacement_record is not None
+    assert str(replacement_record.get("status") or "").upper() == "FAILED_INDEXING"
+    assert str(replacement_record.get("index_state") or "").upper() == "FAILED"
+    assert clean_system.state_store.get_pages(replacement_document_id) == []
+
+    answer = clean_system.answer("What does VERSION_ONE_ROLLBACK_MARKER state?")
+    assert str(answer.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
+    hit_document_ids = {str(getattr(hit, "doc_id", "")) for hit in answer.get("hits") or []}
+    assert old_document_id in hit_document_ids
+    assert replacement_document_id not in hit_document_ids
