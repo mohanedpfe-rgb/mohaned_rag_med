@@ -17,12 +17,30 @@ def test_resilience__llm_failure_degrades_to_grounded_fallback_without_crashing(
         "Explain the mechanism and management of diabetes mellitus using the indexed evidence."
     )
 
-    assert str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "GENERATION_ABSTAIN", "ANSWER_UNAVAILABLE", "NOT_SUPPORTED"}
+    status = str(result.get("status") or "").upper()
+    assert status in {"SUCCESS_WITH_WARNINGS", "ANSWER_UNAVAILABLE", "NOT_SUPPORTED"}
     assert "Traceback" not in str(result.get("answer") or "")
-    if str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+
+    recovery = result.get("recovery") or {}
+    assert recovery.get("attempted") is True
+    assert recovery.get("pipeline_error") == "RuntimeError"
+
+    # A production outage must not silently turn into an untraceable success.
+    # Successful recovery is allowed only when the fallback is explicitly
+    # grounded and visible; otherwise the system must fail closed.
+    if status == "SUCCESS_WITH_WARNINGS":
+        assert recovery.get("grounded_extractive_fallback") is True
+        assert recovery.get("verification") in {
+            "exact_extractive_provenance",
+            "semantic_claim_verification",
+        }
         assert result.get("hits")
         assert result.get("citations")
-        assert result.get("verification", {}).get("allow") is True
+        assert result.get("grounding", {}).get("allow") is True
+        assert result.get("phase_implementation", {}).get("degraded_to_recovery") is True
+        assert result.get("query_trace", {}).get("generation", {}).get("status") == "extractive"
+    else:
+        assert result.get("citations") == []
 
 
 @pytest.mark.high_level
