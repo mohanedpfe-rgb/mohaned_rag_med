@@ -29,7 +29,6 @@ def _build_pdf(objects: list[bytes], root_object: int = 1) -> bytes:
 
 
 def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
-    """Create a small valid text PDF using only the Python standard library."""
     objects: list[bytes] = []
     page_refs: list[int] = []
     font_obj = 3
@@ -52,10 +51,7 @@ def write_minimal_pdf(path: Path, pages: list[str]) -> Path:
 
 
 def write_scanned_pdf(path: Path, pages: int = 1) -> Path:
-    """Create a genuine image-only PDF fixture with no extractable text."""
-    objects: list[bytes] = [
-        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-    ]
+    objects: list[bytes] = [b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"]
     page_refs: list[int] = []
     next_obj = 3
     for _ in range(max(1, pages)):
@@ -63,15 +59,9 @@ def write_scanned_pdf(path: Path, pages: int = 1) -> Path:
         image_obj = next_obj + 1
         content_obj = next_obj + 2
         next_obj += 3
-        raw = b"\xff"  # 1x1 white grayscale sample; image-only by construction.
-        objects.append(
-            f"{pages_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im{image_obj} {image_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode()
-        )
-        objects.append(
-            f"{image_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {len(raw)} >>\nstream\n".encode()
-            + raw
-            + b"\nendstream\nendobj\n"
-        )
+        raw = b"\xff"
+        objects.append(f"{pages_obj} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im{image_obj} {image_obj} 0 R >> >> /Contents {content_obj} 0 R >>\nendobj\n".encode())
+        objects.append(f"{image_obj} 0 obj\n<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {len(raw)} >>\nstream\n".encode() + raw + b"\nendstream\nendobj\n")
         stream = f"q 612 0 0 792 0 0 cm /Im{image_obj} Do Q".encode()
         objects.append(f"{content_obj} 0 obj\n<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream\nendobj\n")
         page_refs.append(pages_obj)
@@ -82,8 +72,6 @@ def write_scanned_pdf(path: Path, pages: int = 1) -> Path:
 
 
 def write_empty_pdf(path: Path) -> Path:
-    """Create a valid empty-page PDF for low-content resilience tests."""
-    page_obj = 3
     objects = [
         b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
         b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
@@ -94,7 +82,6 @@ def write_empty_pdf(path: Path) -> Path:
 
 
 def write_large_pdf(path: Path, pages: int = 100) -> Path:
-    """Create a deterministic 100+ page text fixture without external tools."""
     return write_minimal_pdf(path, [f"Controlled large-document page {i}: clinical evidence marker." for i in range(1, pages + 1)])
 
 
@@ -148,7 +135,8 @@ def ready_document(tmp_path: Path):
     path = tmp_path / "clean_diabetes_en.pdf"
     return write_minimal_pdf(path, [
         "Diabetes mellitus is a chronic metabolic disorder characterized by hyperglycemia. HbA1c is used to assess glycemic control.",
-        "Metformin is commonly used for type 2 diabetes. Dose statements must preserve exact numbers and units from source evidence.",
+        "Metformin is commonly used for type 2 diabetes. The controlled treatment dose in this fixture is 500 mg twice daily.",
+        "Table 1: HbA1c target 7%. Figure 1: glycemic control trend. Numeric evidence marker: 500 mg.",
     ])
 
 
