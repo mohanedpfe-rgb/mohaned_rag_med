@@ -22,13 +22,16 @@ def test_production_contracts__single_answer_authority_is_executed_exactly(clean
 
 
 @pytest.mark.high_level
-def test_production_contracts__runtime_contract_has_one_composition_root_and_no_answer_monkey_patch():
-    from rag_project.application import runtime_contract
+def test_production_contracts__runtime_contract_has_one_composition_root_and_one_answer_authority():
+    from rag_project.application import ACTIVE_ANSWER_PIPELINE_AUTHORITY, runtime_contract
 
     contract = runtime_contract()
     assert contract["composition_root"] == "rag_project.application.create_rag_system"
     assert contract["canonical_service"] == "rag_project.app.production_rag.ProductionRAGSystem"
     assert contract["answer_pipeline"] == "med_evidence_pro"
+    assert contract["answer_pipeline_authority"] == ACTIVE_ANSWER_PIPELINE_AUTHORITY
+    assert contract["answer_pipeline_execution"] == ACTIVE_ANSWER_PIPELINE_AUTHORITY
+    assert contract["active_answer_pipeline_authority"] == ACTIVE_ANSWER_PIPELINE_AUTHORITY
     assert contract["answer_monkey_patch"] is False
     assert contract["final_answer_verification"]
     assert contract["atomic_ingestion_publication"] is True
