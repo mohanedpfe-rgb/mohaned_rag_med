@@ -64,7 +64,6 @@ def _install_ui_guards():
     if getattr(bookrag_ui, "_bookrag_ui_guards_installed", False):
         return
     save = bookrag_ui.save_pdf
-    start = bookrag_ui.start_ingestion
     health = bookrag_ui.ollama_health
     ask = bookrag_ui.ask_page
     evidence_row = getattr(bookrag_ui, "_evidence_row", None)
