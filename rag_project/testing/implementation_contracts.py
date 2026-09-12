@@ -1,9 +1,4 @@
-"""Explicit implementation ownership and runtime wiring contract for the 17-phase doctor.
-
-This module deliberately does not execute any diagnostic phase itself. It verifies that the
-runner exposes exactly one authoritative dispatch for each phase and that hardened runtime
-bindings are the ones actually reachable when the package is imported.
-"""
+"""Explicit implementation ownership and runtime wiring contract for the 17-phase doctor."""
 from __future__ import annotations
 
 import ast
@@ -27,7 +22,7 @@ EXPECTED_OWNERS = (
     PhaseOwnership(3, "diagnostic_chain", "diagnostic_chain", "rag_project.testing.advanced_phases", "runtime_dispatch"),
     PhaseOwnership(4, "contract_triangulation", "contract_triangulation", "rag_project.testing.advanced_phases", "runtime_dispatch"),
     PhaseOwnership(5, "cross_layer_invariants", "cross_layer_invariants", "rag_project.testing.advanced_phases", "runtime_dispatch"),
-    PhaseOwnership(6, "information_loss", "information_loss", "rag_project.testing.advanced_phases", "runtime_dispatch"),
+    PhaseOwnership(6, "information_loss", "strict_information_loss", "rag_project.testing.strict_information_loss", "runtime_binding"),
     PhaseOwnership(7, "adversarial_documents", "phase7_production_pdf_lab", "rag_project.testing.production_document_probes", "runtime_dispatch"),
     PhaseOwnership(8, "metamorphic", "run_full_metamorphic_suite", "rag_project.testing.full_metamorphic_probes", "runtime_binding"),
     PhaseOwnership(9, "retrieval_microscope", "phase9_independent_retrieval", "rag_project.testing.production_retrieval_probes", "runtime_dispatch"),
@@ -55,21 +50,15 @@ def _source_dispatch_numbers(runner: Any) -> set[int]:
     tree = ast.parse(source)
     numbers: set[int] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Compare):
-            continue
-        if not (isinstance(node.left, ast.Attribute) and node.left.attr == "number"):
-            continue
-        if len(node.comparators) != 1:
-            continue
-        literal = node.comparators[0]
-        if isinstance(literal, ast.Constant) and isinstance(literal.value, int):
-            numbers.add(literal.value)
+        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "number" and len(node.comparators) == 1:
+            literal = node.comparators[0]
+            if isinstance(literal, ast.Constant) and isinstance(literal.value, int):
+                numbers.add(literal.value)
     return numbers
 
 
 def validate_runtime_ownership() -> dict[str, Any]:
-    from rag_project.testing import runner
-    from rag_project.testing import deep_diagnostics
+    from rag_project.testing import runner, deep_diagnostics
     from rag_project.testing.architecture_contracts import strict_fast_health
     from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
     from rag_project.testing.full_mutation_probes import run_full_mutation_suite
@@ -80,7 +69,8 @@ def validate_runtime_ownership() -> dict[str, Any]:
     from rag_project.testing.production_path_probes import phase16_production_ingestion_benchmark
     from rag_project.testing.production_retrieval_probes import phase9_independent_retrieval
     from rag_project.testing.strict_runtime_contracts import strict_resource_stability
-    from rag_project.testing.advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain, information_loss
+    from rag_project.testing.strict_information_loss import strict_information_loss
+    from rag_project.testing.advanced_phases import contract_triangulation, cross_layer_invariants, diagnostic_chain
 
     globals_map = runner.UnifiedDiagnosticEngine._execute.__globals__
     resolved = {
@@ -107,7 +97,7 @@ def validate_runtime_ownership() -> dict[str, Any]:
         3: diagnostic_chain,
         4: contract_triangulation,
         5: cross_layer_invariants,
-        6: information_loss,
+        6: strict_information_loss,
         7: phase7_production_pdf_lab,
         8: run_full_metamorphic_suite,
         9: phase9_independent_retrieval,
@@ -121,32 +111,20 @@ def validate_runtime_ownership() -> dict[str, Any]:
     }
     failures: list[dict[str, Any]] = []
     phase_numbers = [phase.number for phase in runner.PHASES]
-    if phase_numbers != list(range(1, 18)):
+    if phase_numbers != list(range(1, 18)) or len(set(phase_numbers)) != 17:
         failures.append({"reason": "phase registry is not exactly 1..17", "actual": phase_numbers})
-    if len(set(phase_numbers)) != 17:
-        failures.append({"reason": "phase registry contains duplicates"})
     try:
         dispatch_numbers = _source_dispatch_numbers(runner)
     except (OSError, TypeError, IndentationError, SyntaxError) as exc:
         dispatch_numbers = set()
         failures.append({"reason": "unable to statically inspect UnifiedDiagnosticEngine._execute", "exception": type(exc).__name__})
-    expected_dispatch_numbers = set(range(1, 18))
-    if not expected_dispatch_numbers.issubset(dispatch_numbers):
-        failures.append({"reason": "runner dispatch source does not expose every phase number", "missing": sorted(expected_dispatch_numbers - dispatch_numbers)})
+    if not set(range(1, 18)).issubset(dispatch_numbers):
+        failures.append({"reason": "runner dispatch source does not expose every phase number", "missing": sorted(set(range(1, 18)) - dispatch_numbers)})
 
     rows = []
     for owner in EXPECTED_OWNERS:
         value, binding_kind = resolved[owner.number]
-        row = {
-            "phase": owner.number,
-            "key": owner.key,
-            "expected_symbol": owner.authoritative_symbol,
-            "actual_qualname": _qualname(value) if value is not None else None,
-            "actual_module": _module(value) if value is not None else None,
-            "binding_kind": binding_kind,
-            "expected_module": owner.module,
-            "status": "PASS",
-        }
+        row = {"phase": owner.number, "key": owner.key, "expected_symbol": owner.authoritative_symbol, "actual_qualname": _qualname(value) if value is not None else None, "actual_module": _module(value) if value is not None else None, "binding_kind": binding_kind, "expected_module": owner.module, "status": "PASS"}
         if value is None:
             row["status"] = "FAIL"
             failures.append({"phase": owner.number, "reason": "authoritative callable is missing", "expected": owner.authoritative_symbol})
@@ -162,17 +140,7 @@ def validate_runtime_ownership() -> dict[str, Any]:
         rows[-1]["provenance_wrapped"] = True
 
     hardened_ok = all(resolved[number][0] is expected_callables[number] for number in expected_callables)
-    return {
-        "contract_version": "17-phase-implementation-ownership-v1",
-        "phase_count": 17,
-        "phase_numbers": phase_numbers,
-        "dispatch_numbers": sorted(dispatch_numbers),
-        "expected_dispatch_numbers": sorted(expected_dispatch_numbers),
-        "hardened_runtime_bindings_verified": hardened_ok,
-        "ownership_rows": rows,
-        "failures": failures,
-        "pass": not failures,
-    }
+    return {"contract_version": "17-phase-implementation-ownership-v1", "phase_count": 17, "phase_numbers": phase_numbers, "dispatch_numbers": sorted(dispatch_numbers), "expected_dispatch_numbers": list(range(1, 18)), "hardened_runtime_bindings_verified": hardened_ok, "ownership_rows": rows, "failures": failures, "pass": not failures}
 
 
 __all__ = ["EXPECTED_OWNERS", "PhaseOwnership", "validate_runtime_ownership"]
