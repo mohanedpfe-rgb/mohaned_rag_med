@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from rag_project.intelligence.evidence_guard import verify_claims
 from rag_project.intelligence.med_evidence_pro import AnswerCascade, EvidenceClaim, RouteMetadata
 from rag_project.runtime_functionality_deep_fix import (
     _citation_complete_without_shared_state,
@@ -137,3 +138,21 @@ def test_numeric_verifier_clears_mismatch_when_all_values_are_equivalent():
     wrapped = _wrap_numeric_verifier(lambda self, answer, hits, route, compiled: original_result)
     result = wrapped(SimpleNamespace(), "Use 1000 mg and 0.5 g.", [hit], route, {})
     assert result["numeric_mismatch"] is False and result["allow"] is True
+
+
+def test_numeric_claim_must_match_the_cited_source_not_another_source():
+    answer = "The dose is 500 mg. [S1]"
+    evidence = ["The dose is 250 mg.", "The dose is 500 mg."]
+    checks = verify_claims(answer, evidence, ["S1", "S2"])
+    assert len(checks) == 1
+    assert checks[0].status == "NUMERIC_MISMATCH"
+    assert checks[0].numeric_mismatch is True
+
+
+def test_numeric_claim_passes_when_the_cited_source_contains_an_equivalent_unit():
+    answer = "The dose is 1000 mg. [S1]"
+    evidence = ["The dose is 1 g.", "The dose is 500 mg."]
+    checks = verify_claims(answer, evidence, ["S1", "S2"])
+    assert len(checks) == 1
+    assert checks[0].status == "SUPPORTED"
+    assert checks[0].numeric_mismatch is False
