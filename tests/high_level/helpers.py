@@ -46,8 +46,13 @@ def assert_exact_path(result: dict[str, Any], expected: str) -> None:
 
 
 def assert_pipeline_authority(result: dict[str, Any]) -> None:
-    authority = str(result.get("pipeline_authority") or result.get("implementation_authority") or "")
-    assert authority == "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine", authority
+    from rag_project.application import ACTIVE_ANSWER_PIPELINE_AUTHORITY
+
+    expected = str(ACTIVE_ANSWER_PIPELINE_AUTHORITY)
+    reported = str(result.get("pipeline_authority") or "")
+    implementation = str(result.get("implementation_authority") or "")
+    assert reported == expected, f"pipeline authority diverged: expected {expected!r}, got {reported!r}"
+    assert implementation == expected, f"implementation authority diverged: expected {expected!r}, got {implementation!r}"
 
 
 def _citation_markers(result: dict[str, Any]) -> list[str]:
