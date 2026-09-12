@@ -5,7 +5,7 @@ import hashlib
 import pytest
 
 from tests.high_level.conftest import write_minimal_pdf
-from tests.high_level.helpers import assert_document_ready, assert_status
+from tests.high_level.helpers import assert_document_ready
 
 
 @pytest.mark.high_level
