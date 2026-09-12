@@ -12,11 +12,15 @@ from tests.high_level.helpers import (
 
 
 @pytest.mark.high_level
-def test_simple_fact__completes_within_five_seconds_and_reports_trace_latency(clean_system):
+def test_simple_fact__completes_within_five_seconds_and_reports_trace_latency(clean_system, fake_ollama_fast):
+    clean_system.llm = fake_ollama_fast
     result, wall_clock_seconds = timed_call(clean_system.answer, "What is diabetes mellitus?")
 
     assert_status(result, {"SUCCESS", "SUCCESS_WITH_WARNINGS"})
     assert str(result.get("answer") or "").strip()
+    assert result.get("generation_path") == "PATH_A_EXTRACTIVE", result
+    assert (result.get("generation_meta") or {}).get("attempted") is False
+    assert fake_ollama_fast.calls == []
     assert_latency_under(result, 5.0)
 
     reported_ms = float(result.get("latency_ms") or (result.get("query_trace") or {}).get("timings_ms", {}).get("total"))
@@ -26,6 +30,8 @@ def test_simple_fact__completes_within_five_seconds_and_reports_trace_latency(cl
 
     assert_citations_valid(result)
     assert_grounded(result)
+    assert result.get("canonical_pipeline_executed") is True
+    assert result.get("evidence_first") is True
 
 
 @pytest.mark.high_level
