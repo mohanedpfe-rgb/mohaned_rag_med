@@ -1,11 +1,12 @@
 """Authoritative Phase 16 production ingestion benchmark boundary."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from rag_project.testing.deep_diagnostics import PhaseResult
-from rag_project.testing import production_path_probes as canonical
+import rag_project.testing.production_path_probes as canonical
 
 ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "support" / "gold_sets" / "phase16_production_corpus.jsonl"
@@ -20,7 +21,6 @@ def _load(path: Path) -> list[dict[str, Any]]:
     for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not raw.strip():
             continue
-        import json
         try:
             value = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -75,7 +75,8 @@ def validate_phase16_benchmark_data(corpus: list[dict[str, Any]], gold: list[dic
     return {
         "dataset_id": DATASET_ID,
         "gold_integrity_contract_verified": True,
-        "gold_references_resolved": referenced == referenced & corpus_set,
+        "gold_references_resolved": referenced.issubset(corpus_set),
+        "referenced_document_count": len(referenced),
         "independent_from_phase9_dataset": True,
         "corpus_document_count": len(corpus),
         "gold_case_count": len(gold),
@@ -83,8 +84,10 @@ def validate_phase16_benchmark_data(corpus: list[dict[str, Any]], gold: list[dic
 
 
 def strict_phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
-    result = PhaseResult(phase.number, phase.key, phase.name, status="FAIL")
+    result = PhaseResult(phase.number, phase.key, phase.name, status="FAIL", started_at=0.0)
     try:
+        import time
+        result.started_at = time.time()
         corpus = _load(CORPUS)
         gold = _load(GOLD)
         contract = validate_phase16_benchmark_data(corpus, gold)
@@ -109,6 +112,7 @@ def strict_phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
         result.details = {
             "evidence_level": "strict_phase16_production_benchmark_contract",
             "gold_integrity_contract_verified": False,
+            "gold_references_resolved": False,
             "independent_from_phase9_dataset": False,
             "dataset_id": DATASET_ID,
         }
