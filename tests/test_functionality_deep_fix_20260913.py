@@ -178,6 +178,22 @@ def test_invalid_citation_marker_is_not_ignored_when_a_valid_marker_is_present()
     assert checks[0].status == "UNSUPPORTED"
 
 
+def test_contradiction_negation_is_sentence_local():
+    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
+    assert wrapped(
+        "Metformin is recommended for type 2 diabetes.",
+        ["No evidence of renal harm was found. Metformin is recommended for type 2 diabetes."],
+    ) is False
+
+
+def test_contradiction_guard_preserves_direct_context_conflict():
+    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
+    assert wrapped(
+        "Metformin is recommended during pregnancy.",
+        ["Metformin is not recommended during pregnancy."],
+    ) is True
+
+
 def test_runtime_success_contract_accepts_canonical_nested_grounding():
     result = {
         "status": "SUCCESS",
@@ -214,19 +230,3 @@ def test_numeric_contradiction_is_kept_for_same_fact_context():
     result = wrapped(claims)
     assert result["has_contradiction"] is True
     assert result["conflicts"][0]["left"] == ["5 mg"] and result["conflicts"][0]["right"] == ["10 mg"]
-
-
-def test_contradiction_guard_ignores_condition_specific_conflict_with_unrelated_context():
-    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
-    assert wrapped(
-        "Metformin is recommended.",
-        ["Metformin is not recommended during pregnancy."],
-    ) is False
-
-
-def test_contradiction_guard_preserves_direct_context_conflict():
-    wrapped = _wrap_contradiction_detection(lambda claim, blocks: True)
-    assert wrapped(
-        "Metformin is recommended during pregnancy.",
-        ["Metformin is not recommended during pregnancy."],
-    ) is True
