@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -11,6 +12,10 @@ from rag_project.utils.text_utils import keyword_overlap_score, meaningful_token
 
 
 _VALID_MODES = {"hybrid", "lexical", "vector"}
+_NUMERIC_PATTERN = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)\b",
+    re.I,
+)
 
 
 def _as_sequence(value: Any) -> list[Any]:
@@ -101,6 +106,35 @@ class HybridRetriever:
 
     def _vector(self, query_embedding: Any, candidate_count: int, where: Dict[str, Any] | None) -> Any:
         return self.vector_store.search(query_embedding, candidate_count, where)
+
+    @staticmethod
+    def _intent_bonus(query: str, hit: RetrievalHit) -> float:
+        lowered_query = str(query or "").casefold()
+        lowered_text = str(hit.text or "").casefold()
+        query_tokens = {token for token in meaningful_tokens(lowered_query) if len(token) >= 3}
+        token_hits = sum(1 for token in query_tokens if token in lowered_text)
+        bonus = min(0.18, 0.025 * token_hits)
+
+        asks_table = any(term in lowered_query for term in ("table", "tableau", "rows", "columns", "جدول"))
+        is_table = (
+            "table" in lowered_text
+            or str((hit.metadata or {}).get("representation_type", "")).casefold() == "table"
+            or bool((hit.metadata or {}).get("table_id"))
+        )
+        if asks_table and is_table:
+            bonus += 0.40
+
+        asks_numeric = bool(
+            _NUMERIC_PATTERN.search(lowered_query)
+            or any(term in lowered_query for term in ("dose", "dosage", "how much", "how many", "value", "range", "جرعة", "قيمة"))
+        )
+        if asks_numeric and _NUMERIC_PATTERN.search(lowered_text):
+            bonus += 0.28
+
+        for phrase in ("hba1c", "glycemic control", "metformin", "diabetes mellitus"):
+            if phrase in lowered_query and phrase in lowered_text:
+                bonus += 0.12
+        return min(0.90, bonus)
 
     def retrieve(self, query: str, top_k: int = 6, where: Dict[str, Any] | None = None) -> List[RetrievalHit]:
         original_query = (query or "").strip()
@@ -242,6 +276,12 @@ class HybridRetriever:
                 hit.score = hit.vector_score or keyword_overlap_score(original_query, hit.text)
             else:
                 hit.score = hit.lexical_score
+            hit.metadata = dict(hit.metadata or {})
+            hit.metadata["ranking_score_base"] = round(hit.score, 6)
+            bonus = self._intent_bonus(original_query, hit)
+            hit.score = min(2.0, hit.score + bonus)
+            hit.metadata["intent_rerank_bonus"] = round(bonus, 6)
+            hit.metadata["ranking_score"] = round(hit.score, 6)
             hits.append(hit)
 
         return sorted(hits, key=lambda item: item.score, reverse=True)[:top_k]
