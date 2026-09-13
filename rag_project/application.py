@@ -1,31 +1,23 @@
 from __future__ import annotations
 
-import re
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
+from rag_project.application_answer_service import ACTIVE_ANSWER_PIPELINE_AUTHORITY, answer
+from rag_project.application_answer_service import install_runtime_adapters
 from rag_project.configuration.settings import Settings
+from rag_project.canonical_runtime import ANSWER_AUTHORITY
+from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install, install_application_contracts
 from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepared
 from rag_project.security import harden_system
-from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
-from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
-from rag_project.canonical_runtime import ANSWER_AUTHORITY
-from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
-from rag_project.intelligence.entity_coverage import score_entity_coverage
-from rag_project.intelligence.production_ops_strict import OperationsStore
-from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
-from rag_project.intelligence.semantic_cache import install as install_semantic_cache
-from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
-from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 from rag_project.app import production_rag as production_rag_module
 
 _FACTORY_LOCK = threading.RLock()
 ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
-ACTIVE_ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
 _ORIGINAL_PRODUCTION_RAG_SYSTEM = production_rag_module.ProductionRAGSystem
 
 
@@ -39,112 +31,10 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
     return resolved
 
 
-def _detect_answer_language(question: str) -> tuple[str, float]:
-    text = str(question or "")
-    arabic = len(re.findall(r"[\u0600-\u06ff]", text))
-    latin = len(re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]", text))
-    french_markers = sum(1 for marker in ("qu'est-ce", "quelle", "quel", "quels", "quelles", "diabète", "traitement", "mécanisme", "contre-indication", "fréquence", "définition") if re.search(rf"\b{re.escape(marker)}\b", text.casefold()))
-    if arabic > 0 and arabic >= max(2, latin):
-        return "ar", round(min(1.0, 0.75 + arabic / max(20, len(text)) * 0.25), 3)
-    if french_markers:
-        return "fr", min(1.0, 0.80 + 0.05 * min(french_markers, 4))
-    if latin:
-        return "en", 0.90
-    return "unknown", 0.10
-
-
-def _normalize_public_answer_path(result: dict[str, Any]) -> dict[str, Any]:
-    """Collapse internal hybrid fallback into the single verified public recovery path."""
-    path = str(result.get("generation_path") or "").upper()
-    if path != "PATH_HYBRID_FALLBACK":
-        return result
-    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
-    if str(result.get("status") or "").upper() not in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
-        return result
-    if verification.get("allow") is not True:
-        return result
-    normalized = dict(result)
-    normalized["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
-    metadata = dict(normalized.get("generation_meta") or {})
-    metadata.update({"attempted": True, "fallback": True, "recovered": True, "internal_path": "PATH_HYBRID_FALLBACK"})
-    normalized["generation_meta"] = metadata
-    recovery = dict(normalized.get("recovery") or {})
-    recovery.update({"attempted": True, "grounded_extractive_fallback": True, "verification": "semantic_claim_verification"})
-    normalized["recovery"] = recovery
-    phases = dict(normalized.get("phase_implementation") or {})
-    phases["degraded_to_recovery"] = True
-    normalized["phase_implementation"] = phases
-    trace = dict(normalized.get("query_trace") or {})
-    generation = dict(trace.get("generation") or {})
-    generation.update({"path": "PATH_A_VERIFIED_FALLBACK", "internal_path": "PATH_HYBRID_FALLBACK"})
-    trace["generation"] = generation
-    normalized["query_trace"] = trace
-    return normalized
-
-
-def _med_evidence_answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-    started = time.perf_counter()
-    result = execute_with_runtime_safety(system, str(question or "").strip(), lambda: enhanced_med_evidence_answer(system, question, metadata_filter))
-    result = _normalize_public_answer_path(result)
-    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
-    retrieval = result.get("retrieval") if isinstance(result.get("retrieval"), dict) else {}
-    route = dict(result.get("route") or {}) if isinstance(result.get("route"), dict) else {}
-    evidence = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
-    contradiction = verification.get("contradiction") if isinstance(verification.get("contradiction"), dict) else {}
-    detected_language, language_confidence = _detect_answer_language(question)
-    route.setdefault("language", detected_language); route.setdefault("language_confidence", language_confidence); result["route"] = route
-    result.setdefault("query_analysis", route); result.setdefault("phase_plan", route)
-    result.setdefault("rewritten_question", str(question or "").strip())
-    result.setdefault("answer_plan", {"selected_path": result.get("generation_path", "")})
-    result.setdefault("retrieval_quality", {"tier": retrieval.get("tier"), "candidate_count": retrieval.get("candidate_count", len(result.get("hits") or [])), "final_hits": len(result.get("hits") or []), "early_exit": retrieval.get("early_exit", False), "cache_hit": retrieval.get("cache_hit", False), "evidence_coverage": verification.get("supported_ratio", 0.0), "self_corrections": 0})
-    result.setdefault("grounding", verification.get("grounding", {})); result.setdefault("final_verification", verification.get("final_answer", {}))
-    result.setdefault("claims", result.get("provenance", {}).get("claims", [])); result.setdefault("contradiction_report", contradiction)
-    if "entity_coverage" not in result:
-        result["entity_coverage"] = score_entity_coverage(str(question or ""), list(result.get("hits") or []), route.get("entities", []) or [])
-    result.setdefault("confidence_calibration", {})
-    result.setdefault("adaptive_retrieval_budget", {"tier": retrieval.get("tier"), "cache_hit": retrieval.get("cache_hit", False)})
-    recovery = result.get("recovery") if isinstance(result.get("recovery"), dict) else {}
-    if str(result.get("status") or "").upper() == "SUCCESS_WITH_WARNINGS" and recovery.get("grounded_extractive_fallback"):
-        result["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
-        generation_meta = dict(result.get("generation_meta") or {})
-        generation_meta.update({"attempted": True, "fallback": True, "recovered": True})
-        result["generation_meta"] = generation_meta
-    canonical_executed = not bool(recovery.get("attempted"))
-    result["canonical_pipeline_executed"] = bool(result.get("canonical_pipeline_executed", canonical_executed))
-    result["evidence_first"] = bool(result.get("evidence_first", bool(result.get("hits"))))
-    result["document_aware"] = bool(result.get("document_aware", bool(metadata_filter) or bool((result.get("retrieval") or {}).get("document_aware"))))
-    result["god_mode_100"] = bool(result.get("god_mode_100", False))
-    result["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY; result["implementation_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
-    phases = result.get("phases") if isinstance(result.get("phases"), dict) else {}
-    result["phase_implementation"] = {
-        "phase_0_safety_gate": {"status": phases.get("phase_0_safety_gate", "complete")},
-        "phase_1_query_understanding": {"status": phases.get("phase_1_query_router", "complete"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_2_retrieval_precision": {"status": phases.get("phase_2a_multi_tier_retrieval", retrieval.get("tier", "complete")), "hits": len(result.get("hits") or []), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_3_two_stage_generation": {"status": phases.get("phase_4_answer_cascade", result.get("generation_path", "complete")), "generation_path": result.get("generation_path"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", False), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", False))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
-        "degraded_to_recovery": bool(recovery.get("grounded_extractive_fallback")),
-    }
-    trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
-    trace["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY; trace["language"] = detected_language; trace["language_confidence"] = language_confidence
-    if result.get("generation_path"):
-        generation = dict(trace.get("generation") or {})
-        generation["path"] = result["generation_path"]
-        trace["generation"] = generation
-    result["query_trace"] = trace
-    result.setdefault("evidence_summary", {"claim_count": evidence.get("claim_count", 0)})
-    result["runtime_safety"] = {**dict(result.get("runtime_safety") or {}), "ready_evidence_enforced": True}
-    try:
-        settings = getattr(system, "settings", None); root = getattr(settings, "project_root", None)
-        if root is not None:
-            OperationsStore(root / "data" / "med_evidence_ops.sqlite3").record_result(str(result.get("query_id") or f"q-{time.time_ns()}"), str(question), result, (time.perf_counter() - started) * 1000.0)
-    except Exception:
-        pass
-    return result
-
-
 class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
-    _certified_god_answer = _med_evidence_answer
+    """Canonical application service with explicit answer and publication contracts."""
+
+    _certified_god_answer = staticmethod(answer)
 
     def ingest_file(self, pdf_path):
         result = dict(super().ingest_file(pdf_path) or {})
@@ -166,8 +56,33 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
         return normalized
 
     def health_report(self):
-        report = dict(super().health_report() or {}); pipeline = dict(report.get("pipeline") or {})
-        pipeline.update({"explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline": "med_evidence_pro", "med_evidence_pro": True, "phase_count": 8, "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True, "semantic_cache": True, "answer_cascade": True, "active_verification": True, "feedback_logging": True, "operations_store": True, "ab_testing": True, "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True, "enterprise_roles": True})
+        report = dict(super().health_report() or {})
+        pipeline = dict(report.get("pipeline") or {})
+        pipeline.update(
+            {
+                "explicit_composition": True,
+                "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+                "answer_pipeline": "med_evidence_pro",
+                "med_evidence_pro": True,
+                "phase_count": 8,
+                "safety_gate": True,
+                "multi_tier_retrieval": True,
+                "structured_knowledge": True,
+                "semantic_cache": True,
+                "answer_cascade": True,
+                "active_verification": True,
+                "feedback_logging": True,
+                "operations_store": True,
+                "ab_testing": True,
+                "retraining_manifest": True,
+                "backup_rotation": True,
+                "circuit_breaker": True,
+                "cloud_hybrid": True,
+                "cloud_opt_in": True,
+                "cloud_pii_redaction": True,
+                "enterprise_roles": True,
+            }
+        )
         report["pipeline"] = pipeline
         return report
 
@@ -181,27 +96,107 @@ def create_rag_system(settings: Settings | None = None, *, runtime_prepared: boo
             install_application_contracts()
         requested_cls = production_rag_module.ProductionRAGSystem
         service_cls = requested_cls if requested_cls is not _ORIGINAL_PRODUCTION_RAG_SYSTEM else MedEvidenceProductionRAGSystem
-        system = service_cls(_normalize_runtime_settings(settings)); system = harden_system(system)
-        if not isinstance(getattr(system, "retriever", None), ReadyOnlyRetriever):
-            system.retriever = ReadyOnlyRetriever(system.retriever)
-        install_semantic_cache(system)
-        try: system.cloud_hybrid = create_hybrid_router(CloudConfig.from_env(), getattr(system.settings, "project_root", Path.cwd()))
-        except Exception: system.cloud_hybrid = None
+        system = service_cls(_normalize_runtime_settings(settings))
+        system = harden_system(system)
+        system = install_runtime_adapters(system)
         try:
             system.startup_quality = run_quality_gate(system, repair_drift=True)
-            if not system.startup_quality.get("ready", False): system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
+            if not system.startup_quality.get("ready", False):
+                system.logger.warning(
+                    "Runtime quality gate reported a non-ready state: %s",
+                    system.startup_quality,
+                )
         except Exception as exc:
-            system.startup_quality = {"ready": False, "error": type(exc).__name__}; system.logger.exception("Runtime quality gate failed")
+            system.startup_quality = {"ready": False, "error": type(exc).__name__}
+            system.logger.exception("Runtime quality gate failed")
         return system
 
 
-def create_default_rag_system(): return create_rag_system()
+def create_default_rag_system():
+    return create_rag_system()
 
 
 def runtime_contract() -> dict[str, Any]:
     return {
-        "composition_root": "rag_project.composition.prepare_runtime -> rag_project.application.create_rag_system", "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem", "service": "MedEvidenceProductionRAGSystem", "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem", "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely", "base_ingestion_engine": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "versioned_ingestion_publication": True, "last_known_good_preservation": True, "runtime_policy": "rag_project.runtime.install", "storage_policy": "rag_project.storage.vector_store_runtime.install", "security_policy": "rag_project.security.harden_system", "quality_policy": "bounded_startup_check_with_optional_deep_audit", "configuration": "Settings.from_env", "answer_pipeline": "med_evidence_pro", "answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline_execution": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "active_answer_pipeline": "med_evidence_pro", "active_answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_monkey_patch": False, "canonical_runtime_binding": "rag_project.canonical_runtime.install", "production_contract": "rag_project.intelligence.production_contract_v2.install", "production_contract_version": PRODUCTION_CONTRACT_VERSION, "ingestion_contract": "rag_project.ingestion.ingestion_contract.install", "ingestion_contract_version": INGESTION_CONTRACT_VERSION, "final_answer_verification": "rag_project.intelligence.final_answer_contract.verify_final_answer", "entity_coverage": "rag_project.intelligence.entity_coverage.score_entity_coverage", "document_aware_routing": True, "hierarchical_retrieval": True, "query_self_correction": True, "table_aware_retrieval": True, "numeric_aware_retrieval": True, "medical_synonym_expansion": True, "contradiction_detection": True, "medical_safety_gate": True, "structured_request_context": True, "structured_evidence_bundle": True, "structured_answer_envelope": True, "confidence_breakdown": True, "request_traceability": True, "ingestion_traceability": True, "atomic_ingestion_publication": True, "post_write_index_validation": True, "ready_only_retrieval_boundary": True, "ready_only_retriever": "rag_project.retrieval.ready_only_retriever.ReadyOnlyRetriever", "runtime_cache_freshness": True, "verified_generation_recovery": True, "med_evidence_pro": True, "phase_count": 8, "answer_cascade": True, "semantic_retrieval_cache": True, "structured_knowledge_layer": True, "feedback_loop": True, "production_operations_store": True, "ab_testing": True, "retraining_pipeline": True, "backup_rotation": True, "load_benchmarking": True, "resilience_controls": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_api_key_env": "ANTHROPIC_API_KEY", "cloud_rate_limit": True, "cloud_cost_tracking": True, "cloud_audit_log": True, "cloud_pii_redaction": True, "cloud_smart_escalation": True, "enterprise_roles": True, "ehr_integration_contract": "provider-neutral optional adapter", "runtime_prepared_factory": True
+        "composition_root": "rag_project.composition.prepare_runtime -> rag_project.application.create_rag_system",
+        "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
+        "service": "MedEvidenceProductionRAGSystem",
+        "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
+        "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
+        "base_ingestion_engine": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
+        "versioned_ingestion_publication": True,
+        "last_known_good_preservation": True,
+        "runtime_policy": "rag_project.runtime.install",
+        "storage_policy": "rag_project.storage.vector_store_runtime.install",
+        "security_policy": "rag_project.security.harden_system",
+        "quality_policy": "bounded_startup_check_with_optional_deep_audit",
+        "configuration": "Settings.from_env",
+        "answer_pipeline": "med_evidence_pro",
+        "answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "answer_pipeline_execution": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "active_answer_pipeline": "med_evidence_pro",
+        "active_answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "answer_monkey_patch": False,
+        "canonical_runtime_binding": "rag_project.canonical_runtime.install",
+        "production_contract": "rag_project.intelligence.production_contract_v2.install",
+        "production_contract_version": PRODUCTION_CONTRACT_VERSION,
+        "ingestion_contract": "rag_project.ingestion.ingestion_contract.install",
+        "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
+        "final_answer_verification": "rag_project.intelligence.final_answer_contract.verify_final_answer",
+        "entity_coverage": "rag_project.intelligence.entity_coverage.score_entity_coverage",
+        "document_aware_routing": True,
+        "hierarchical_retrieval": True,
+        "query_self_correction": True,
+        "table_aware_retrieval": True,
+        "numeric_aware_retrieval": True,
+        "medical_synonym_expansion": True,
+        "contradiction_detection": True,
+        "medical_safety_gate": True,
+        "structured_request_context": True,
+        "structured_evidence_bundle": True,
+        "structured_answer_envelope": True,
+        "confidence_breakdown": True,
+        "request_traceability": True,
+        "ingestion_traceability": True,
+        "atomic_ingestion_publication": True,
+        "post_write_index_validation": True,
+        "ready_only_retrieval_boundary": True,
+        "ready_only_retriever": "rag_project.retrieval.ready_only_retriever.ReadyOnlyRetriever",
+        "runtime_cache_freshness": True,
+        "verified_generation_recovery": True,
+        "med_evidence_pro": True,
+        "phase_count": 8,
+        "answer_cascade": True,
+        "semantic_retrieval_cache": True,
+        "structured_knowledge_layer": True,
+        "feedback_loop": True,
+        "production_operations_store": True,
+        "ab_testing": True,
+        "retraining_pipeline": True,
+        "backup_rotation": True,
+        "load_benchmarking": True,
+        "resilience_controls": True,
+        "cloud_hybrid": True,
+        "cloud_opt_in": True,
+        "cloud_api_key_env": "ANTHROPIC_API_KEY",
+        "cloud_rate_limit": True,
+        "cloud_cost_tracking": True,
+        "cloud_audit_log": True,
+        "cloud_pii_redaction": True,
+        "cloud_smart_escalation": True,
+        "enterprise_roles": True,
+        "ehr_integration_contract": "provider-neutral optional adapter",
+        "runtime_prepared_factory": True,
     }
 
 
-__all__ = ["create_rag_system", "create_default_rag_system", "runtime_contract", "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION", "MedEvidenceProductionRAGSystem"]
+__all__ = [
+    "create_rag_system",
+    "create_default_rag_system",
+    "runtime_contract",
+    "ANSWER_PIPELINE_AUTHORITY",
+    "ACTIVE_ANSWER_PIPELINE_AUTHORITY",
+    "PRODUCTION_CONTRACT_VERSION",
+    "INGESTION_CONTRACT_VERSION",
+    "MedEvidenceProductionRAGSystem",
+]
