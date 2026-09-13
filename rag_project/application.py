@@ -74,31 +74,29 @@ class MedEvidenceProductionRAGSystem:
     def health_report(self) -> dict[str, Any]:
         report = dict(self.runtime.health_report() or {})
         pipeline = dict(report.get("pipeline") or {})
-        pipeline.update(
-            {
-                "explicit_composition": True,
-                "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
-                "answer_pipeline": "med_evidence_pro",
-                "med_evidence_pro": True,
-                "phase_count": 8,
-                "safety_gate": True,
-                "multi_tier_retrieval": True,
-                "structured_knowledge": True,
-                "semantic_cache": True,
-                "answer_cascade": True,
-                "active_verification": True,
-                "feedback_logging": True,
-                "operations_store": True,
-                "ab_testing": True,
-                "retraining_manifest": True,
-                "backup_rotation": True,
-                "circuit_breaker": True,
-                "cloud_hybrid": True,
-                "cloud_opt_in": True,
-                "cloud_pii_redaction": True,
-                "enterprise_roles": True,
-            }
-        )
+        pipeline.update({
+            "explicit_composition": True,
+            "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+            "answer_pipeline": "med_evidence_pro",
+            "med_evidence_pro": True,
+            "phase_count": 8,
+            "safety_gate": True,
+            "multi_tier_retrieval": True,
+            "structured_knowledge": True,
+            "semantic_cache": True,
+            "answer_cascade": True,
+            "active_verification": True,
+            "feedback_logging": True,
+            "operations_store": True,
+            "ab_testing": True,
+            "retraining_manifest": True,
+            "backup_rotation": True,
+            "circuit_breaker": True,
+            "cloud_hybrid": True,
+            "cloud_opt_in": True,
+            "cloud_pii_redaction": True,
+            "enterprise_roles": True,
+        })
         report["pipeline"] = pipeline
         return report
 
@@ -119,10 +117,7 @@ def create_rag_system(settings: Settings | None = None, *, runtime_prepared: boo
         try:
             system.startup_quality = run_quality_gate(system, repair_drift=True)
             if not system.startup_quality.get("ready", False):
-                system.logger.warning(
-                    "Runtime quality gate reported a non-ready state: %s",
-                    system.startup_quality,
-                )
+                system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
         except Exception as exc:
             system.startup_quality = {"ready": False, "error": type(exc).__name__}
             system.logger.exception("Runtime quality gate failed")
@@ -149,7 +144,7 @@ def runtime_contract() -> dict[str, Any]:
         "security_policy": "rag_project.security.harden_system",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "answer_pipeline": "med_evidence_pro",
+        "answer_pipeline": "explicit_delegation",
         "answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
         "active_answer_pipeline": "med_evidence_pro",
@@ -209,13 +204,8 @@ def runtime_contract() -> dict[str, Any]:
 
 
 __all__ = [
-    "create_rag_system",
-    "create_default_rag_system",
-    "runtime_contract",
-    "ANSWER_PIPELINE_AUTHORITY",
-    "ACTIVE_ANSWER_PIPELINE_AUTHORITY",
-    "PRODUCTION_CONTRACT_VERSION",
-    "INGESTION_CONTRACT_VERSION",
-    "MedEvidenceProductionRAGSystem",
-    "_med_evidence_answer",
+    "create_rag_system", "create_default_rag_system", "runtime_contract",
+    "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY",
+    "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION",
+    "MedEvidenceProductionRAGSystem", "_med_evidence_answer",
 ]
