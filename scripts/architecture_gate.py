@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
 APPLICATION = ROOT / "rag_project" / "application.py"
+RUNTIME = ROOT / "rag_project" / "runtime.py"
+BOOTSTRAP_STATE = ROOT / "rag_project" / "runtime_bootstrap_state.py"
 ARCHITECTURE = ROOT / "ARCHITECTURE.md"
 LOCKFILE = ROOT / "requirements.lock"
 
@@ -32,6 +34,7 @@ REQUIRED_COMPOSITION_SYMBOLS = {
     "runtime_is_prepared",
 }
 FORBIDDEN_COMPOSITION_IMPORT_PREFIXES = ("streamlit", "rag_project.app")
+FORBIDDEN_APPLICATION_IMPORTS = {"rag_project.composition"}
 FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
     "rag_project.intelligence.pipeline_integrity",
     "rag_project.intelligence.production_contract_v2",
@@ -78,7 +81,6 @@ def _has_wildcard_import(path: Path) -> bool:
 def inspect() -> dict[str, object]:
     violations: list[str] = []
 
-    # The executable entrypoint must stay a presentation/orchestration shell.
     app_lines = len(APP.read_text(encoding="utf-8").splitlines())
     if app_lines > MAX_APP_LINES:
         violations.append(f"app.py is {app_lines} lines; limit is {MAX_APP_LINES}")
@@ -86,8 +88,6 @@ def inspect() -> dict[str, object]:
     if "rag_project.application" in app_imports:
         violations.append("app.py must not own application-service imports; use the composition/UI boundary")
 
-    # The composition root may orchestrate infrastructure contracts, but must
-    # remain independent from Streamlit and presentation modules.
     composition_imports = _imports(COMPOSITION)
     bad_composition_imports = sorted(
         name
@@ -100,17 +100,20 @@ def inspect() -> dict[str, object]:
     if missing:
         violations.append(f"composition.py missing stable symbols: {missing}")
 
-    # The canonical application service must expose stable entrypoints and must
-    # not duplicate the four-contract installer ordering owned by composition.
     missing_application = sorted(REQUIRED_APPLICATION_SYMBOLS - _symbols(APPLICATION))
     if missing_application:
         violations.append(f"application.py missing stable symbols: {missing_application}")
     application_imports = _imports(APPLICATION)
+    reverse_dependency = sorted(application_imports & FORBIDDEN_APPLICATION_IMPORTS)
+    if reverse_dependency:
+        violations.append(f"application.py imports composition root: {reverse_dependency}")
+    if "rag_project.runtime" not in application_imports:
+        violations.append("application.py must consume neutral runtime policy")
+    if "rag_project.runtime_bootstrap_state" not in application_imports:
+        violations.append("application.py must consume neutral prepared-runtime state")
     duplicated_installers = sorted(application_imports & FORBIDDEN_APPLICATION_INSTALLER_MODULES)
     if duplicated_installers:
-        violations.append(f"application.py bypasses composition installer ownership: {duplicated_installers}")
-    if "rag_project.composition" not in application_imports:
-        violations.append("application.py must consume the composition boundary")
+        violations.append(f"application.py bypasses neutral installer ownership: {duplicated_installers}")
     application_source = APPLICATION.read_text(encoding="utf-8")
     if "MedEvidenceProductionRAGSystem" not in application_source:
         violations.append("application.py lost the canonical production service")
@@ -119,7 +122,15 @@ def inspect() -> dict[str, object]:
     if "runtime_is_prepared()" not in application_source:
         violations.append("application factory must honor the prepared-runtime marker")
 
-    # Lower layers must never depend on the Streamlit/presentation surface.
+    runtime_symbols = _symbols(RUNTIME)
+    if "install_application_contracts" not in runtime_symbols:
+        violations.append("runtime.py must own the neutral application-contract bootstrap")
+    if "install_application_contracts" not in _imports(COMPOSITION):
+        violations.append("composition.py must delegate contract installation to neutral runtime policy")
+    bootstrap_imports = _imports(BOOTSTRAP_STATE)
+    if any(name == "streamlit" or name.startswith("rag_project.app") for name in bootstrap_imports):
+        violations.append("runtime_bootstrap_state.py must remain presentation-independent")
+
     for layer in CORE_DIRS:
         layer_root = ROOT / "rag_project" / layer
         if not layer_root.is_dir():
@@ -134,23 +145,20 @@ def inspect() -> dict[str, object]:
             if bad:
                 violations.append(f"{path.relative_to(ROOT)} imports presentation layer: {bad}")
 
-    # Wildcard imports make dependency ownership and static analysis ambiguous.
     for path in _python_files():
         try:
             if _has_wildcard_import(path):
                 violations.append(f"{path.relative_to(ROOT)} uses a wildcard import")
         except SyntaxError:
-            # Compile errors are reported separately below with the filename.
             continue
 
-    # Documentation and deterministic dependency resolution are part of the
-    # long-lived contract, not optional project hygiene.
     architecture_text = ARCHITECTURE.read_text(encoding="utf-8")
     for marker in (
         "rag_project.composition.prepare_runtime",
         "rag_project.app.ui_security_boundary",
         "scripts/architecture_gate.py",
         "BOOKRAG_RUNTIME_PREPARED_VERSION",
+        "runtime_bootstrap_state",
         "immutable published document versions",
         "app.py",
     ):
@@ -159,8 +167,6 @@ def inspect() -> dict[str, object]:
     if not LOCKFILE.is_file() or not LOCKFILE.read_text(encoding="utf-8").strip():
         violations.append("requirements.lock must exist and be non-empty")
 
-    # Parse every project Python file here so CI catches architectural syntax
-    # regressions before pytest starts importing the application graph.
     syntax_failures: list[str] = []
     for path in _python_files():
         try:
@@ -175,7 +181,7 @@ def inspect() -> dict[str, object]:
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
         "violations": violations,
-        "contract": "architecture-gate-v2",
+        "contract": "architecture-gate-v3",
     }
 
 
