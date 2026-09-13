@@ -147,6 +147,9 @@ class ProductionRAGSystem(ResilientRAGSystem):
         self._production_feature_contract = {
             "contract_version": PRODUCTION_CONTRACT_VERSION,
             "feature_count": 44,
+            "unique_names": True,
+            "duplicates": [],
+            "unresolved": {},
             "all_resolved": True,
         }
 
