@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from rag_project.intelligence.production_contract_v2 import *  # noqa: F401,F403
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
 from rag_project.intelligence.trace_privacy import redact_sensitive_text, sanitize_trace
-from rag_project.intelligence.god_mode import GOD_MODE_FEATURES, god_mode_report
+from rag_project.intelligence.god_mode import GOD_MODE_FEATURES, report as god_mode_report
 
 
 @dataclass(frozen=True)
@@ -34,11 +34,8 @@ def resolve_target(target: str) -> Any:
     return _resolve_target(target)
 
 
-# The production registry deliberately exposes one resolvable implementation
-# target per advertised capability. Feature names remain the canonical 44-name
-# surface while target resolution is checked independently from the UI labels.
 FEATURES = tuple(
-    FeatureContract(name=str(name), target="rag_project.intelligence.god_mode.god_mode_report")
+    FeatureContract(name=str(name), target="rag_project.intelligence.god_mode.report")
     for name in GOD_MODE_FEATURES
 )
 
@@ -46,11 +43,7 @@ FEATURES = tuple(
 def validate_feature_contract() -> dict[str, Any]:
     names = tuple(feature.name for feature in FEATURES)
     duplicates = sorted({name for name in names if names.count(name) > 1})
-    unresolved = {
-        feature.name: feature.target
-        for feature in FEATURES
-        if resolve_target(feature.target) is None
-    }
+    unresolved = {feature.name: feature.target for feature in FEATURES if resolve_target(feature.target) is None}
     unique = len(names) == len(set(names))
     count_ok = len(FEATURES) == 44
     all_resolved = count_ok and unique and not duplicates and not unresolved
