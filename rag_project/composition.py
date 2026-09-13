@@ -16,6 +16,7 @@ from rag_project.intelligence.pipeline_integrity import install as install_pipel
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
 
 RUNTIME_COMPOSITION_VERSION = "2026-09-13-composition-v1"
+RUNTIME_PREPARED_ENV = "BOOKRAG_RUNTIME_PREPARED_VERSION"
 
 
 def load_local_env(project_root: Path) -> None:
@@ -87,17 +88,26 @@ def prepare_runtime(project_root: Path) -> dict[str, Any]:
     load_local_env(project_root)
     environment = normalize_runtime_environment()
     contracts = install_production_contracts()
+    os.environ[RUNTIME_PREPARED_ENV] = RUNTIME_COMPOSITION_VERSION
     return {
         "composition_version": RUNTIME_COMPOSITION_VERSION,
         "environment": environment,
         "contracts": contracts,
+        "prepared_marker": RUNTIME_PREPARED_ENV,
     }
+
+
+def runtime_is_prepared() -> bool:
+    """Return whether this process has been prepared by this exact composition contract."""
+    return os.getenv(RUNTIME_PREPARED_ENV) == RUNTIME_COMPOSITION_VERSION
 
 
 __all__ = [
     "RUNTIME_COMPOSITION_VERSION",
+    "RUNTIME_PREPARED_ENV",
     "install_production_contracts",
     "load_local_env",
     "normalize_runtime_environment",
     "prepare_runtime",
+    "runtime_is_prepared",
 ]
