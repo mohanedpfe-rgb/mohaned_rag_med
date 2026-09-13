@@ -42,6 +42,10 @@ def _install_ingestion_compatibility() -> None:
                 return original(system, source, *args, **kwargs)
             return unsafe(system, source, *args, **kwargs)
 
+        # The inner deep-contract wrapper is historically named ``wrapped``.
+        # The public callable contract must remain the stable production name.
+        wrapped.__name__ = getattr(original, "__name__", "robust_ingest_file")
+        wrapped.__qualname__ = getattr(original, "__qualname__", wrapped.__name__)
         wrapped._deep_ingestion_guard = True
         return wrapped
 
