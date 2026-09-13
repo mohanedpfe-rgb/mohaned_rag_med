@@ -269,12 +269,12 @@ class IngestionStateStore:
             )
 
     def record_page(self, extraction: Any, *, cache_reference: str | None = None) -> None:
-        """Persist a ``PageExtraction`` using the durable page checkpoint contract.
+        """Persist a PageExtraction through the durable page checkpoint API.
 
-        The PDF extraction stack historically called ``record_page(extraction, ...)``
-        while the durable store exposed the newer ``upsert_page`` API.  Keep that
-        boundary compatible by translating the extraction object into the explicit
-        page schema instead of making callers know storage details.
+        The PDF extractor still uses the historical record_page(extraction) call,
+        while the state store's canonical storage primitive is upsert_page().
+        This adapter keeps that boundary compatible without leaking SQL details
+        into the parser.
         """
         if extraction is None:
             raise ValueError("extraction must be a PageExtraction-like object")
