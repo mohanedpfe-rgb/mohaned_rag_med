@@ -145,6 +145,28 @@ def test_upload_boundary_rejects_path_components_and_non_pdf(tmp_path):
         validate_pdf_payload("ok.pdf", b"%PDF-1.7\n")
 
 
+def test_ui_upload_delegates_to_secure_pdf_validator(tmp_path, monkeypatch):
+    import rag_project.app.bookrag_ui as ui
+
+    called = []
+    monkeypatch.setattr(ui, "validate_pdf_payload", lambda name, payload: called.append((name, payload)))
+    payload = b"%PDF-1.7\nsecure-placeholder"
+    digest = hashlib.sha256(payload).hexdigest()
+    target = tmp_path / f"book_{digest[:12]}.pdf"
+    target.write_bytes(payload)
+    assert ui.save_pdf(tmp_path, "book.pdf", payload) == digest
+    assert called == [("book.pdf", payload)]
+
+
+def test_ui_upload_rejects_invalid_pdf_before_writing(tmp_path, monkeypatch):
+    import rag_project.app.bookrag_ui as ui
+
+    monkeypatch.setattr(ui, "validate_pdf_payload", lambda name, payload: (_ for _ in ()).throw(ValueError("blocked")))
+    with pytest.raises(ValueError, match="blocked"):
+        ui.save_pdf(tmp_path, "evil.pdf", b"%PDF-1.7\nnot-a-real-pdf")
+    assert not list(tmp_path.iterdir())
+
+
 def test_query_response_contains_no_internal_retrieval_or_verification_details():
     result = _public_query_result({
         "query_id": "q1",
