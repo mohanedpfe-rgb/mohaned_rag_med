@@ -144,7 +144,9 @@ class MultiTierRetriever:
         except Exception:return []
     @staticmethod
     def _confidence(hits:Sequence[RetrievalHit],entities:Sequence[str])->float:
-        if not hits:return 0.; top=max(0.,min(1.,float(hits[0].score))); diversity=len({str((h.metadata or {}).get("document_id") or h.doc_id) for h in hits[:5]})/max(1,min(5,len(hits))); text=" ".join(h.text.casefold() for h in hits[:5]); coverage=sum(1 for e in entities if _norm(e) in text)/max(1,len(entities)) if entities else 1.; high=sum(1 for h in hits[:5] if float(h.score)>=.35)/max(1,min(5,len(hits))); return min(1.,.35*top+.2*diversity+.25*coverage+.2*high)
+        if not hits:
+            return 0.
+        top=max(0.,min(1.,float(hits[0].score))); diversity=len({str((h.metadata or {}).get("document_id") or h.doc_id) for h in hits[:5]})/max(1,min(5,len(hits))); text=" ".join(h.text.casefold() for h in hits[:5]); coverage=sum(1 for e in entities if _norm(e) in text)/max(1,len(entities)) if entities else 1.; high=sum(1 for h in hits[:5] if float(h.score)>=.35)/max(1,min(5,len(hits))); return min(1.,.35*top+.2*diversity+.25*coverage+.2*high)
     @staticmethod
     def _merge(hits:Sequence[RetrievalHit],limit:int=16)->list[RetrievalHit]:
         by_key={}

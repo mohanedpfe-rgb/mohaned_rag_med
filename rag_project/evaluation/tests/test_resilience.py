@@ -6,7 +6,7 @@ from rag_project.generation.llm_client import OllamaLLMClient
 
 
 @patch("time.sleep", return_value=None)
-def test_retry_success_after_two_transient_failures(mock_sleep):
+def test_retry_success_after_two_transient_failures(_mock_sleep):
     """Monkeypatch requests.post to raise ConnectionError twice then return valid response.
     Call OllamaLLMClient.generate, assert result is the good answer and client.retries_encountered >= 2."""
     client = OllamaLLMClient(base_url="http://fake", model="fake", timeout_seconds=5)
@@ -29,7 +29,7 @@ def test_retry_success_after_two_transient_failures(mock_sleep):
 
 
 @patch("time.sleep", return_value=None)
-def test_retry_exhausted_propagates_runtime_error(mock_sleep):
+def test_retry_exhausted_propagates_runtime_error(_mock_sleep):
     """All 5 attempts fail with ConnectionError. Assert RuntimeError is raised, not silently swallowed."""
     client = OllamaLLMClient(base_url="http://fake", model="fake", timeout_seconds=5)
 

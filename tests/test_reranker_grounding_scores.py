@@ -18,7 +18,7 @@ def test_cross_encoder_logits_are_normalized_to_probability_range():
     reranker._model_attempted = True
 
     class FakeModel:
-        def predict(self, pairs, show_progress_bar=False):
+        def predict(self, pairs, _show_progress_bar=False):
             return [-9.0, 0.0, 9.0]
 
     reranker.model = FakeModel()
@@ -36,7 +36,7 @@ def test_non_finite_reranker_outputs_fail_safe_to_zero():
     reranker._model_attempted = True
 
     class FakeModel:
-        def predict(self, pairs, show_progress_bar=False):
+        def predict(self, pairs, _show_progress_bar=False):
             return [float("nan")]
 
     reranker.model = FakeModel()
@@ -52,7 +52,7 @@ def test_reranker_caps_large_candidate_sets_before_cross_encoder_inference():
     seen = {"count": 0}
 
     class FakeModel:
-        def predict(self, pairs, show_progress_bar=False):
+        def predict(self, pairs, _show_progress_bar=False):
             seen["count"] += len(pairs)
             return [0.0] * len(pairs)
 

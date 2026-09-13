@@ -362,7 +362,6 @@ class VectorStore:
     def validate_document_index(
         self, document_id: str, version_id: str | None = None
     ) -> Dict[str, Any]:
-        print(f"DEBUG VALIDATE: persist_directory={self.persist_directory}, collection_name={self.collection_name}")
         records = self.collection.get(
             where={"document_id": document_id},
             include=["metadatas", "documents", "embeddings"],
@@ -473,18 +472,6 @@ class VectorStore:
             metadatas=normalized,
             embeddings=[list(map(float, vector)) for vector in embedding_list],
         )
-        # DIAGNOSTIC: immediate read-back with ID comparison
-        first_doc_id = normalized[0].get("document_id")
-        immediate_check = self.collection.get(
-            where={"document_id": first_doc_id},
-            include=["metadatas"],
-        )
-        print(
-            f"DEBUG: Added {len(ids_list)} records. "
-            f"Searched for document_id='{first_doc_id}'. "
-            f"Immediate check found: {len(immediate_check.get('ids', []))} records"
-        )
-        print(f"DEBUG ADD: persist_directory={self.persist_directory}, collection_name={self.collection_name}")
         self._update_collection_identity(self.expected_identity)
         self._upsert_lexical_records(documents_list, normalized, ids_list)
 
