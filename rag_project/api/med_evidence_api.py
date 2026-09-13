@@ -1,14 +1,30 @@
 """HTTP adapter implementing the MedEvidence Pro API contract.
 
 The offline/Streamlit installation remains HTTP-free. When the optional FastAPI
-service is enabled, every non-public operation is authenticated and scoped,
-request bodies are bounded, input models reject unknown fields, and operational
-endpoints return only intentionally public data.
+service is enabled, operations use JWT authentication and explicit scopes,
+request bodies are bounded, input models reject unknown fields, and responses
+expose only intentionally public data.
 """
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+
+
+def _public_query_result(result: dict[str, Any]) -> dict[str, Any]:
+    confidence = result.get("confidence") if isinstance(result.get("confidence"), dict) else {}
+    trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
+    timings = trace.get("timings_ms") if isinstance(trace.get("timings_ms"), dict) else {}
+    citations = result.get("citations") if isinstance(result.get("citations"), list) else []
+    return {
+        "query_id": str(result.get("query_id") or ""),
+        "status": str(result.get("status") or ""),
+        "body": str(result.get("answer") or ""),
+        "confidence": float(confidence.get("evidence_confidence", 0.0) or 0.0),
+        "path": str(result.get("generation_path") or ""),
+        "citations": citations,
+        "latency_ms": float(timings.get("total", 0.0) or 0.0),
+    }
 
 
 def create_app(engine: Any, store: Any | None = None):
@@ -25,7 +41,7 @@ def create_app(engine: Any, store: Any | None = None):
     settings = APISettings.from_env()
     app = FastAPI(
         title="MedEvidence Pro",
-        version="2.0",
+        version="2.1",
         docs_url="/docs" if settings.environment != "production" else None,
         redoc_url="/redoc" if settings.environment != "production" else None,
         openapi_url="/openapi.json" if settings.environment != "production" else None,
@@ -72,6 +88,14 @@ def create_app(engine: Any, store: Any | None = None):
                 raise ValueError("control characters are not allowed")
             return value
 
+        @field_validator("feedback_type")
+        @classmethod
+        def feedback_type_is_allowed(cls, value: str) -> str:
+            normalized = value.lower()
+            if normalized not in {"positive", "negative", "correction"}:
+                raise ValueError("unsupported feedback_type")
+            return normalized
+
     query_scope = scoped_dependency(settings, "query")
     feedback_scope = scoped_dependency(settings, "feedback")
     ops_scope = scoped_dependency(settings, "ops")
@@ -80,28 +104,38 @@ def create_app(engine: Any, store: Any | None = None):
     async def security_error_handler(request, exc: APISecurityError):
         from fastapi.responses import JSONResponse
         rid = getattr(request.state, "request_id", "unknown")
-        return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "message": exc.public_message, "request_id": rid}, headers={"X-Request-ID": rid})
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": exc.code, "message": exc.public_message, "request_id": rid},
+            headers={"X-Request-ID": rid},
+        )
 
     @app.post("/query", response_model=dict[str, Any], dependencies=[Depends(query_scope)])
     def query(payload: QueryRequest):
-        result = engine.answer(payload.query, payload.metadata_filter)
-        return {
-            "body": str(result.get("answer", "")),
-            "confidence": result.get("confidence", {}).get("evidence_confidence", 0.0),
-            "path": str(result.get("generation_path", "")),
-            "citations": result.get("citations", []),
-            "latency_ms": result.get("query_trace", {}).get("timings_ms", {}).get("total", 0.0),
-            "metadata": {k: result.get(k) for k in ("query_id", "status", "route", "retrieval", "verification")},
-        }
+        try:
+            result = engine.answer(payload.query, payload.metadata_filter)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid query request.") from exc
+        except Exception as exc:
+            logger = getattr(engine, "logger", None)
+            if logger is not None:
+                logger.exception("API query failed")
+            raise HTTPException(status_code=500, detail="Query processing failed.") from exc
+        return _public_query_result(result)
 
     @app.post("/feedback", response_model=dict[str, str], dependencies=[Depends(feedback_scope)])
     def feedback(payload: FeedbackRequest):
         if store is None:
-            raise HTTPException(status_code=503, detail="feedback store unavailable")
+            raise HTTPException(status_code=503, detail="Feedback store unavailable.")
         try:
             store.add_feedback(payload.query_id, payload.feedback_type, payload.feedback_text)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid feedback") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid feedback.") from exc
+        except Exception as exc:
+            logger = getattr(engine, "logger", None)
+            if logger is not None:
+                logger.exception("API feedback failed")
+            raise HTTPException(status_code=500, detail="Feedback processing failed.") from exc
         return {"status": "logged"}
 
     @app.get("/health")
@@ -118,26 +152,25 @@ def create_app(engine: Any, store: Any | None = None):
     @app.get("/metrics", dependencies=[Depends(ops_scope)])
     def metrics():
         if store is None:
-            return {"accuracy_by_type": {}, "latency_percentiles": {}, "path_usage": {}, "error_rates": {}}
+            raise HTTPException(status_code=503, detail="Operations store unavailable.")
         from rag_project.intelligence.production_ops_strict import MetricsService
         return MetricsService(store).snapshot()
 
     @app.get("/alerts", dependencies=[Depends(ops_scope)])
     def alerts():
         if store is None:
-            return {"alerts": ["operations_store_unavailable"]}
+            raise HTTPException(status_code=503, detail="Operations store unavailable.")
         from rag_project.intelligence.production_ops_strict import MetricsService
         return {"alerts": MetricsService(store).alerts()}
 
     @app.get("/metrics/prometheus", dependencies=[Depends(ops_scope)])
     def prometheus_metrics():
         if store is None:
-            return Response(content="# MedEvidence Pro operations store unavailable\n", media_type="text/plain")
+            raise HTTPException(status_code=503, detail="Operations store unavailable.")
         from rag_project.intelligence.production_ops_strict import MetricsService
         from rag_project.observability.prometheus_exporter import export_metrics
         service = MetricsService(store)
-        snapshot = service.snapshot()
-        return Response(content=export_metrics(snapshot, service.alerts()), media_type="text/plain; version=0.0.4")
+        return Response(content=export_metrics(service.snapshot(), service.alerts()), media_type="text/plain; version=0.0.4")
 
     @app.get("/human-test-readiness", dependencies=[Depends(ops_scope)])
     def human_test_readiness():
