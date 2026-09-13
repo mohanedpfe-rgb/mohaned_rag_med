@@ -52,6 +52,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_functionality_scope_fix import install as functionality_scope_fix
     from rag_project.runtime_functionality_comparison_template_fix import install as functionality_comparison_template_fix
     from rag_project.runtime_functionality_numeric_range_fix import install as functionality_numeric_range_fix
+    from rag_project.runtime_functionality_final_audit_fix import install as functionality_final_audit_fix
 
     return (
         vector_store,
@@ -96,6 +97,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         functionality_scope_fix,
         functionality_comparison_template_fix,
         functionality_numeric_range_fix,
+        functionality_final_audit_fix,
     )
 
 
