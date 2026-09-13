@@ -44,20 +44,31 @@ def test_composition_module_does_not_depend_on_ui():
     assert not any(name.startswith("rag_project.app") for name in imports)
 
 
-def test_application_uses_explicit_boundaries_not_legacy_inheritance():
+def test_application_uses_explicit_boundaries_not_legacy_package():
     imports = _imports(APPLICATION)
-    answer_imports = _imports(ANSWER_SERVICE)
-    adapter_imports = _imports(LEGACY_ADAPTER)
     assert "rag_project.composition" not in imports
     assert "rag_project.runtime" in imports
     assert "rag_project.runtime_bootstrap_state" in imports
     assert "rag_project.application_answer_service" in imports
     assert "rag_project.application_legacy_adapter" in imports
     assert not any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in imports)
-    assert not any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in answer_imports)
-    assert "rag_project.app.production_rag" in adapter_imports
-    assert "LegacyProductionRAGAdapter" in LEGACY_ADAPTER.read_text(encoding="utf-8")
     assert "install_application_contracts" in RUNTIME.read_text(encoding="utf-8")
+
+
+def test_legacy_implementation_isolated_to_one_adapter():
+    adapter_imports = _imports(LEGACY_ADAPTER)
+    assert "rag_project.app.production_rag" in adapter_imports
+    for path in ROOT.rglob("*.py"):
+        if path == LEGACY_ADAPTER:
+            continue
+        imports = _imports(path)
+        assert "rag_project.app.production_rag" not in imports, path
+
+
+def test_answer_service_is_presentation_independent():
+    imports = _imports(ANSWER_SERVICE)
+    assert "streamlit" not in imports
+    assert not any(name.startswith("rag_project.app") for name in imports)
 
 
 def test_ui_security_boundary_owns_presentation_security_capture():
@@ -110,9 +121,10 @@ def test_executable_architecture_gate_is_clean():
     report = inspect_architecture_gate()
     assert report["ready"], report
     assert report["violations"] == []
+    assert report["contract"] == "architecture-gate-v6"
 
 
-def test_architecture_document_names_the_composition_boundary_and_gate():
+def test_architecture_document_names_all_application_boundaries():
     architecture = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
     assert "rag_project.composition.prepare_runtime" in architecture
     assert "rag_project.app.ui_security_boundary" in architecture
