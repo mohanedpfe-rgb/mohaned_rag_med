@@ -100,9 +100,10 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             if not validation.get("valid") or not system.state_store.is_ready_status(state.get("status")): raise RuntimeError(f"post-ingestion integrity check failed for {source_doc_id}: {validation}")
 
         retrieval_rows: list[dict[str, Any]] = []; evidence_hits = 0; evidence_term_total = 0
+        retrieval_depth = max(1, indexed_chunks)
         for case in gold:
             expected_source_ids = set(case["expected_doc_ids"]); expected_document_ids = {document_ids[key] for key in expected_source_ids if key in document_ids}
-            lexical = system.vector_store.search_lexical(case["question"], n_results=min(8, max(1, indexed_chunks))); semantic = system.vector_store.search(system.embedding_service.embed_texts([case["question"]])[0], n_results=min(8, max(1, indexed_chunks)))
+            lexical = system.vector_store.search_lexical(case["question"], n_results=retrieval_depth); semantic = system.vector_store.search(system.embedding_service.embed_texts([case["question"]])[0], n_results=retrieval_depth)
             retrieved_document_ids = _metadata_document_ids(lexical) + _metadata_document_ids(semantic)
             if not retrieved_document_ids:
                 ids = [str(value) for value in ((lexical.get("ids") or [[]])[0] + (semantic.get("ids") or [[]])[0])]; retrieved_document_ids = [document_id for document_id in document_ids.values() if any(document_id in item for item in ids)]
@@ -117,6 +118,7 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             "production_entrypoint": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "production_path_strict": True,
             "production_components": ["DocumentClassifier", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore"],
             "corpus_document_count": len(corpus), "indexed_chunk_count": indexed_chunks, "ready_state_count": ready_states, "gold_case_count": len(retrieval_rows),
+            "retrieval_depth": retrieval_depth,
             "retrieval_recall": round(recall, 3), "evidence_grounding_case_rate": round(evidence_case_rate, 3), "evidence_term_recall": round(evidence_term_recall, 3),
             "gold_labels_independent_of_corpus_text": True, "durable_state_verified": ready_states == len(corpus), "index_integrity_verified": indexed_chunks > 0, "publication_verified": True,
             "ingestion_rows": ingestion_rows, "results": retrieval_rows, "clinical_correctness_claimed": False,
