@@ -12,6 +12,7 @@ APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
 UI_SECURITY = ROOT / "rag_project" / "app" / "ui_security_boundary.py"
 APPLICATION = ROOT / "rag_project" / "application.py"
+RUNTIME = ROOT / "rag_project" / "runtime.py"
 
 
 def _imports(path: Path) -> set[str]:
@@ -41,13 +42,15 @@ def test_composition_module_does_not_depend_on_ui():
     assert not any(name.startswith("rag_project.app") for name in imports)
 
 
-def test_application_uses_composition_for_contract_ordering():
+def test_application_depends_on_neutral_runtime_not_composition():
     imports = _imports(APPLICATION)
-    assert "rag_project.composition" in imports
+    assert "rag_project.composition" not in imports
+    assert "rag_project.runtime" in imports
+    assert "rag_project.runtime_bootstrap_state" in imports
     assert "rag_project.intelligence.pipeline_integrity" not in imports
     assert "rag_project.intelligence.production_contract_v2" not in imports
     assert "rag_project.ingestion.ingestion_contract" not in imports
-    assert "rag_project.canonical_runtime" in imports
+    assert "install_application_contracts" in RUNTIME.read_text(encoding="utf-8")
 
 
 def test_ui_security_boundary_owns_presentation_security_capture():
@@ -107,5 +110,6 @@ def test_architecture_document_names_the_composition_boundary_and_gate():
     assert "rag_project.composition.prepare_runtime" in architecture
     assert "rag_project.app.ui_security_boundary" in architecture
     assert "scripts/architecture_gate.py" in architecture
+    assert "runtime_bootstrap_state" in architecture
     assert "app.py" in architecture
     assert "presentation entrypoint" in architecture.lower()
