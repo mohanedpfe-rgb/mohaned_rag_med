@@ -38,7 +38,6 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_final_contracts_v3 import install as runtime_final_contracts_v3
     from rag_project.runtime_final_contracts_v4 import install as runtime_final_contracts_v4
     from rag_project.runtime_final_contracts_v5 import install as runtime_final_contracts_v5
-    from rag_project.runtime_final_contracts_v6 import install as runtime_final_contracts_v6
     from rag_project.runtime_final_contracts_v7 import install as runtime_final_contracts_v7
     from rag_project.runtime_final_contracts_v8 import install as runtime_final_contracts_v8
     from rag_project.runtime_chroma_metadata_fix import install as chroma_metadata_fix
@@ -82,7 +81,6 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         runtime_final_contracts_v3,
         runtime_final_contracts_v4,
         runtime_final_contracts_v5,
-        runtime_final_contracts_v6,
         runtime_final_contracts_v7,
         runtime_final_contracts_v8,
         chroma_metadata_fix,
