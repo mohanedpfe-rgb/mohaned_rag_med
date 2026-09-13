@@ -308,3 +308,54 @@ def verify_claims(answer, evidence_blocks: Sequence[str], source_ids: Sequence[s
             status, reason = "UNSUPPORTED", "No meaningful evidence support."
         checks.append(ClaimCheck(claim, round(max(best, numeric_bridge), 4), status, sources, bool(num["mismatch"]), contra, reason))
     return checks
+
+
+def grounding_decision(claims: Sequence[ClaimCheck], min_supported_ratio: float = 0.70) -> dict[str, Any]:
+    """Return the fail-closed grounding decision used by answer generation paths."""
+    rows = list(claims or ())
+    blocked = [claim for claim in rows if claim.status in {"UNSUPPORTED", "WEAK", "NUMERIC_MISMATCH", "CONTRADICTED"} or claim.numeric_mismatch or claim.contradiction]
+    supported = sum(1 for claim in rows if claim.status in {"SUPPORTED", "PARTIAL"} and not claim.numeric_mismatch and not claim.contradiction)
+    ratio = supported / max(1, len(rows))
+    threshold = max(0.0, min(1.0, float(min_supported_ratio)))
+    allow = bool(rows) and not blocked and ratio >= threshold
+    return {
+        "allow": allow,
+        "checked": bool(rows),
+        "claim_count": len(rows),
+        "blocked_claims": len(blocked),
+        "supported_claims": supported,
+        "supported_ratio": round(ratio, 4),
+        "threshold": threshold,
+        "reason": "grounded" if allow else "insufficient_or_unsafe_support",
+    }
+
+
+def contradiction_report(claims: Sequence[ClaimCheck]) -> dict[str, Any]:
+    """Summarize claim-level contradictions without changing the underlying checks."""
+    rows = list(claims or ())
+    conflicts = [claim.to_dict() for claim in rows if claim.contradiction or claim.status == "CONTRADICTED"]
+    agreement = sum(1 for claim in rows if not claim.contradiction and claim.status in {"SUPPORTED", "PARTIAL"}) / max(1, len(rows))
+    return {
+        "has_contradiction": bool(conflicts),
+        "conflict_count": len(conflicts),
+        "conflicts": conflicts,
+        "agreement": round(agreement, 4),
+    }
+
+
+def evidence_confidence(*, retrieval: float, rerank: float, entailment: float, quality: float, contradiction: float = 0.0) -> float:
+    """Combine retrieval, verification and evidence quality into a bounded confidence score."""
+    score = (0.30 * float(retrieval) + 0.25 * float(rerank) + 0.25 * float(entailment) + 0.20 * float(quality)) - 0.40 * float(contradiction)
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def citation_firewall(answer: str, claims: Sequence[ClaimCheck]) -> tuple[str, bool]:
+    """Withhold claims that fail evidence verification while preserving safe claims."""
+    rows = list(claims or ())
+    unsafe = [claim for claim in rows if claim.status not in {"SUPPORTED", "PARTIAL"} or claim.numeric_mismatch or claim.contradiction]
+    if not unsafe:
+        return str(answer or ""), False
+    safe_claims = [claim.claim.strip() for claim in rows if claim not in unsafe and claim.claim.strip()]
+    if safe_claims:
+        return "\n".join(f"- {claim}" for claim in safe_claims) + "\n\n[Some claims were withheld because they could not be verified against the evidence.]", True
+    return "The requested claims were withheld because they could not be verified against the indexed evidence.", True
