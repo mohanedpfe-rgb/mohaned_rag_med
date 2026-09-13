@@ -1,0 +1,219 @@
+name: Temporary Purge Audit
+
+on:
+  push:
+    branches:
+      - purge-audit-2026-09-13
+
+jobs:
+  static-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install audit tools
+        run: python -m pip install --upgrade pip ruff vulture
+      - name: Create report directory
+        run: mkdir -p artifacts/purge-audit
+      - name: Compile all Python
+        run: python -m compileall -q rag_project app.py run_dev.py scripts tests > artifacts/purge-audit/compile.txt 2>&1
+      - name: Ruff static analysis
+        shell: bash
+        run: |
+          set +e
+          ruff check rag_project app.py run_dev.py scripts tests --output-format=full > artifacts/purge-audit/ruff.txt 2>&1
+          echo $? > artifacts/purge-audit/ruff.exit
+          true
+      - name: Vulture dead-code analysis
+        shell: bash
+        run: |
+          set +e
+          vulture rag_project app.py run_dev.py scripts tests --min-confidence 60 > artifacts/purge-audit/vulture.txt 2>&1
+          echo $? > artifacts/purge-audit/vulture.exit
+          true
+      - name: Deep repository inventory
+        shell: bash
+        run: |
+          python - <<'PY' > artifacts/purge-audit/deep_inventory.txt
+          from __future__ import annotations
+          import ast
+          import hashlib
+          import os
+          import re
+          import tokenize
+          from collections import Counter, defaultdict
+          from pathlib import Path
+          from importlib import metadata
+
+          ROOT = Path('.')
+          PY_FILES = [p for p in ROOT.rglob('*.py') if '.git' not in p.parts and '__pycache__' not in p.parts]
+          CODE_FILES = [p for p in PY_FILES if not any(x in p.parts for x in ('venv','.venv','site-packages'))]
+          SOURCE_ROOTS = [ROOT/'rag_project', ROOT/'scripts', ROOT/'tests']
+
+          def module_name(path: Path) -> str:
+              rel = path.relative_to(ROOT).with_suffix('')
+              parts = list(rel.parts)
+              if parts[-1] == '__init__':
+                  parts = parts[:-1]
+              return '.'.join(parts)
+
+          parsed = {}
+          syntax_errors = []
+          for path in CODE_FILES:
+              try:
+                  parsed[path] = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
+              except SyntaxError as exc:
+                  syntax_errors.append(f'{path}:{exc.lineno}:{exc.offset}: {exc.msg}')
+
+          print('=== INVENTORY ===')
+          print(f'python_files={len(CODE_FILES)}')
+          print(f'syntax_errors={len(syntax_errors)}')
+          for item in syntax_errors:
+              print(item)
+
+          imported_modules = Counter()
+          local_import_edges = defaultdict(set)
+          incoming = Counter()
+          definitions = []
+          name_uses = Counter()
+          import_aliases = {}
+
+          module_to_path = {module_name(p): p for p in CODE_FILES}
+          for path, tree in parsed.items():
+              owner = module_name(path)
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Name):
+                      name_uses[node.id] += 1
+                  if isinstance(node, ast.Import):
+                      for alias in node.names:
+                          imported_modules[alias.name.split('.')[0]] += 1
+                          import_aliases[alias.asname or alias.name.split('.')[0]] = alias.name
+                          if alias.name in module_to_path:
+                              local_import_edges[path].add(module_to_path[alias.name])
+                  elif isinstance(node, ast.ImportFrom):
+                      mod = node.module or ''
+                      if node.level:
+                          base = path.parent
+                          for _ in range(max(0, node.level - 1)):
+                              base = base.parent
+                          candidate = (base / (mod.replace('.', '/') if mod else '')).with_suffix('.py')
+                          candidate_pkg = base / (mod.replace('.', '/') if mod else '') / '__init__.py'
+                          for c in (candidate, candidate_pkg):
+                              if c in module_to_path.values():
+                                  local_import_edges[path].add(c)
+                      if mod:
+                          imported_modules[mod.split('.')[0]] += 1
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                      if not node.name.startswith('__'):
+                          definitions.append((path, node.name, node.lineno, type(node).__name__, isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))))
+
+          for src, targets in local_import_edges.items():
+              for target in targets:
+                  incoming[target] += 1
+
+          print('\n=== TOP-LEVEL/CLASS DEFINITIONS WITH NO STATIC NAME REFERENCE ===')
+          candidates = []
+          for path, name, lineno, kind, is_func in definitions:
+              refcount = name_uses.get(name, 0)
+              if refcount <= 1:
+                  candidates.append((path, name, lineno, kind, refcount))
+          for item in sorted(candidates, key=lambda x:(str(x[0]),x[2])):
+              print(f'{item[0]}:{item[2]} {item[3]} {item[1]} refs={item[4]}')
+          print(f'candidate_count={len(candidates)}')
+
+          print('\n=== ORPHAN PYTHON FILE CANDIDATES (NO LOCAL IMPORT INCOMING) ===')
+          entrypoint_like = {'app.py','run_dev.py'}
+          for path in sorted(CODE_FILES):
+              if path.name == '__init__.py' or path.name in entrypoint_like or 'tests' in path.parts or 'scripts' in path.parts:
+                  continue
+              if incoming[path] == 0:
+                  print(f'{path} incoming_imports=0')
+
+          print('\n=== DUPLICATE FUNCTION BODY CANDIDATES ===')
+          hashes = defaultdict(list)
+          for path, tree in parsed.items():
+              for node in ast.walk(tree):
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and len(node.body) >= 4:
+                      try:
+                          body = ast.dump(ast.Module(body=node.body, type_ignores=[]), annotate_fields=False, include_attributes=False)
+                      except Exception:
+                          continue
+                      digest = hashlib.sha256(body.encode()).hexdigest()
+                      hashes[digest].append((path,node.name,node.lineno))
+          dup_count = 0
+          for digest, items in sorted(hashes.items()):
+              if len(items) > 1:
+                  dup_count += 1
+                  print(' | '.join(f'{p}:{n}:{l}' for p,n,l in items))
+          print(f'duplicate_body_groups={dup_count}')
+
+          print('\n=== COMMENTED-OUT CODE BLOCK CANDIDATES ===')
+          commented = []
+          code_markers = re.compile(r'^\s*#\s*(?:import\s|from\s+\S+\s+import\s|def\s+|class\s+|return\b|if\s+|for\s+|while\s+|try\s*[:(]|except\b|with\s+|raise\b|[A-Za-z_]\w*\s*=)')
+          for path in CODE_FILES:
+              lines = path.read_text(encoding='utf-8').splitlines()
+              start = None
+              for i, line in enumerate(lines, 1):
+                  if code_markers.match(line):
+                      if start is None: start = i
+                  elif start is not None:
+                      if i - start >= 2:
+                          commented.append((path,start,i-1))
+                      start = None
+              if start is not None and len(lines)+1-start >= 2:
+                  commented.append((path,start,len(lines)))
+          for item in commented:
+              print(f'{item[0]}:{item[1]}-{item[2]}')
+          print(f'commented_code_blocks={len(commented)}')
+
+          print('\n=== DEBUG/TODO CLUTTER CANDIDATES ===')
+          patterns = [re.compile(r'\bTODO\b|\bFIXME\b|\bXXX\b|\bHACK\b'), re.compile(r'(?<![\w.])print\s*\(')]
+          clutter = []
+          for path in CODE_FILES:
+              for i, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+                  if any(p.search(line) for p in patterns):
+                      clutter.append((path,i,line.strip()))
+          for path,i,line in clutter[:500]:
+              print(f'{path}:{i}: {line}')
+          print(f'clutter_matches={len(clutter)}')
+
+          print('\n=== DIRECT REQUIREMENTS IMPORT COVERAGE ===')
+          try:
+              pkg_map = metadata.packages_distributions()
+          except Exception:
+              pkg_map = {}
+          imported_top = set(imported_modules)
+          reqs = ROOT/'requirements.in'
+          if reqs.exists():
+              for raw in reqs.read_text(encoding='utf-8').splitlines():
+                  raw = raw.strip()
+                  if not raw or raw.startswith('#') or raw.startswith('-'):
+                      continue
+                  pkg = re.split(r'[<>=!~;\[]', raw, 1)[0].strip()
+                  dists = {x.lower() for x in pkg_map.get(pkg.replace('_','-').lower(), [])}
+                  imported_by = sorted({m for m in imported_top if any(d.lower().replace('-','_') in m.lower() or m.lower().replace('_','-') == d for d in dists)})
+                  print(f'{pkg}: imported_top_level_matches={imported_by}')
+          
+          print('\n=== BACKUP/TEMP/BUILD ARTIFACT PATHS ===')
+          suspicious = re.compile(r'(^|[._-])(bak|old|backup|tmp|temp)$', re.I)
+          for p in sorted(ROOT.rglob('*')):
+              if p.is_file() and (p.suffix.lower() in {'.bak','.old','.tmp','.temp'} or suspicious.search(p.stem) or p.name in {'Thumbs.db','.DS_Store'} or p.parts[-1] in {'dist','build','node_modules'}):
+                  print(p)
+          PY
+      - name: Summarize audit
+        run: |
+          echo '=== Ruff summary ==='
+          tail -n 40 artifacts/purge-audit/ruff.txt || true
+          echo '=== Vulture summary ==='
+          tail -n 80 artifacts/purge-audit/vulture.txt || true
+          echo '=== Deep inventory summary ==='
+          cat artifacts/purge-audit/deep_inventory.txt
+      - name: Upload purge audit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: purge-audit
+          path: artifacts/purge-audit/
+          if-no-files-found: warn
