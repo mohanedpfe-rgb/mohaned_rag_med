@@ -91,17 +91,41 @@ def _purge_document_records(system: Any, document_id: str) -> None:
             f"Rollback could not purge live vector records for document {document_id}: {remaining_ids}"
         )
 
-    try:
-        with sqlite3.connect(vector_store.lexical_database) as connection:
-            connection.execute(
-                "DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
-                (document_id,),
+    lexical_database = Path(vector_store.lexical_database)
+    with sqlite3.connect(lexical_database) as connection:
+        rows = connection.execute(
+            "SELECT id, metadata FROM lexical_documents"
+        ).fetchall()
+        stale_ids: list[str] = []
+        for row_id, raw_metadata in rows:
+            try:
+                metadata = json.loads(raw_metadata or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if str(metadata.get("document_id") or metadata.get("doc_id") or "") == document_id:
+                stale_ids.append(str(row_id))
+        if stale_ids:
+            connection.executemany(
+                "DELETE FROM lexical_documents WHERE id = ?",
+                [(item_id,) for item_id in stale_ids],
             )
-            connection.commit()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Rollback could not purge lexical records for document {document_id}: {exc}"
-        ) from exc
+        connection.commit()
+
+        leftovers = connection.execute(
+            "SELECT id, metadata FROM lexical_documents"
+        ).fetchall()
+        unresolved = []
+        for row_id, raw_metadata in leftovers:
+            try:
+                metadata = json.loads(raw_metadata or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            if str(metadata.get("document_id") or metadata.get("doc_id") or "") == document_id:
+                unresolved.append(str(row_id))
+        if unresolved:
+            raise RuntimeError(
+                f"Rollback could not purge live lexical records for document {document_id}: {unresolved}"
+            )
 
     _reopen_vector_store(vector_store)
 
@@ -126,7 +150,8 @@ def _restore_snapshot(system: Any, snapshot: dict[str, Any]) -> None:
             "documents": list(vector.get("documents") or []),
             "metadatas": [dict(value or {}) for value in (vector.get("metadatas") or [])],
         }
-        embeddings = list(vector.get("embeddings") or [])
+        raw_embeddings = vector.get("embeddings")
+        embeddings = raw_embeddings.tolist() if hasattr(raw_embeddings, "tolist") else list(raw_embeddings or [])
         if len(embeddings) == len(ids):
             kwargs["embeddings"] = embeddings
         vector_store.collection.upsert(**kwargs)
@@ -156,10 +181,7 @@ def _restore_snapshot(system: Any, snapshot: dict[str, Any]) -> None:
         previous_state["heartbeat_at"] = None
         state_store.upsert_document(previous_state)
 
-    try:
-        state_store.delete_pages(document_id)
-    except Exception:
-        pass
+    state_store.delete_pages(document_id)
     for page in snapshot.get("pages") or []:
         values = dict(page)
         values.pop("document_id", None)
