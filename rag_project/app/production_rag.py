@@ -10,6 +10,7 @@ from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import versioned_ingestor
 from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
+from rag_project.intelligence.production_contract import validate_feature_contract
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.intelligence.retrieval_replay import record as record_replay
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
@@ -142,14 +143,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
 
     def __init__(self, settings=None):
         super().__init__(settings)
-        self._production_feature_contract = {
-            "contract_version": PRODUCTION_CONTRACT_VERSION,
-            "feature_count": 44,
-            "unique_names": True,
-            "duplicates": [],
-            "unresolved": {},
-            "all_resolved": True,
-        }
+        self._production_feature_contract = validate_feature_contract()
 
     def _new_cancel_flag(self, document_id):
         flag = rag_system_module._IngestCancelFlag()
