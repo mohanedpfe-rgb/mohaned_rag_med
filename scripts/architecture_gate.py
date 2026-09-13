@@ -29,8 +29,14 @@ REQUIRED_COMPOSITION_SYMBOLS = {
     "prepare_runtime",
     "install_production_contracts",
     "normalize_runtime_environment",
+    "runtime_is_prepared",
 }
 FORBIDDEN_COMPOSITION_IMPORT_PREFIXES = ("streamlit", "rag_project.app")
+FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
+    "rag_project.intelligence.pipeline_integrity",
+    "rag_project.intelligence.production_contract_v2",
+    "rag_project.ingestion.ingestion_contract",
+}
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
 
@@ -94,15 +100,24 @@ def inspect() -> dict[str, object]:
     if missing:
         violations.append(f"composition.py missing stable symbols: {missing}")
 
-    # The canonical application service must expose stable entrypoints.
+    # The canonical application service must expose stable entrypoints and must
+    # not duplicate the four-contract installer ordering owned by composition.
     missing_application = sorted(REQUIRED_APPLICATION_SYMBOLS - _symbols(APPLICATION))
     if missing_application:
         violations.append(f"application.py missing stable symbols: {missing_application}")
+    application_imports = _imports(APPLICATION)
+    duplicated_installers = sorted(application_imports & FORBIDDEN_APPLICATION_INSTALLER_MODULES)
+    if duplicated_installers:
+        violations.append(f"application.py bypasses composition installer ownership: {duplicated_installers}")
+    if "rag_project.composition" not in application_imports:
+        violations.append("application.py must consume the composition boundary")
     application_source = APPLICATION.read_text(encoding="utf-8")
     if "MedEvidenceProductionRAGSystem" not in application_source:
         violations.append("application.py lost the canonical production service")
     if '"answer_monkey_patch": False' not in application_source:
         violations.append("canonical answer path must remain explicitly non-monkey-patched")
+    if "runtime_is_prepared()" not in application_source:
+        violations.append("application factory must honor the prepared-runtime marker")
 
     # Lower layers must never depend on the Streamlit/presentation surface.
     for layer in CORE_DIRS:
@@ -134,8 +149,10 @@ def inspect() -> dict[str, object]:
     for marker in (
         "rag_project.composition.prepare_runtime",
         "rag_project.app.ui_security_boundary",
-        "app.py",
+        "scripts/architecture_gate.py",
+        "BOOKRAG_RUNTIME_PREPARED_VERSION",
         "immutable published document versions",
+        "app.py",
     ):
         if marker.lower() not in architecture_text.lower():
             violations.append(f"ARCHITECTURE.md is missing contract marker: {marker}")
@@ -158,7 +175,7 @@ def inspect() -> dict[str, object]:
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
         "violations": violations,
-        "contract": "architecture-gate-v1",
+        "contract": "architecture-gate-v2",
     }
 
 
