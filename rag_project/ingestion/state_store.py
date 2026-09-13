@@ -317,6 +317,7 @@ class IngestionStateStore:
             values.setdefault("index_state", "FAILED")
         elif new_stage_value in {"INTERRUPTED", "RECOVERING"}:
             values.setdefault("status", new_stage_value)
+            values.setdefault("index_state", "FAILED")
         else:
             values.setdefault("status", "RUNNING")
         event_page = int(values.get("current_page", record.get("current_page") or 0))
@@ -327,45 +328,3 @@ class IngestionStateStore:
     def is_document_ready(self, document_id: str) -> bool:
         record = self.get_document(document_id)
         return bool(record and self.is_ready_status(record.get("status")))
-
-    def upsert_page(self, document_id: str, page_number: int, **values: Any) -> None:
-        page_number = int(page_number)
-        if page_number < 1:
-            raise ValueError("Page number must be >= 1.")
-        unknown = set(values) - _ALLOWED_PAGE_UPDATE_KEYS
-        if unknown:
-            raise ValueError(f"Unsupported page update field(s): {', '.join(sorted(unknown))}")
-        values.setdefault("extraction_status", "PENDING")
-        values.setdefault("ocr_status", "not_required")
-        values.setdefault("updated_at", utc_now())
-        columns = ["document_id", "page_number", *values]
-        placeholders = ", ".join("?" for _ in columns)
-        assignments = ", ".join(f"{key}=excluded.{key}" for key in values)
-        with self._connect() as connection:
-            connection.execute(f"INSERT INTO pages ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}", (document_id, page_number, *values.values()))
-
-    def get_pages(self, document_id: str) -> list[dict[str, Any]]:
-        with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM pages WHERE document_id = ? ORDER BY page_number", (document_id,)).fetchall()
-        return [dict(row) for row in rows]
-
-    def delete_pages(self, document_id: str) -> None:
-        with self._connect() as connection:
-            connection.execute("DELETE FROM pages WHERE document_id = ?", (document_id,))
-
-    def clear_all(self) -> None:
-        """Remove persisted ingestion and query records safely."""
-        with self._connect() as connection:
-            connection.execute("DELETE FROM pages")
-            connection.execute("DELETE FROM process_events")
-            connection.execute("DELETE FROM query_traces")
-            connection.execute("DELETE FROM documents")
-            connection.commit()
-        with self._connect() as connection:
-            connection.execute("VACUUM")
-
-    def record_query_trace(self, query_id: str, payload: dict[str, Any]) -> None:
-        if not query_id:
-            raise ValueError("query_id cannot be empty")
-        with self._connect() as connection:
-            connection.execute("INSERT OR REPLACE INTO query_traces(query_id, created_at, payload) VALUES (?, ?, ?)", (query_id, utc_now(), json.dumps(payload, default=str)))
