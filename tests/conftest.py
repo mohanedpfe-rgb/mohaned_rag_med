@@ -15,6 +15,42 @@ install_diagnostic_adapters()
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _clear_chroma_system_cache() -> None:
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        clear_system_cache = getattr(SharedSystemClient, "clear_system_cache", None)
+        if callable(clear_system_cache):
+            clear_system_cache()
+    except Exception:
+        pass
+
+
+def _install_windows_temp_cleanup_guard() -> None:
+    """Release Chroma clients before Windows TemporaryDirectory removes its tree."""
+    try:
+        import tempfile
+
+        cleanup = getattr(tempfile.TemporaryDirectory, "cleanup", None)
+        if not callable(cleanup) or getattr(cleanup, "_bookrag_chroma_guard", False):
+            return
+
+        def guarded_cleanup(self, *args, **kwargs):
+            _clear_chroma_system_cache()
+            try:
+                return cleanup(self, *args, **kwargs)
+            finally:
+                _clear_chroma_system_cache()
+
+        guarded_cleanup._bookrag_chroma_guard = True
+        tempfile.TemporaryDirectory.cleanup = guarded_cleanup
+    except Exception:
+        pass
+
+
+_install_windows_temp_cleanup_guard()
+
+
 def _mark(item, marker: str) -> None:
     item.add_marker(getattr(pytest.mark, marker))
 
@@ -108,13 +144,4 @@ def pytest_sessionfinish(session, exitstatus):
     except Exception:
         pass
 
-    # Chroma keeps shared process state in some versions. Clear it defensively so
-    # xdist workers do not retain clients or telemetry resources past the test run.
-    try:
-        from chromadb.api.shared_system_client import SharedSystemClient
-
-        clear_system_cache = getattr(SharedSystemClient, "clear_system_cache", None)
-        if callable(clear_system_cache):
-            clear_system_cache()
-    except Exception:
-        pass
+    _clear_chroma_system_cache()
