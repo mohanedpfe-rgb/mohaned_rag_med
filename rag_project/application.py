@@ -8,7 +8,7 @@ from typing import Any
 
 from rag_project.configuration.settings import Settings
 from rag_project.quality_gate import run_quality_gate
-from rag_project.composition import install_production_contracts
+from rag_project.composition import install_production_contracts, runtime_is_prepared
 from rag_project.runtime import install
 from rag_project.security import harden_system
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
@@ -172,10 +172,11 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
         return report
 
 
-def create_rag_system(settings: Settings | None = None, *, runtime_prepared: bool = False):
-    """Build the canonical runtime, using composition-owned contracts once when prepared."""
+def create_rag_system(settings: Settings | None = None, *, runtime_prepared: bool | None = None):
+    """Build the canonical runtime without reinstalling contracts after composition bootstrap."""
     with _FACTORY_LOCK:
-        if not runtime_prepared:
+        prepared = runtime_is_prepared() if runtime_prepared is None else runtime_prepared
+        if not prepared:
             install()
             install_production_contracts()
         requested_cls = production_rag_module.ProductionRAGSystem
