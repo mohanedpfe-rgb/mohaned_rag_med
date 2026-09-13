@@ -138,9 +138,14 @@ def validate_query(value: str) -> str:
 
 
 def validate_pdf_payload(name: str, content: bytes) -> None:
-    safe_name = Path(name).name
-    if len(safe_name) > MAX_FILENAME_CHARS:
-        raise ValueError("PDF filename is too long.")
+    raw_name = str(name or "")
+    if "\x00" in raw_name or raw_name != Path(raw_name).name:
+        raise ValueError("PDF filename must be a plain filename without path components.")
+    safe_name = Path(raw_name).name
+    if not safe_name or len(safe_name) > MAX_FILENAME_CHARS:
+        raise ValueError("PDF filename is invalid or too long.")
+    if Path(safe_name).suffix.lower() != ".pdf":
+        raise ValueError("Only files with a .pdf extension are accepted.")
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError(f"Uploaded file '{safe_name}' exceeds the 50 MB security limit.")
     if not content.startswith(b"%PDF-"):
@@ -149,9 +154,15 @@ def validate_pdf_payload(name: str, content: bytes) -> None:
         import fitz
         pdf = fitz.open(stream=content, filetype="pdf")
         try:
+            if getattr(pdf, "is_encrypted", False):
+                raise ValueError("Encrypted/password-protected PDFs are not accepted by the secure upload boundary.")
+            if pdf.page_count < 1:
+                raise ValueError("PDF must contain at least one page.")
             validate_pdf_page_count(pdf.page_count)
         finally:
             pdf.close()
+    except ValueError:
+        raise
     except Exception as exc:
         raise ValueError(f"Uploaded file '{safe_name}' failed PDF structural validation.") from exc
 
