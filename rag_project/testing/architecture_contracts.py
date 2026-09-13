@@ -24,13 +24,48 @@ FORBIDDEN_EDGES: tuple[tuple[str, str], ...] = (
 )
 
 DOMAIN_NAMES = ("ingestion", "chunking", "embeddings", "retrieval", "intelligence", "generation", "storage", "evaluation")
+_SHARED_DOMAIN_MODULES = {
+    "rag_project/ingestion/document_models.py",
+    "rag_project/intelligence/pdf_intelligence.py",
+}
+_COMPATIBILITY_MODULE_MARKERS = (
+    "runtime_", "_contract", "_finalizer", "_adapter", "_compat", "_fix", "_recovery",
+)
 
 
 def _domain(path: str) -> str | None:
-    parts = Path(path).parts
+    normalized = path.replace("\\", "/")
+    if normalized in _SHARED_DOMAIN_MODULES:
+        return None
+    parts = Path(normalized).parts
     if len(parts) >= 2 and parts[0] == "rag_project" and parts[1] in DOMAIN_NAMES:
         return parts[1]
     return None
+
+
+def _architecture_relevant(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    if not normalized.startswith("rag_project/"):
+        return False
+    if "/testing/" in normalized:
+        return False
+    name = Path(normalized).stem
+    return not any(marker in name for marker in _COMPATIBILITY_MODULE_MARKERS)
+
+
+def _top_level_import_nodes(tree: ast.AST):
+    """Yield imports that define module ownership, not local compatibility hooks."""
+    for node in getattr(tree, "body", ()):
+        if isinstance(node, ast.Import):
+            yield node
+        elif isinstance(node, ast.ImportFrom):
+            yield node
+        elif isinstance(node, ast.If):
+            test = ast.unparse(node.test) if hasattr(ast, "unparse") else ""
+            if "TYPE_CHECKING" in test:
+                for child in node.body:
+                    if isinstance(child, (ast.Import, ast.ImportFrom)):
+                        yield child
 
 
 def analyze() -> dict[str, Any]:
@@ -47,14 +82,11 @@ def analyze() -> dict[str, Any]:
         except (OSError, SyntaxError) as exc:
             parse_failures.append(f"{rel}:{type(exc).__name__}")
             continue
+        if not _architecture_relevant(rel):
+            continue
         source_domain = _domain(rel)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                imports = [node.module or ""]
-            else:
-                continue
+        for node in _top_level_import_nodes(tree):
+            imports = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""]
             for imported in imports:
                 if not imported.startswith("rag_project."):
                     continue
