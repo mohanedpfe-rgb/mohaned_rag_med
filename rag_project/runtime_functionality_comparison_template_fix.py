@@ -12,7 +12,7 @@ def _wrap_comparison_template(original: Any):
         if not claims:
             return None
         return "\n".join(
-            f"- Comparison evidence: {claim.text} [S{claim.source_numbers[0}]]"
+            f"- Comparison evidence: {claim.text} [S{claim.source_numbers[0]}]"
             for claim in claims[:8]
         )
 
