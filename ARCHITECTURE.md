@@ -6,9 +6,11 @@ BookRAG is a modular, single-node medical RAG service optimized for CPU-first lo
 
 `app.py` is the thin presentation/orchestration entrypoint. It owns only Streamlit composition, UI finish ordering, supervisor startup, and runtime-cache invalidation.
 
-The production composition boundary is `rag_project.composition.prepare_runtime`. It owns local environment loading, bounded runtime normalization, and authoritative installer ordering. This module intentionally has no UI dependency so the production runtime policy can be tested and reused independently of Streamlit.
+The production composition boundary is `rag_project.composition.prepare_runtime`. It owns local environment loading, bounded runtime normalization, and authoritative startup sequencing. The composition module intentionally has no UI dependency.
 
-After successful composition, the process carries the exact `BOOKRAG_RUNTIME_PREPARED_VERSION` marker. `rag_project.application.create_rag_system` recognizes that marker and does not reinstall the composition-owned contracts. Direct standalone factory calls remain backward-compatible and bootstrap the contracts themselves when the marker is absent or stale. This keeps production startup single-pass while preserving a safe library entrypoint.
+The neutral runtime policy is `rag_project.runtime`; it owns the reusable infrastructure installer stack and the four authoritative application-contract installers. `rag_project.runtime_bootstrap_state` owns only the process-local prepared-runtime marker, keeping application code independent from the composition root.
+
+After successful composition, the process carries the exact `BOOKRAG_RUNTIME_PREPARED_VERSION` marker. `rag_project.application.create_rag_system` reads that marker through the neutral runtime-state module and therefore does not depend on `rag_project.composition` or reinstall composition-owned contracts during production startup. Direct standalone factory calls remain backward-compatible and bootstrap the required policy through neutral runtime services when the marker is absent or stale.
 
 The UI security capture boundary is `rag_project.app.ui_security_boundary.install`. It owns upload/path/URL validation capture and presentation-side evidence/intelligence panel wiring. Security policy itself remains in `rag_project.security`; this module only composes it around the UI surface.
 
@@ -27,6 +29,8 @@ Composition root (`rag_project.composition`)
     ↓
 Application service (`rag_project.application`)
     ↓
+Neutral runtime policy (`rag_project.runtime` + bootstrap state)
+    ↓
 Document representation
     ├── native PDF text
     ├── conditional OCR
@@ -40,7 +44,7 @@ Ingestion | Retrieval | Generation | Citations
 Storage / external adapters (SQLite, structure SQLite, Chroma, Ollama)
 ```
 
-The UI must not own persistence rules, ingestion state transitions, embedding lifecycle, or retrieval algorithms.
+The UI must not own persistence rules, ingestion state transitions, embedding lifecycle, or retrieval algorithms. The application layer must not import the composition root; composition is an outer startup concern.
 
 ## Long-lived invariants
 
@@ -61,14 +65,20 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 15. Composition modules must not depend on presentation/UI modules, preventing a reverse dependency from infrastructure into Streamlit.
 16. UI security capture is isolated from the application entrypoint and delegates policy decisions to lower-level security services.
 17. A stale or mismatched runtime-prepared marker is never trusted; contract installation must be repeated before constructing the production service.
+18. The application layer does not import the composition root. Prepared-runtime state and reusable contract bootstrap policy live below both layers.
 
 ## Dependency direction
 
-Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. UI security capture may depend on the UI and security adapter surfaces but must not become a storage or domain layer. Cross-cutting runtime policies belong in the composition/runtime boundary and should be migrated into owning service methods when the next structural refactor touches those services.
+```text
+presentation → composition → application → neutral runtime policy → adapters
+                     ↘ UI security capture → security policy
+```
+
+Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. The application service must not import the composition root. UI security capture may depend on the UI and security adapter surfaces but must not become a storage or domain layer.
 
 ## Executable architecture quality gate
 
-Architecture is enforced before the test suite by `scripts/architecture_gate.py`. It is standard-library-only and therefore safe to run before optional runtime imports. The gate checks the thin `app.py` ceiling, composition/UI dependency direction, canonical application symbols, non-monkey-patched answer authority, UI isolation from core layers, wildcard-import hygiene, required architecture-contract markers, deterministic dependency-lock presence, and Python syntax across project modules. CI runs this gate in every diagnostic, high-level, and regression lane.
+Architecture is enforced before the test suite by `scripts/architecture_gate.py`. It is standard-library-only and therefore safe to run before optional runtime imports. The gate checks the thin `app.py` ceiling, composition/UI dependency direction, application/composition dependency inversion, neutral runtime ownership, canonical application symbols, non-monkey-patched answer authority, UI isolation from core layers, wildcard-import hygiene, required architecture-contract markers, deterministic dependency-lock presence, and Python syntax across project modules. CI runs this gate in every diagnostic, high-level, and regression lane.
 
 This is deliberately a contract gate rather than a generic style linter: it protects boundaries that must survive refactors, while leaving implementation-level formatting and naming to ordinary tests and tooling.
 
@@ -78,7 +88,7 @@ The reference deployment is a single machine with roughly 16GB RAM and a CPU-fir
 
 ## Engineering quality target
 
-The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, dependency direction, prepared-runtime lifecycle, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
+The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, dependency inversion, prepared-runtime lifecycle, neutral installer ownership, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
 
 ## Architectural debt register
 
