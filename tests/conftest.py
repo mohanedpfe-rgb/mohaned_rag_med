@@ -8,6 +8,9 @@ import pytest
 from rag_project.runtime import install as install_runtime
 
 install_runtime()
+from rag_project.testing.diagnostic_contract_fix import install as install_diagnostic_contract_fix
+
+install_diagnostic_contract_fix()
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,8 +71,6 @@ def pytest_collection_modifyitems(session, config, items):
         if any(token in path for token in ("slow", "performance", "benchmark")) or "performance" in name or "benchmark" in name:
             _mark(item, "slow")
 
-        # Unit is the default for tests that were not explicitly classified as
-        # an external/integration/slow suite. This prevents silent test gaps.
         markers = {mark.name for mark in item.iter_markers()}
         if not markers.intersection({"integration", "slow", "requires_ollama"}):
             _mark(item, "unit")
