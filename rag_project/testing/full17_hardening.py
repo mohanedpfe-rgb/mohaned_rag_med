@@ -153,8 +153,15 @@ def hardened_phase13(phase: Any, results: dict[int, Any]):
     texts=[str(f.get("message","")) for item in injected for f in item.failures]
     graph=str(base.details)
     verified=len(injected)==2 and all("InjectedSharedVectorStoreFailure" in text for text in texts) and "p5f0" in graph and "p9f0" in graph
-    base.details["known_failure_injection_verified"]=verified; base.details["failure_injection"]={"target":"VectorStore.add_documents","injected_exception":"InjectedSharedVectorStoreFailure","affected_phases":[item.number for item in injected]}
-    if not verified: base.status="FAIL"; base.score=0.0; base.failures.append({"location":"phase 13 real failure injection","exception":"CausalInjectionContractFailure","message":str(base.details)})
+    known = runner_module._hardened_causal_graph(phase, {
+        5: PhaseResult(5,"cross_layer_invariants","Cross-layer",status="FAIL",failures=[{"location":"rag_project/storage/vector_store.py","exception":"IdentityConservationFailure","message":"document identity dropped before retrieval"}]),
+        9: PhaseResult(9,"retrieval_microscope","Retrieval",status="FAIL",failures=[{"location":"rag_project/storage/vector_store.py","exception":"IdentityConservationFailure","message":"document identity dropped before ranking"}]),
+        10: PhaseResult(10,"rag_causality","Answer",status="FAIL",failures=[{"location":"rag_project/intelligence/med_evidence_pro.py","exception":"IdentityConservationFailure","message":"document identity unavailable for answer evidence"}]),
+    })
+    known_edges={(edge["from"],edge["to"]) for edge in known.details.get("edges") or []}
+    known_fixture_verified={("p5f0","p9f0"),("p9f0","p10f0")}.issubset(known_edges) and "p5f0" in set(known.details.get("candidate_roots") or [])
+    base.details["known_causal_fixture_verified"]=known_fixture_verified; base.details["known_failure_injection_verified"]=verified; base.details["failure_injection"]={"target":"VectorStore.add_documents","injected_exception":"InjectedSharedVectorStoreFailure","affected_phases":[item.number for item in injected]}
+    if not verified or not known_fixture_verified: base.status="FAIL"; base.score=0.0; base.failures.append({"location":"phase 13 real failure injection","exception":"CausalInjectionContractFailure","message":str(base.details)})
     else: base.status="PASS"; base.score=1.0
     return base
 
