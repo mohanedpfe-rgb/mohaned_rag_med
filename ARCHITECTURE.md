@@ -63,13 +63,19 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 
 Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. UI security capture may depend on the UI and security adapter surfaces but must not become a storage or domain layer. Cross-cutting runtime policies belong in the composition/runtime boundary and should be migrated into owning service methods when the next structural refactor touches those services.
 
+## Executable architecture quality gate
+
+Architecture is enforced before the test suite by `scripts/architecture_gate.py`. It is standard-library-only and therefore safe to run before optional runtime imports. The gate checks the thin `app.py` ceiling, composition/UI dependency direction, canonical application symbols, non-monkey-patched answer authority, UI isolation from core layers, wildcard-import hygiene, required architecture-contract markers, deterministic dependency-lock presence, and Python syntax across project modules. CI runs this gate in every diagnostic, high-level, and regression lane.
+
+This is deliberately a contract gate rather than a generic style linter: it protects boundaries that must survive refactors, while leaving implementation-level formatting and naming to ordinary tests and tooling.
+
 ## Scalability target
 
 The reference deployment is a single machine with roughly 16GB RAM and a CPU-first workload. Concurrency is deliberately bounded around expensive model operations. Visual embeddings remain optional so figure/caption search does not make the default laptop profile unusable.
 
 ## Engineering quality target
 
-The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, and dependency direction are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
+The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, dependency direction, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
 
 ## Architectural debt register
 
