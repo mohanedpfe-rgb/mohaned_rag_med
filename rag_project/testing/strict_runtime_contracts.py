@@ -31,10 +31,7 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
         requested_seconds = float(os.getenv("DIAGNOSTIC_RESOURCE_SECONDS", "5"))
         if requested_mode not in {"bounded", "24h"}:
             raise RuntimeError(f"unsupported resource certification mode: {requested_mode}")
-        duration = max(requested_seconds, 86400.0) if requested_mode == "24h" else max(5.0, requested_seconds)
-        # The bounded Windows workload performs several real production ingestion attempts.
-        # The observation duration is a minimum measurement window, not an execution cap.
-        # Allow enough wall-clock time for the required three successful observations.
+        duration = max(requested_seconds, 86400.0) if requested_mode == "24h" else max(10.0, requested_seconds)
         workload_timeout = max(600, int(duration) * 20 + 180) if requested_mode == "bounded" else int(duration) + 600
         proc = subprocess.run([sys.executable, str(child), "--duration", str(duration)], cwd=ROOT, text=True, capture_output=True, timeout=workload_timeout)
         payload = None
@@ -58,7 +55,13 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
         iterations = int(_required_number(payload, "iterations"))
         successful = int(_required_number(payload, "successful_ingestions"))
         if observed_seconds <= 0 or samples < 3 or iterations < 3 or successful < 3:
-            raise RuntimeError("resource observation depth is insufficient")
+            raise RuntimeError(
+                "resource observation depth is insufficient: "
+                f"observed_seconds={observed_seconds}, samples={samples}, "
+                f"iterations={iterations}, successful_ingestions={successful}, "
+                f"failed_iterations={payload.get('failed_iterations')}, "
+                f"failure_samples={payload.get('failure_samples')}"
+            )
 
         max_reasonable_slope = max(256 * 1024, 64 * 1024 * 1024 / max(iterations, 1))
         trend_ok = tail_head <= 32 * 1024 * 1024 and slope <= max_reasonable_slope
