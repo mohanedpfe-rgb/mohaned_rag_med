@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from collections.abc import Mapping
 from typing import Any
@@ -32,8 +33,30 @@ def _hierarchy_path(metadata: Mapping[str, Any]) -> str:
 
 def _normalize_metadata(metadata: Any) -> dict[str, Any]:
     row = dict(metadata or {}) if isinstance(metadata, Mapping) else {}
-    row["hierarchy_path"] = _hierarchy_path(row)
-    return row
+    cleaned: dict[str, Any] = {}
+    for key, value in row.items():
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            values = list(value)
+            # Chroma rejects empty list-valued metadata.  Empty optional layout
+            # fields carry no information, so omit them; preserve non-empty scalar
+            # lists such as page_numbers/evidence_types unchanged.
+            if not values:
+                continue
+            if all(isinstance(item, (str, int, float, bool)) and not isinstance(item, (dict, list, tuple, set)) for item in values):
+                cleaned[str(key)] = values
+            else:
+                cleaned[str(key)] = json.dumps(values, ensure_ascii=False, default=str)
+            continue
+        if isinstance(value, Mapping):
+            if not value:
+                continue
+            cleaned[str(key)] = json.dumps(dict(value), ensure_ascii=False, sort_keys=True, default=str)
+            continue
+        cleaned[str(key)] = value
+    cleaned["hierarchy_path"] = _hierarchy_path(cleaned)
+    return cleaned
 
 
 def install() -> None:
