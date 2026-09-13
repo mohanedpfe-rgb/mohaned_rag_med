@@ -1,15 +1,25 @@
 # BookRAG architecture contract
 
-This project is a modular, single-node medical RAG service optimized for CPU-first local execution around 16GB RAM. The ingestion path preserves full page text, **document hierarchy**, document-global structural ancestry, alternate table/figure representations, and build-aware publication semantics.
+BookRAG is a modular, single-node medical RAG service optimized for CPU-first local execution around 16GB RAM. The ingestion path preserves full page text, document hierarchy, document-global structural ancestry, alternate table/figure representations, and build-aware publication semantics.
+
+## Runtime boundary
+
+`app.py` is the thin presentation entrypoint. It owns only Streamlit presentation wiring and the UI security capture layer.
+
+The production composition boundary is `rag_project.composition.prepare_runtime`. It owns local environment loading, bounded runtime normalization, and authoritative installer ordering. This module intentionally has no UI dependency so the production runtime policy can be tested and reused independently of Streamlit.
+
+The canonical application service remains `rag_project.application.MedEvidenceProductionRAGSystem`, and the canonical answer authority remains `rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer`.
 
 ## Layering
 
 ```text
 UI / scripts
     ↓
-Application composition + runtime policy
+Presentation entrypoint (`app.py`)
     ↓
-RAG application service
+Composition root (`rag_project.composition`)
+    ↓
+Application service (`rag_project.application`)
     ↓
 Document representation
     ├── native PDF text
@@ -41,10 +51,12 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 11. Chapter/section identity is document-global and survives page boundaries. Dedicated whole-book vectors are not required for correctness; hierarchical child representations are the canonical retrieval units.
 12. Retrieval is representation-aware: table/figure queries receive targeted structural boosts, and context assembly preserves evidence diversity before applying per-document limits.
 13. Every production entry point must pass through the composition/runtime boundary so representation, storage, safety and recovery policies cannot be silently bypassed.
+14. The presentation entrypoint must remain thin: runtime installers, environment normalization, and canonical-service selection must not be reimplemented in `app.py`.
+15. Composition modules must not depend on presentation/UI modules, preventing a reverse dependency from infrastructure into Streamlit.
 
 ## Dependency direction
 
-Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, and the UI must not implement storage semantics. Cross-cutting runtime policies belong in the runtime boundary and should be migrated into owning service methods when the next structural refactor touches those services.
+Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. Cross-cutting runtime policies belong in the composition/runtime boundary and should be migrated into owning service methods when the next structural refactor touches those services.
 
 ## Scalability target
 
@@ -52,4 +64,6 @@ The reference deployment is a single machine with roughly 16GB RAM and a CPU-fir
 
 ## Architectural debt register
 
-The legacy `RAGSystem` surface remains transitional. Runtime installers are the composition boundary. The deep PDF contract is installed from that boundary so parsing, structure, versioning, validation and retrieval policies are active for production entry points.
+The legacy `RAGSystem` surface remains transitional. Runtime installers and `rag_project.composition.prepare_runtime` are the composition boundary. The deep PDF contract is installed from that boundary so parsing, structure, versioning, validation and retrieval policies are active for production entry points.
+
+The next architectural migration target is ownership-based retirement of remaining legacy UI and `RAGSystem` surfaces; until then, their use is treated as compatibility surface rather than production authority.
