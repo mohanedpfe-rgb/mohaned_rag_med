@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 
 _INSTALL_LOCK = threading.RLock()
+_INSTALL_APPLICATION_CONTRACT_LOCK = threading.RLock()
 _INSTALLED = False
 
 
@@ -110,3 +111,24 @@ def install() -> None:
         for installer in _load_installers():
             installer()
         _INSTALLED = True
+
+
+def install_application_contracts() -> dict[str, object]:
+    """Install the four authoritative application contracts in their fixed order.
+
+    Kept in the neutral runtime policy layer so both the composition root and
+    direct application-factory use share one contract implementation without
+    introducing a dependency from application back to composition.
+    """
+    from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
+    from rag_project.intelligence.production_contract_v2 import install as production_contract
+    from rag_project.ingestion.ingestion_contract import install as ingestion_contract
+    from rag_project.canonical_runtime import install as canonical_runtime
+
+    with _INSTALL_APPLICATION_CONTRACT_LOCK:
+        return {
+            "pipeline_integrity": pipeline_integrity(),
+            "production_contract": production_contract(),
+            "ingestion_contract": ingestion_contract(),
+            "canonical_runtime": canonical_runtime(),
+        }
