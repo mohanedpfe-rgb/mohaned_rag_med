@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import weakref
 
 import pytest
 
@@ -13,6 +14,47 @@ from tests.diagnostic_runtime_adapters import install as install_diagnostic_adap
 install_diagnostic_adapters()
 
 ROOT = Path(__file__).resolve().parents[1]
+_LIVE_VECTOR_STORES: weakref.WeakValueDictionary[int, object] = weakref.WeakValueDictionary()
+
+
+def _register_vector_store(instance: object) -> None:
+    _LIVE_VECTOR_STORES[id(instance)] = instance
+
+
+def _install_vector_store_registry() -> None:
+    try:
+        from rag_project.storage.vector_store import VectorStore
+        original_init = getattr(VectorStore, "__init__", None)
+        if not callable(original_init) or getattr(original_init, "_pytest_registry_guard", False):
+            return
+
+        def guarded_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            _register_vector_store(self)
+
+        guarded_init._pytest_registry_guard = True
+        VectorStore.__init__ = guarded_init
+    except Exception:
+        pass
+
+
+def _close_chroma_stores_under(root: str | Path) -> None:
+    base = Path(root).resolve()
+    for store in list(_LIVE_VECTOR_STORES.values()):
+        persist_directory = getattr(store, "persist_directory", None)
+        if persist_directory is None:
+            continue
+        try:
+            path = Path(persist_directory).resolve()
+            try:
+                path.relative_to(base)
+            except ValueError:
+                continue
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
 
 
 def _clear_chroma_system_cache() -> None:
@@ -36,10 +78,12 @@ def _install_windows_temp_cleanup_guard() -> None:
             return
 
         def guarded_cleanup(self, *args, **kwargs):
+            _close_chroma_stores_under(self.name)
             _clear_chroma_system_cache()
             try:
                 return cleanup(self, *args, **kwargs)
             finally:
+                _close_chroma_stores_under(self.name)
                 _clear_chroma_system_cache()
 
         guarded_cleanup._bookrag_chroma_guard = True
@@ -48,6 +92,7 @@ def _install_windows_temp_cleanup_guard() -> None:
         pass
 
 
+_install_vector_store_registry()
 _install_windows_temp_cleanup_guard()
 
 
@@ -144,4 +189,11 @@ def pytest_sessionfinish(session, exitstatus):
     except Exception:
         pass
 
+    for store in list(_LIVE_VECTOR_STORES.values()):
+        try:
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
     _clear_chroma_system_cache()
