@@ -6,6 +6,7 @@ import streamlit as st
 
 from rag_project.app import bookrag_ui
 from rag_project.app.ui_final_polish import apply as apply_ui_final_polish
+from rag_project.app.ui_navigation_finish import apply as apply_ui_navigation_finish
 from rag_project.app.ui_renovation import apply as apply_ui_renovation
 from rag_project.app.ui_security_boundary import install as install_ui_security
 from rag_project.app.ui_villa_finish import apply as apply_ui_villa_finish
@@ -31,6 +32,7 @@ def main() -> None:
     prepare_runtime(Path(__file__).resolve().parent)
     apply_ui_renovation()
     apply_ui_final_polish()
+    apply_ui_navigation_finish()
     apply_ui_villa_finish()
     install_ui_security()
     _invalidate_stale_runtime_cache()
