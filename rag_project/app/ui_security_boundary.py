@@ -5,9 +5,6 @@ from typing import Any
 import streamlit as st
 
 from rag_project.app import bookrag_ui
-from rag_project.app.advanced_intelligence_panel import render_advanced_intelligence_panel
-from rag_project.app.intelligence_panel import render_intelligence_panel
-from rag_project.app.production_contract_panel import render_production_contract_panel
 from rag_project.security import (
     register_session_upload,
     validate_ollama_url,
@@ -42,12 +39,8 @@ def install() -> None:
         return health(validate_ollama_url(url))
 
     def enhanced_ask(system: Any) -> None:
+        """Run the canonical query UI without removed legacy panel adapters."""
         ask(system)
-        result = st.session_state.get("answer_result")
-        if isinstance(result, dict):
-            render_intelligence_panel(result)
-            render_advanced_intelligence_panel(result)
-            render_production_contract_panel(result)
 
     def enhanced_evidence_row(item: Any, index: int):
         if isinstance(item, dict):
