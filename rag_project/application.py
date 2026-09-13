@@ -8,7 +8,8 @@ from typing import Any
 
 from rag_project.configuration.settings import Settings
 from rag_project.quality_gate import run_quality_gate
-from rag_project.composition import install_production_contracts, runtime_is_prepared
+from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepared
+from rag_project.composition import install_production_contracts
 from rag_project.runtime import install
 from rag_project.security import harden_system
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
