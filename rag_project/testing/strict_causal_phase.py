@@ -66,6 +66,12 @@ def _strict_dependency_graph(phase: Any, results: dict[int, PhaseResult]) -> tup
 def strict_causal_phase(phase: Any, results: dict[int, PhaseResult]) -> PhaseResult:
     from rag_project.testing import production_diagnostic_probes as probes
     from rag_project.testing import runner
+    from rag_project.testing import full17_hardening
+
+    # full17_hardening.hardened_phase13 uses PhaseResult as a module-level symbol.
+    # Bind the authoritative type before invoking that override so the diagnostic
+    # path cannot fail with a NameError during CI or direct execution.
+    full17_hardening.PhaseResult = PhaseResult
 
     base = probes.phase13_known_causal_graph(phase, results)
     try:
