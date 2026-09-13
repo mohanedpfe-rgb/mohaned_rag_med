@@ -110,6 +110,8 @@ def _patch_lexical_round_trip() -> None:
             if not self._metadata_matches(metadata, where):
                 continue
             overlap = sum(document.casefold().count(token.casefold()) for token in tokens)
+            if overlap <= 0:
+                continue
             ranked.append((overlap, str(item_id), str(document), metadata))
         ranked.sort(key=lambda row: (-row[0], row[1]))
         ranked = ranked[: max(1, int(n_results))]
