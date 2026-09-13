@@ -3,7 +3,7 @@ on:
   push:
     branches: [purge-fix-2026-09-13]
 permissions:
-  contents: read
+  contents: write
 jobs:
   export:
     runs-on: ubuntu-latest
@@ -15,16 +15,22 @@ jobs:
       - run: python -m pip install --upgrade pip ruff
       - name: Apply only mechanically safe Ruff fixes
         run: |
+          set +e
           ruff check . --select F401,F841 --fix
-      - name: Verify syntax
+          status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            exit "$status"
+          fi
+      - name: Verify syntax after safe fixes
         run: python -m compileall -q .
-      - name: Export patch and changed files
+      - name: Commit safe fixes
         run: |
-          git diff --binary > purge-fix.patch
-          git diff --name-only > purge-fix-files.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: purge-fix
-          path: |
-            purge-fix.patch
-            purge-fix-files.txt
+          if git diff --quiet; then
+            echo "No safe Ruff changes were produced."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "purge: remove mechanically provable dead imports and assignments"
+          git push origin HEAD:purge-fix-2026-09-13
