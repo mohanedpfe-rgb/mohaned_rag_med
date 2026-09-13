@@ -1,0 +1,30 @@
+name: Purge Fix Export
+on:
+  push:
+    branches: [purge-fix-2026-09-13]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip ruff
+      - name: Apply only mechanically safe Ruff fixes
+        run: |
+          ruff check . --select F401,F841 --fix
+      - name: Verify syntax
+        run: python -m compileall -q .
+      - name: Export patch and changed files
+        run: |
+          git diff --binary > purge-fix.patch
+          git diff --name-only > purge-fix-files.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: purge-fix
+          path: |
+            purge-fix.patch
+            purge-fix-files.txt
