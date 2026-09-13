@@ -31,7 +31,6 @@ REQUIRED_COMPOSITION_SYMBOLS = {
     "normalize_runtime_environment",
 }
 FORBIDDEN_COMPOSITION_IMPORT_PREFIXES = ("streamlit", "rag_project.app")
-UI_PREFIXES = ("streamlit", "rag_project.app")
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
 
@@ -122,8 +121,6 @@ def inspect() -> dict[str, object]:
 
     # Wildcard imports make dependency ownership and static analysis ambiguous.
     for path in _python_files():
-        if "/.venv/" in str(path).replace("\\", "/"):
-            continue
         try:
             if _has_wildcard_import(path):
                 violations.append(f"{path.relative_to(ROOT)} uses a wildcard import")
