@@ -39,6 +39,9 @@ def create_app(engine: Any, store: Any | None = None):
     from rag_project.security import validate_query
 
     settings = APISettings.from_env()
+    if settings.environment == "production" and not settings.auth_enabled:
+        raise RuntimeError("Production MedEvidence API cannot start with authentication disabled.")
+
     app = FastAPI(
         title="MedEvidence Pro",
         version="2.1",
@@ -146,7 +149,6 @@ def create_app(engine: Any, store: Any | None = None):
             "llm": getattr(getattr(engine, "system", None), "llm", None) is not None,
             "kb": getattr(engine, "knowledge", None) is not None,
         }
-        # Health is intentionally coarse: detailed dependency state is not public.
         return {"status": "healthy" if all(checks.values()) else "degraded"}
 
     @app.get("/metrics", dependencies=[Depends(ops_scope)])
