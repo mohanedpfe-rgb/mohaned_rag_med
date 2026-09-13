@@ -42,8 +42,6 @@ def _install_ingestion_compatibility() -> None:
                 return original(system, source, *args, **kwargs)
             return unsafe(system, source, *args, **kwargs)
 
-        # The inner deep-contract wrapper is historically named ``wrapped``.
-        # The public callable contract must remain the stable production name.
         wrapped.__name__ = getattr(original, "__name__", "robust_ingest_file")
         wrapped.__qualname__ = getattr(original, "__qualname__", wrapped.__name__)
         wrapped._deep_ingestion_guard = True
@@ -85,6 +83,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_final_contracts_v7 import install as runtime_final_contracts_v7
     from rag_project.runtime_final_contracts_v8 import install as runtime_final_contracts_v8
     from rag_project.runtime_chroma_metadata_fix import install as chroma_metadata_fix
+    from rag_project.runtime_hierarchy_path_fix import install as hierarchy_path_fix
     from rag_project.runtime_answer_recovery_contract import install as answer_recovery_contract
     from rag_project.runtime_deep_contract_fix import install as deep_contract_fix
     from rag_project.runtime_post_contract_fix import install as post_contract_fix
@@ -107,12 +106,12 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         deep_pdf_finalizer_v3, deep_pdf_finalizer_v4, runtime_contract_compat,
         runtime_final_contracts, runtime_final_contracts_v2, runtime_final_contracts_v3,
         runtime_final_contracts_v4, runtime_final_contracts_v5, runtime_final_contracts_v7,
-        runtime_final_contracts_v8, chroma_metadata_fix, answer_recovery_contract,
-        deep_contract_fix, post_contract_fix, functionality_deep_fix,
-        functionality_state_fix, functionality_safety_fix, functionality_routing_fix,
-        functionality_scope_fix, functionality_comparison_template_fix,
-        functionality_numeric_range_fix, functionality_final_audit_fix,
-        production_contract_fix, ready_publication_fix,
+        runtime_final_contracts_v8, chroma_metadata_fix, hierarchy_path_fix,
+        answer_recovery_contract, deep_contract_fix, post_contract_fix,
+        functionality_deep_fix, functionality_state_fix, functionality_safety_fix,
+        functionality_routing_fix, functionality_scope_fix,
+        functionality_comparison_template_fix, functionality_numeric_range_fix,
+        functionality_final_audit_fix, production_contract_fix, ready_publication_fix,
     )
 
 
