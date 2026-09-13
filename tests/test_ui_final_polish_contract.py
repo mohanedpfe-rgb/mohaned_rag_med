@@ -4,11 +4,12 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "app.py").read_text(encoding="utf-8")
 POLISH = (ROOT / "rag_project/app/ui_final_polish.py").read_text(encoding="utf-8")
 RENOVATION = (ROOT / "rag_project/app/ui_renovation.py").read_text(encoding="utf-8")
+VILLA = (ROOT / "rag_project/app/ui_villa_finish.py").read_text(encoding="utf-8")
 
 
 def test_final_polish_is_applied_before_security_wrappers():
     assert "from rag_project.app.ui_final_polish import apply as apply_ui_final_polish" in APP
-    assert "apply_ui_renovation();apply_ui_final_polish();_install_ui_guards()" in APP
+    assert "apply_ui_renovation();apply_ui_final_polish();apply_ui_villa_finish();_install_ui_guards()" in APP
 
 
 def test_semantic_status_colors_are_defined_after_theme_replacement():
@@ -33,15 +34,27 @@ def test_premium_measurement_system_is_explicit():
         "border-radius:10px",
         "padding:0 15px",
         "gap:8px",
-        "shadow-2:0 18px 48px",
+        "--shadow-2:0 18px 48px",
     ):
         assert marker in POLISH
 
 
 def test_command_palette_uses_honest_label_and_preserves_navigation():
-    assert 'st.popover("Quick navigation")' in POLISH
-    assert 'st.caption("Jump to a BookRAG workspace")' in POLISH
-    assert 'ui._navigate(page)' in POLISH
+    assert 'st.popover("Quick navigation")' in RENOVATION
+    assert 'st.caption("Jump to a BookRAG workspace")' in RENOVATION
+    assert 'ui._navigate(page)' in RENOVATION
+
+
+def test_villa_finish_covers_remaining_framework_surfaces():
+    for marker in (
+        'div[data-baseweb="popover"]',
+        '[data-testid="stExpander"]',
+        '.stTabs [data-baseweb="tab-list"]',
+        '[data-testid="stDataFrame"]',
+        '[data-testid="stFileUploaderDropzone"]',
+        "@media(prefers-reduced-motion:reduce)",
+    ):
+        assert marker in VILLA
 
 
 def test_renovation_still_has_responsive_layout_contract():
