@@ -1,16 +1,38 @@
 [Unit]
 Description=MedEvidence Pro API
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/medevidence
-Environment=MEDEVIDENCE_CLOUD_ENABLED=false
-ExecStart=/usr/bin/python3 -m uvicorn scripts.run_medevidence_api:app --host 127.0.0.1 --port 8000
-Restart=always
+EnvironmentFile=-/etc/medevidence/api.env
+Environment=MEDEVIDENCE_ENV=production
+Environment=MEDEVIDENCE_CORS_ORIGINS=https://medevidence.example
+ExecStart=/usr/bin/python3 -m uvicorn scripts.run_medevidence_api:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
 RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+ReadWritePaths=/opt/medevidence/data /opt/medevidence/logs
+TimeoutStartSec=90
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target
