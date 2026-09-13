@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import threading
-from pathlib import Path
 from typing import Any
 
-from rag_project.application_answer_service import ACTIVE_ANSWER_PIPELINE_AUTHORITY, answer
+from rag_project.application_answer_service import ACTIVE_ANSWER_PIPELINE_AUTHORITY
+from rag_project.application_answer_service import answer as _med_evidence_answer
 from rag_project.application_answer_service import install_runtime_adapters
 from rag_project.configuration.settings import Settings
 from rag_project.canonical_runtime import ANSWER_AUTHORITY
@@ -34,7 +34,7 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
 class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
     """Canonical application service with explicit answer and publication contracts."""
 
-    _certified_god_answer = staticmethod(answer)
+    _certified_god_answer = staticmethod(_med_evidence_answer)
 
     def ingest_file(self, pdf_path):
         result = dict(super().ingest_file(pdf_path) or {})
@@ -199,4 +199,5 @@ __all__ = [
     "PRODUCTION_CONTRACT_VERSION",
     "INGESTION_CONTRACT_VERSION",
     "MedEvidenceProductionRAGSystem",
+    "_med_evidence_answer",
 ]
