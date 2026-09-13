@@ -97,3 +97,24 @@ def pytest_collection_modifyitems(session, config, items):
     target.rewrite_follow_up = legacy_rewrite_follow_up
     target.numeric_consistency = legacy_numeric_consistency
     target._legacy_contracts_installed = True
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Release global background resources before pytest/xdist worker exit."""
+    try:
+        from rag_project.ingestion import responsive_supervisor
+
+        responsive_supervisor.stop(timeout_seconds=3.0)
+    except Exception:
+        pass
+
+    # Chroma keeps shared process state in some versions. Clear it defensively so
+    # xdist workers do not retain clients or telemetry resources past the test run.
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        clear_system_cache = getattr(SharedSystemClient, "clear_system_cache", None)
+        if callable(clear_system_cache):
+            clear_system_cache()
+    except Exception:
+        pass
