@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -266,6 +267,67 @@ class IngestionStateStore:
                 f"ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}",
                 tuple(selected.values()),
             )
+
+    def record_page(self, extraction: Any, *, cache_reference: str | None = None) -> None:
+        """Persist a ``PageExtraction`` using the durable page checkpoint contract.
+
+        The PDF extraction stack historically called ``record_page(extraction, ...)``
+        while the durable store exposed the newer ``upsert_page`` API.  Keep that
+        boundary compatible by translating the extraction object into the explicit
+        page schema instead of making callers know storage details.
+        """
+        if extraction is None:
+            raise ValueError("extraction must be a PageExtraction-like object")
+
+        document_id = str(getattr(extraction, "document_id", "") or "")
+        if not document_id:
+            raise ValueError("extraction.document_id must be non-empty")
+
+        page_number = getattr(extraction, "page_number", None)
+        if page_number is None:
+            page_number = int(getattr(extraction, "page_index", 0) or 0) + 1
+        page_number = int(page_number)
+        if page_number < 1:
+            raise ValueError("extraction page number must be >= 1")
+
+        text = str(getattr(extraction, "text", "") or "")
+        metadata = getattr(extraction, "metadata", {}) or {}
+        if not isinstance(metadata, dict):
+            try:
+                metadata = dict(metadata)
+            except (TypeError, ValueError):
+                metadata = {}
+
+        processing_error = metadata.get("processing_error") or metadata.get("error") or metadata.get("ocr_error")
+        if processing_error:
+            processing_error = str(processing_error)
+
+        extraction_method = str(
+            getattr(extraction, "extraction_method", None)
+            or metadata.get("extraction_method")
+            or "native"
+        )
+        ocr_status = str(
+            getattr(extraction, "ocr_status", None)
+            or metadata.get("ocr_status")
+            or "not_required"
+        )
+        checksum = metadata.get("checksum") or metadata.get("text_checksum")
+        if not checksum:
+            checksum = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+        self.upsert_page(
+            document_id,
+            page_number,
+            extraction_status="FAILED" if processing_error else "COMPLETED",
+            ocr_status=ocr_status,
+            extraction_method=extraction_method,
+            text=text,
+            cache_reference=cache_reference or metadata.get("cache_reference"),
+            processing_error=processing_error,
+            checksum=str(checksum),
+            updated_at=utc_now(),
+        )
 
     def get_pages(self, document_id: str) -> list[dict[str, Any]]:
         """Return all persisted page checkpoints for a document in page order."""
