@@ -13,7 +13,7 @@ from typing import Any
 
 from rag_project.evaluation.dataset import dataset_path, load_dataset
 from rag_project.evaluation.dataset import save_dataset
-from rag_project.evaluation.types import EvalQuestion, EvalSource
+from rag_project.evaluation.types import EvalQuestion
 from rag_project.app.rag_system import RAGSystem
 from rag_project.configuration.settings import Settings
 from rag_project.utils.text_utils import detect_language

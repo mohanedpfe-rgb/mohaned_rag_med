@@ -11,7 +11,6 @@ from rag_project.embeddings.embedding_service import EmbeddingProfile, Embedding
 from rag_project.ingestion.document_models import PageExtraction
 from rag_project.security import (
     MAX_QUERY_CHARS,
-    MAX_UPLOAD_BYTES,
     _is_disallowed_ip,
     max_pdf_pages,
     postprocess_medical_output,

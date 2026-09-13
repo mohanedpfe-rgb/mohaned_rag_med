@@ -160,7 +160,6 @@ def _model_digest(self: Any) -> str | None:
 
 
 def install() -> None:
-    from rag_project.app.rag_system import RAGSystem
     from rag_project.embeddings.embedding_service import EmbeddingProfile, EmbeddingService
     from rag_project.ingestion.state_store import IngestionStateStore
     from rag_project.storage.vector_store import VectorStore

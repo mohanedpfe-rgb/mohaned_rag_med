@@ -3,7 +3,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Any
 
 _LOCK = threading.RLock()
 _INSTALLED = False

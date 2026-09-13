@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import re
 import threading
 from collections import defaultdict
 from pathlib import Path

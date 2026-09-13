@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-import sqlite3
 import threading
-from typing import Any
 
 from rag_project.storage.vector_store import VectorStore
 

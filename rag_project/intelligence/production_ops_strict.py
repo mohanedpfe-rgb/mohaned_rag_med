@@ -6,7 +6,6 @@ import json
 import math
 import sqlite3
 import statistics
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence

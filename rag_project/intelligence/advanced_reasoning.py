@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field, asdict
-from typing import Any, Iterable, Sequence
+from dataclasses import dataclass, asdict
+from typing import Any, Sequence
 
 
 _NUM = re.compile(r"[-+]?\d+(?:[\.,]\d+)?")

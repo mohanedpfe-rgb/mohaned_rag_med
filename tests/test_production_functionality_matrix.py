@@ -26,7 +26,6 @@ from rag_project.intelligence.pipeline_integrity import (
     safe_verify_final_answer,
 )
 from rag_project.intelligence.production_contract import (
-    FEATURES,
     production_readiness,
     redact_sensitive_text,
     sanitize_trace,

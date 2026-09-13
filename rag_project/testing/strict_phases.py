@@ -9,28 +9,22 @@ hard-coded phase count.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from rag_project.testing.deep_diagnostics import PhaseResult
 from rag_project.testing.advanced_phases import (
     _fixture_chunks,
-    _fixture_pages,
-    _store_fixture,
     _cleanup_store,
     _embedding,
-    _gold_cases,
     _result,
     adversarial_documents as legacy_adversarial_documents,
     performance as legacy_performance,
     resources as legacy_resources,
-    root_cause_phase as legacy_root_cause_phase,
-    cascade_phase as legacy_cascade_phase,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,7 +63,6 @@ def phase10_production_generation(phase: Any) -> PhaseResult:
             AnswerCascade,
             ActiveVerifier,
             EvidenceCompiler,
-            QueryRouter,
             RouteMetadata,
             SafetyDecision,
         )

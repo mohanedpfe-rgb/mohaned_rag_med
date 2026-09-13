@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 
 from rag_project.app.production_rag import ProductionRAGSystem
 from rag_project.app.resilient_rag import ResilientRAGSystem

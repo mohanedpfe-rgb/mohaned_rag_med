@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Sequence
+from typing import Any
 from rag_project.utils.text_utils import meaningful_tokens
 
 @dataclass(frozen=True)

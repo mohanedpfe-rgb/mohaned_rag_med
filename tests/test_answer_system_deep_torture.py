@@ -5,20 +5,20 @@ from types import SimpleNamespace
 import pytest
 
 from rag_project.app.rag_system import RAGSystem, RetrievalHit
-from rag_project.app.production_rag import ProductionRAGSystem, _is_explicit_followup
+from rag_project.app.production_rag import _is_explicit_followup
 from rag_project.intelligence.adaptive_retrieval import choose_retrieval_budget, should_retry_retrieval
 from rag_project.intelligence.advanced_clinical_reasoner import assess_clinical_reasoning, extract_clinical_facts
-from rag_project.intelligence.confidence_calibration import calibrate_confidence, confidence_gate
-from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix, matrix_has_strong_support
-from rag_project.intelligence.evidence_guard import ClaimCheck, citation_firewall, detect_contradiction, extract_measurements, grounding_decision, numeric_consistency, semantic_support, split_claims, verify_claims
+from rag_project.intelligence.confidence_calibration import calibrate_confidence
+from rag_project.intelligence.evidence_entailment import build_claim_evidence_matrix
+from rag_project.intelligence.evidence_guard import ClaimCheck, citation_firewall, detect_contradiction, extract_measurements, numeric_consistency, split_claims, verify_claims
 from rag_project.intelligence.final_answer_contract import verify_final_answer
 from rag_project.intelligence.god_mode import _diversify, _metadata_boost
-from rag_project.intelligence.god_mode_100 import _runtime_phase_implementation, _validated_model_entities
+from rag_project.intelligence.god_mode_100 import _runtime_phase_implementation
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy, is_high_risk_medical_query
 from rag_project.intelligence.query_intelligence import decompose_query, extract_query_entities, normalize_query, plan_query
 from rag_project.intelligence.semantic_reasoning import QueryUnderstanding, extract_clinical_entities, semantic_evidence_alignment
 from rag_project.intelligence.small_model_reasoner import _extract_json, _sanitize_assist, analyze_with_small_model, should_use_small_model
-from rag_project.intelligence.top_level_pipeline import PhasePlan, _hard_query, compress_context, deterministic_phase1, medical_term_layer, extractive_draft
+from rag_project.intelligence.top_level_pipeline import _hard_query, compress_context, deterministic_phase1, medical_term_layer, extractive_draft
 
 
 def hit(text: str, score: float = 0.8, *, doc: str = "doc-1", chunk: str = "chunk-1", page: int = 1):

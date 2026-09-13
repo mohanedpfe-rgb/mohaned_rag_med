@@ -28,7 +28,7 @@ def wrap_ingest_callable(original: Callable[..., Any]) -> Callable[..., Any]:
         started = time.perf_counter()
         try:
             result = original(system, pdf_path, *args, **kwargs)
-        except Exception as exc:
+        except Exception:
             if getattr(system, "logger", None) is not None:
                 system.logger.exception(
                     "Ingestion request failed request_id=%s file=%s",

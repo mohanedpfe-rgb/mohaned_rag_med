@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Dict, Optional
 
 from rag_project.evaluation.dataset import EVAL_VERSION, default_eval_root
 from rag_project.evaluation.types import EvalReport

@@ -69,7 +69,7 @@ class APISettings:
         for proxy in trusted_proxies:
             try:
                 ipaddress.ip_network(proxy, strict=False)
-            except ValueError as exc:
+            except ValueError:
                 try:
                     ipaddress.ip_address(proxy)
                 except ValueError as inner:

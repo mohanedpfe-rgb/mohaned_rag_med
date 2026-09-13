@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 from rag_project.evaluation.types import (
     EvalCategory,
@@ -11,7 +11,7 @@ from rag_project.evaluation.types import (
     RetrievalMetrics,
 )
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
-from rag_project.utils.text_utils import meaningful_tokens, normalize_arabic, tokenize
+from rag_project.utils.text_utils import normalize_arabic, tokenize
 
 
 # ---------------------------------------------------------------------------
