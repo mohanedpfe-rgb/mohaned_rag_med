@@ -149,45 +149,11 @@ def strict_fast_health(phase: Any) -> PhaseResult:
     checks: dict[str, Any] = {}
     failures: list[dict[str, Any]] = []
     try:
-        # The repository's root pytest conftest dynamically assigns the `fast`
-        # marker to tests under tests/diagnostics.  Running an unrestricted
-        # collection first defeats the purpose of this phase: pytest imports the
-        # entire test tree, including integration/high-level suites, before the
-        # marker expression is applied.  Keep the health gate scoped to the
-        # authoritative diagnostic suite instead of paying for unrelated
-        # collection work or hitting the subprocess watchdog before any selected
-        # contract test runs.
-        collect_args = [
-            sys.executable,
-            "-m",
-            "pytest",
-            str(DIAGNOSTIC_TESTS.relative_to(ROOT)),
-            "--collect-only",
-            "-q",
-            "--disable-warnings",
-            "-m",
-            "fast and contract",
-        ]
-        collect = subprocess.run(
-            collect_args,
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            timeout=60,
-        )
-        collected_match = re.search(r"(\d+) tests? collected", collect.stdout + "\n" + collect.stderr)
-        collected = int(collected_match.group(1)) if collected_match else 0
-        checks["pytest_collection_exit_zero"] = collect.returncode == 0
-        checks["collected_tests_positive"] = collected > 0
-        checks["collected_tests"] = collected
-        checks["fast_contract_collection_scoped"] = str(DIAGNOSTIC_TESTS.relative_to(ROOT)) in " ".join(collect_args)
-        if collect.returncode != 0:
-            failures.append({
-                "location": "pytest diagnostics --collect-only -m 'fast and contract'",
-                "exception": "CollectionFailure",
-                "message": (collect.stdout + collect.stderr)[-1600:],
-            })
-
+        # Phase 2 is explicitly the diagnostic fast lane. Root pytest collection
+        # dynamically marks tests under tests/diagnostics as `fast`, and only node
+        # paths containing `contract` receive the `contract` marker. Scope the run
+        # to that suite so unrelated integration/high-level files are never
+        # imported merely to decide they are not selected.
         contract_args = [
             sys.executable,
             "-m",
@@ -210,18 +176,21 @@ def strict_fast_health(phase: Any) -> PhaseResult:
         contract_output = contracts.stdout + "\n" + contracts.stderr
         passed_match = re.search(r"(\d+) passed", contract_output)
         failed_match = re.search(r"(\d+) failed", contract_output)
+        skipped_match = re.search(r"(\d+) skipped", contract_output)
         passed = int(passed_match.group(1)) if passed_match else 0
         failed = int(failed_match.group(1)) if failed_match else 0
+        skipped = int(skipped_match.group(1)) if skipped_match else 0
         checks["fast_contract_exit_zero"] = contracts.returncode == 0
         checks["fast_contract_passed"] = passed > 0
         checks["fast_contract_passed_count"] = passed
         checks["fast_contract_failed_count"] = failed
+        checks["fast_contract_skipped_count"] = skipped
         checks["fast_contract_scope_is_diagnostics"] = True
         if contracts.returncode != 0:
             failures.append({
                 "location": "pytest tests/diagnostics -m 'fast and contract'",
                 "exception": "FastContractFailure" if contracts.returncode != 124 else "FastContractTimeout",
-                "message": contract_output[-2200:],
+                "message": contract_output[-3000:],
             })
 
         compile_run = subprocess.run(
@@ -254,10 +223,8 @@ def strict_fast_health(phase: Any) -> PhaseResult:
         result.details = {
             "evidence_level": "strict_fast_runtime_health",
             "checks": checks,
-            "collected_tests": collected,
-            "fast_contract_passed": passed,
-            "fast_contract_failed": failed,
             "fast_contract_scope": "tests/diagnostics",
+            "collection_strategy": "single_execution_pass; pytest performs the authoritative collection",
             "production_imports": ["rag_project.application", "MedEvidenceProEngine", "PDFExtractor", "VectorStore", "OllamaLLMClient"],
         }
         bool_checks = [value for value in checks.values() if isinstance(value, bool)]
@@ -270,7 +237,7 @@ def strict_fast_health(phase: Any) -> PhaseResult:
         result.failures.append({
             "location": "phase 2 strict fast health",
             "exception": "TimeoutExpired",
-            "message": f"Fast contract subprocess exceeded its 120 second diagnostic budget. Output: {exc.stdout or ''}\n{exc.stderr or ''}"[-2500:],
+            "message": f"Fast contract subprocess exceeded its 120 second diagnostic budget. Output: {exc.stdout or ''}\n{exc.stderr or ''}"[-3000:],
         })
     except Exception as exc:
         result.status = "FAIL"; result.score = 0.0; result.failures.append({"location": "phase 2 strict fast health", "exception": type(exc).__name__, "message": str(exc)})
