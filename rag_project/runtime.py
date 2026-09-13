@@ -100,6 +100,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_ready_publication_fix import install as ready_publication_fix
     from rag_project.runtime_transactional_rollback_fix import install as transactional_rollback_fix
     from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle_fix
+    from rag_project.runtime_page_identity_fix import install as page_identity_fix
     from rag_project.runtime_phase16_contract_fix import install as phase16_contract_fix
     from rag_project.runtime_version_transaction_fix import install as version_transaction_fix
 
@@ -117,8 +118,8 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         functionality_safety_fix, functionality_routing_fix, functionality_scope_fix,
         functionality_comparison_template_fix, functionality_numeric_range_fix,
         functionality_final_audit_fix, production_contract_fix, ready_publication_fix,
-        transactional_rollback_fix, chroma_lifecycle_fix, phase16_contract_fix,
-        version_transaction_fix,
+        transactional_rollback_fix, chroma_lifecycle_fix, page_identity_fix,
+        phase16_contract_fix, version_transaction_fix,
     )
 
 
