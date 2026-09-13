@@ -32,15 +32,12 @@ def rss(pid: int) -> int | None:
                 ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
                 ("QuotaPagedPoolUsage", ctypes.c_size_t),
                 ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
                 ("PagefileUsage", ctypes.c_size_t),
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_VM_READ = 0x0010
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
-        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
+        handle = kernel32.OpenProcess(0x0400 | 0x0010, False, int(pid))
         if not handle:
             return None
         try:
@@ -61,8 +58,7 @@ def rss(pid: int) -> int | None:
                     return None
     try:
         import resource
-        usage = resource.getrusage(resource.RUSAGE_SELF)
-        value = int(usage.ru_maxrss)
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
         return value * 1024 if sys.platform != "darwin" else value
     except Exception:
         return None
@@ -72,15 +68,12 @@ def fd_count(pid: int) -> int | None:
     """Return open-handle/file-descriptor count on supported platforms."""
     if os.name == "nt":
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))
         if not handle:
             return None
         try:
             count = ctypes.c_ulong(0)
-            if kernel32.GetProcessHandleCount(handle, ctypes.byref(count)):
-                return int(count.value)
-            return None
+            return int(count.value) if kernel32.GetProcessHandleCount(handle, ctypes.byref(count)) else None
         finally:
             kernel32.CloseHandle(handle)
     directory = Path(f"/proc/{pid}/fd")
@@ -124,52 +117,91 @@ def _quarter_mean(values: list[int], start: bool) -> float | None:
     return sum(sample) / len(sample)
 
 
+def _clear_chroma_process_cache() -> None:
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+
+        clear_system_cache = getattr(SharedSystemClient, "clear_system_cache", None)
+        if callable(clear_system_cache):
+            clear_system_cache()
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=5.0)
     args = parser.parse_args()
+
     try:
         from tests.diagnostic_runtime_adapters import install as install_diagnostic_adapters
         install_diagnostic_adapters()
     except Exception:
         pass
-    from rag_project.testing.production_path_probes import _ProductionIngestionProbeSystem
+
     from rag_project.ingestion.robust_ingestor import robust_ingest_file
+    from rag_project.testing.production_path_probes import _ProductionIngestionProbeSystem
 
     started = time.monotonic()
-    deadline = started + max(5.0, args.duration)
+    deadline = started + max(5.0, float(args.duration))
     minimum_iterations = 3
     minimum_successes = 3
+    # The previous implementation could create an unbounded number of independent
+    # Chroma PersistentClient instances during the fixed-duration window. That turns
+    # a 5-second resource probe into an uncontrolled database/client accumulation test.
+    target_iterations = max(minimum_iterations, min(12, int(max(5.0, float(args.duration)) * 2)))
+
     samples: list[int] = []
     fds: list[int] = []
+    failures: list[str] = []
     iterations = 0
     successes = 0
-    failures: list[str] = []
-    while (iterations < minimum_iterations or successes < minimum_successes) or time.monotonic() < deadline:
-        root = Path(tempfile.mkdtemp(prefix=f"rag_resource_production_{iterations}_"))
-        try:
-            system = _ProductionIngestionProbeSystem(root)
-            source_dir = root / "source"
-            source_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="rag_resource_production_"))
+    system = None
+
+    try:
+        system = _ProductionIngestionProbeSystem(root)
+        source_dir = root / "source"
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+        while iterations < target_iterations and (time.monotonic() < deadline or successes < minimum_successes):
             source = source_dir / f"resource_{iterations}.pdf"
-            _write_probe_pdf(source, iterations)
-            outcome = robust_ingest_file(system, source)
-            if outcome.get("status") in {"success", "skipped"}:
-                successes += 1
-            else:
-                failures.append(str(outcome.get("status") or "unknown_failure"))
-        except Exception as exc:
-            failures.append(f"{type(exc).__name__}: {exc}")
-        finally:
-            shutil.rmtree(root, ignore_errors=True)
+            try:
+                _write_probe_pdf(source, iterations)
+                outcome = robust_ingest_file(system, source)
+                if outcome.get("status") in {"success", "skipped", "ready", "completed"}:
+                    successes += 1
+                else:
+                    failures.append(str(outcome.get("status") or "unknown_failure"))
+            except Exception as exc:
+                failures.append(f"{type(exc).__name__}: {exc}")
+
+            current_rss = rss(os.getpid())
+            current_fd = fd_count(os.getpid())
+            if current_rss is not None:
+                samples.append(current_rss)
+            if current_fd is not None:
+                fds.append(current_fd)
+            iterations += 1
             gc.collect()
-        current_rss = rss(os.getpid())
-        current_fd = fd_count(os.getpid())
-        if current_rss is not None:
-            samples.append(current_rss)
-        if current_fd is not None:
-            fds.append(current_fd)
-        iterations += 1
+
+    finally:
+        # Drop strong references before clearing Chroma's process-global client cache.
+        # This is important on Windows where an open SQLite/WAL handle can otherwise
+        # survive long enough to stall cleanup and the parent pytest process.
+        if system is not None:
+            try:
+                system.vector_store = None
+            except Exception:
+                pass
+            try:
+                system.state_store = None
+            except Exception:
+                pass
+        _clear_chroma_process_cache()
+        gc.collect()
+        shutil.rmtree(root, ignore_errors=True)
+        _clear_chroma_process_cache()
 
     observed = time.monotonic() - started
     payload = {
@@ -177,6 +209,7 @@ def main() -> int:
         "observed_seconds": observed,
         "sample_count": len(samples),
         "iterations": iterations,
+        "target_iterations": target_iterations,
         "successful_ingestions": successes,
         "failed_iterations": len(failures),
         "failure_samples": failures[:5],
@@ -195,6 +228,8 @@ def main() -> int:
         "ready_publication_contract_guarded": True,
         "repository_root": str(ROOT),
         "telemetry_platform": os.name,
+        "runtime_reused_across_iterations": True,
+        "iteration_bound_enforced": True,
     }
     print(json.dumps(payload, sort_keys=True))
     return 0 if successes >= minimum_successes else 1
