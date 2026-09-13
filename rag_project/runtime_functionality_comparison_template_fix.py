@@ -5,9 +5,10 @@ from typing import Any
 
 
 def _wrap_comparison_template(original: Any):
-    def wrapped(self: Any, compiled: dict[str, Any], route: Any):
+    """Wrap the static AnswerCascade template with the correct 2-argument contract."""
+    def wrapped(compiled: dict[str, Any], route: Any):
         if getattr(route, "template_type", None) != "comparison":
-            return original(self, compiled, route)
+            return original(compiled, route)
         claims = compiled.get("claims") or []
         if not claims:
             return None
