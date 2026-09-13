@@ -16,6 +16,7 @@ from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
 from rag_project.retrieval.metadata_filter import MetadataFilter
 from rag_project.intelligence.semantic_reasoning import build_evidence_graph, clinical_reasoning_ready, semantic_evidence_alignment, understand_query
 from rag_project.intelligence.small_model_reasoner import analyze_with_small_model, augment_query_plan, merge_understanding
+from rag_project.intelligence.trace_privacy import sanitize_trace
 
 GOD_MODE_FEATURES = (
     "universal_pdf_routing", "page_quality_scoring", "adaptive_ocr_routing", "alternate_extractor_trigger",
