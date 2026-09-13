@@ -14,7 +14,7 @@ After successful composition, the process carries the exact `BOOKRAG_RUNTIME_PRE
 
 The UI security capture boundary is `rag_project.app.ui_security_boundary.install`. It owns upload/path/URL validation capture and presentation-side evidence/intelligence panel wiring. Security policy itself remains in `rag_project.security`; this module only composes it around the UI surface.
 
-The canonical application service remains `rag_project.application.MedEvidenceProductionRAGSystem`. Answer execution and answer-envelope normalization live in the presentation-independent `rag_project.application_answer_service`, while the canonical answer authority remains `rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer`.
+The canonical application service remains `rag_project.application.MedEvidenceProductionRAGSystem`. Answer execution and answer-envelope normalization live in the presentation-independent `rag_project.application_answer_service`. The legacy `ProductionRAGSystem` is isolated behind the single compatibility boundary `rag_project.application_legacy_adapter.LegacyProductionRAGAdapter`; no canonical application code imports the legacy implementation directly. The canonical answer authority remains `rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer`.
 
 ## Layering
 
@@ -29,6 +29,7 @@ Composition root (`rag_project.composition`)
     ↓
 Application service (`rag_project.application`)
     ├── answer behavior (`rag_project.application_answer_service`)
+    ├── legacy compatibility (`rag_project.application_legacy_adapter`)
     └── neutral runtime policy (`rag_project.runtime` + bootstrap state)
     ↓
 Document representation
@@ -67,19 +68,20 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 17. A stale or mismatched runtime-prepared marker is never trusted; contract installation must be repeated before constructing the production service.
 18. The application layer does not import the composition root. Prepared-runtime state and reusable contract bootstrap policy live below both layers.
 19. Answer execution, fallback normalization, diagnostics, and optional answer adapters are isolated in `application_answer_service` so the canonical application service remains a composition boundary rather than a monolith.
+20. Legacy implementation coupling is isolated in exactly one compatibility adapter. Direct imports of `rag_project.app.production_rag` from the canonical application layer are prohibited.
 
 ## Dependency direction
 
 ```text
-presentation → composition → application → answer service / neutral runtime policy → adapters
+presentation → composition → application → answer service / compatibility adapter / neutral runtime policy → adapters
                      ↘ UI security capture → security policy
 ```
 
-Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. The application service must not import the composition root. `application_answer_service` must remain presentation-independent and must not import Streamlit or legacy UI modules. UI security capture may depend on the UI and security adapter surfaces but must not become a storage or domain layer.
+Feature modules may depend on lower-level utilities/adapters, but storage adapters must not import UI modules, the UI must not implement storage semantics, and the composition root must not depend on presentation modules. The application service must not import the composition root. `application_answer_service` must remain presentation-independent and must not import Streamlit or legacy UI modules. `application_legacy_adapter` is the only approved bridge to `rag_project.app.production_rag`, and it is a compatibility boundary rather than a production authority. UI security capture may depend on the UI and security adapter surfaces but must not become a storage or domain layer.
 
 ## Executable architecture quality gate
 
-Architecture is enforced before the test suite by `scripts/architecture_gate.py`. It is standard-library-only and therefore safe to run before optional runtime imports. The gate checks the thin `app.py` ceiling, composition/UI dependency direction, canonical application symbols, application/answer-service separation, non-monkey-patched answer authority, UI isolation from core layers, wildcard-import hygiene, required architecture-contract markers, deterministic dependency-lock presence, and Python syntax across project modules. CI runs this gate in every diagnostic, high-level, and regression lane.
+Architecture is enforced before the test suite by `scripts/architecture_gate.py`. It is standard-library-only and therefore safe to run before optional runtime imports. The gate checks the thin `app.py` ceiling, composition/UI dependency direction, canonical application symbols, application/answer-service separation, explicit legacy-adapter ownership, non-monkey-patched answer authority, UI isolation from core layers, wildcard-import hygiene, required architecture-contract markers, deterministic dependency-lock presence, and Python syntax across project modules. CI runs this gate in every diagnostic, high-level, and regression lane.
 
 This is deliberately a contract gate rather than a generic style linter: it protects boundaries that must survive refactors, while leaving implementation-level formatting and naming to ordinary tests and tooling.
 
@@ -89,10 +91,10 @@ The reference deployment is a single machine with roughly 16GB RAM and a CPU-fir
 
 ## Engineering quality target
 
-The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, application/answer-service split, bounded runtime settings, dependency direction, prepared-runtime lifecycle, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
+The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, application/answer-service split, explicit legacy compatibility boundary, bounded runtime settings, dependency direction, prepared-runtime lifecycle, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
 
 ## Architectural debt register
 
 The legacy `RAGSystem` surface remains transitional. Runtime installers and `rag_project.composition.prepare_runtime` are the composition boundary. The deep PDF contract is installed from that boundary so parsing, structure, versioning, validation and retrieval policies are active for production entry points.
 
-The next architectural migration target is ownership-based retirement of remaining legacy UI and `RAGSystem` surfaces; until then, their use is treated as compatibility surface rather than production authority.
+The remaining legacy `rag_project.app.production_rag.ProductionRAGSystem` implementation is intentionally isolated behind `LegacyProductionRAGAdapter`. This makes the dependency explicit and mechanically enforced while preserving compatibility during the migration. The next migration target is ownership-based retirement of the legacy UI/service implementation itself; until then, its use is treated as compatibility surface rather than production authority.
