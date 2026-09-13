@@ -12,6 +12,8 @@ APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
 UI_SECURITY = ROOT / "rag_project" / "app" / "ui_security_boundary.py"
 APPLICATION = ROOT / "rag_project" / "application.py"
+ANSWER_SERVICE = ROOT / "rag_project" / "application_answer_service.py"
+LEGACY_ADAPTER = ROOT / "rag_project" / "application_legacy_adapter.py"
 RUNTIME = ROOT / "rag_project" / "runtime.py"
 
 
@@ -42,14 +44,19 @@ def test_composition_module_does_not_depend_on_ui():
     assert not any(name.startswith("rag_project.app") for name in imports)
 
 
-def test_application_depends_on_neutral_runtime_not_composition():
+def test_application_uses_explicit_boundaries_not_legacy_inheritance():
     imports = _imports(APPLICATION)
+    answer_imports = _imports(ANSWER_SERVICE)
+    adapter_imports = _imports(LEGACY_ADAPTER)
     assert "rag_project.composition" not in imports
     assert "rag_project.runtime" in imports
     assert "rag_project.runtime_bootstrap_state" in imports
-    assert "rag_project.intelligence.pipeline_integrity" not in imports
-    assert "rag_project.intelligence.production_contract_v2" not in imports
-    assert "rag_project.ingestion.ingestion_contract" not in imports
+    assert "rag_project.application_answer_service" in imports
+    assert "rag_project.application_legacy_adapter" in imports
+    assert not any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in imports)
+    assert not any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in answer_imports)
+    assert "rag_project.app.production_rag" in adapter_imports
+    assert "LegacyProductionRAGAdapter" in LEGACY_ADAPTER.read_text(encoding="utf-8")
     assert "install_application_contracts" in RUNTIME.read_text(encoding="utf-8")
 
 
@@ -110,6 +117,8 @@ def test_architecture_document_names_the_composition_boundary_and_gate():
     assert "rag_project.composition.prepare_runtime" in architecture
     assert "rag_project.app.ui_security_boundary" in architecture
     assert "scripts/architecture_gate.py" in architecture
+    assert "application_answer_service" in architecture
+    assert "LegacyProductionRAGAdapter" in architecture
     assert "runtime_bootstrap_state" in architecture
     assert "app.py" in architecture
     assert "presentation entrypoint" in architecture.lower()
