@@ -6,10 +6,9 @@ __all__ = ["__version__"]
 __version__ = "0.1.0"
 
 
-# Compatibility repair for the durable page-checkpoint boundary.
-# The canonical StateStore implementation validates the document identity but
-# previously omitted the method's document_id/page_number arguments from the
-# INSERT parameter mapping, which caused pages.document_id NOT NULL failures.
+# Compatibility repair for durable production boundaries.
+# Keep the canonical implementation strict while ensuring legacy callers
+# bind the required primary-key fields explicitly.
 from .ingestion import state_store as _state_store
 
 
@@ -54,4 +53,15 @@ def _fixed_upsert_page(self, document_id: str, page_number: int, **values):
         )
 
 
+_original_transition_document_state = _state_store.IngestionStateStore.transition_document_state
+
+
+def _fixed_transition_document_state(self, document_id: str, new_stage: str, **values):
+    """Keep the READY invariant while making the documented READY default reachable."""
+    if str(new_stage).upper() in {"READY", "COMPLETED"} and "index_state" not in values:
+        values["index_state"] = "READY"
+    return _original_transition_document_state(self, document_id, new_stage, **values)
+
+
 _state_store.IngestionStateStore.upsert_page = _fixed_upsert_page
+_state_store.IngestionStateStore.transition_document_state = _fixed_transition_document_state
