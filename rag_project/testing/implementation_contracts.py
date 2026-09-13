@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 from dataclasses import dataclass
 from typing import Any
 
@@ -46,7 +47,9 @@ def _module(value: Any) -> str:
 
 
 def _source_dispatch_numbers(runner: Any) -> set[int]:
-    tree = ast.parse(inspect.getsource(runner.UnifiedDiagnosticEngine._execute))
+    """Extract phase numbers from class-method source without false IndentationError."""
+    source = textwrap.dedent(inspect.getsource(runner.UnifiedDiagnosticEngine._execute))
+    tree = ast.parse(source)
     numbers: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare) and isinstance(node.left, ast.Attribute) and node.left.attr == "number" and len(node.comparators) == 1:
