@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from rag_project.utils.text_utils import keyword_overlap_score, meaningful_tokens
 
