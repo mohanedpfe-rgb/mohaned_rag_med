@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rag_project import composition
 from rag_project.canonical_runtime import ANSWER_AUTHORITY, CANONICAL_SERVICE
+from scripts.architecture_gate import inspect as inspect_architecture_gate
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
@@ -74,9 +75,16 @@ def test_runtime_environment_clamps_to_supported_bounds(monkeypatch):
     }
 
 
-def test_architecture_document_names_the_composition_boundary():
+def test_executable_architecture_gate_is_clean():
+    report = inspect_architecture_gate()
+    assert report["ready"], report
+    assert report["violations"] == []
+
+
+def test_architecture_document_names_the_composition_boundary_and_gate():
     architecture = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
     assert "rag_project.composition.prepare_runtime" in architecture
     assert "rag_project.app.ui_security_boundary" in architecture
+    assert "scripts/architecture_gate.py" in architecture
     assert "app.py" in architecture
     assert "presentation entrypoint" in architecture.lower()
