@@ -17,12 +17,34 @@ def _wrap_document_ready(original):
     return wrapped
 
 
+def _install_page_reader() -> None:
+    """Provide the page-checkpoint read side of the durable state contract."""
+    from rag_project.ingestion.state_store import IngestionStateStore
+
+    if callable(getattr(IngestionStateStore, "get_pages", None)):
+        return
+
+    def get_pages(self: Any, document_id: str) -> list[dict[str, Any]]:
+        if not document_id:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT document_id, page_number, extraction_status, ocr_status, extraction_method, text, cache_reference, processing_error, checksum, updated_at "
+                "FROM pages WHERE document_id = ? ORDER BY page_number ASC",
+                (str(document_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    IngestionStateStore.get_pages = get_pages
+
+
 def install() -> None:
     from rag_project.ingestion.state_store import IngestionStateStore
 
     original = IngestionStateStore.is_document_ready
     if not getattr(original, "_functionality_state_ready_guard", False):
         IngestionStateStore.is_document_ready = _wrap_document_ready(original)
+    _install_page_reader()
 
 
 __all__ = ["install"]
