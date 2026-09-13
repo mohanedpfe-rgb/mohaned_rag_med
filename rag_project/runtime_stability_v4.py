@@ -94,6 +94,16 @@ def _answer(self, question, metadata_filter=None):
         return self._runtime_v4_original_answer(question, metadata_filter)
 
 
+def _fallback_clear_all(self):
+    """Canonical storage fallback for repositories without the retired clear_all API."""
+    with self._connect() as connection:
+        connection.execute("DELETE FROM process_events")
+        connection.execute("DELETE FROM pages")
+        connection.execute("DELETE FROM query_traces")
+        cursor = connection.execute("DELETE FROM documents")
+        return int(cursor.rowcount)
+
+
 def install():
     global _INSTALLED
     with _LOCK:
@@ -114,7 +124,10 @@ def install():
             IngestionStateStore._runtime_v4_original_record_event = IngestionStateStore.record_event
             IngestionStateStore.record_event = _event
         if not hasattr(IngestionStateStore, "_runtime_v4_original_clear_all"):
-            IngestionStateStore._runtime_v4_original_clear_all = IngestionStateStore.clear_all
+            if hasattr(IngestionStateStore, "clear_all"):
+                IngestionStateStore._runtime_v4_original_clear_all = IngestionStateStore.clear_all
+            else:
+                IngestionStateStore._runtime_v4_original_clear_all = _fallback_clear_all
             IngestionStateStore.clear_all = _clear_state
         if not hasattr(ProductionRAGSystem, "_runtime_v4_original_production_clear"):
             ProductionRAGSystem._runtime_v4_original_production_clear = ProductionRAGSystem.clear_pdf_data
