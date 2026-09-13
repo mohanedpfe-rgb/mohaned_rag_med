@@ -293,12 +293,10 @@ def harden_system(system):
         return original_apply(clean)
     @wraps(original_ingest_directory)
     def guarded_ingest_directory(directory=None):
-        if not acquire_ingest_slot(0.1): raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
-        try: return original_ingest_directory(directory)
-        finally: release_ingest_slot()
+        return original_ingest_directory(directory)
     @wraps(original_ingest_file)
     def guarded_ingest_file(pdf_path, *args, **kwargs):
-        if not acquire_ingest_slot(0.1): raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
+        if not acquire_ingest_slot(30.0): raise RuntimeError("Too many concurrent ingestion jobs. Please retry shortly.")
         try: return original_ingest_file(pdf_path, *args, **kwargs)
         finally: release_ingest_slot()
     @wraps(original_answer)
