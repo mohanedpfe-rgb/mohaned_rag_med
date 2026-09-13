@@ -64,7 +64,6 @@ def phase10_production_generation(phase: Any) -> PhaseResult:
             ActiveVerifier,
             EvidenceCompiler,
             RouteMetadata,
-            SafetyDecision,
         )
         chunks = _fixture_chunks()
         # Build genuine production RetrievalHit objects from the diagnostic corpus fixture.
