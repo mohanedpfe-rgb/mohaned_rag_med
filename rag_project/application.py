@@ -8,9 +8,8 @@ from typing import Any
 
 from rag_project.configuration.settings import Settings
 from rag_project.quality_gate import run_quality_gate
+from rag_project.runtime import install, install_application_contracts
 from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepared
-from rag_project.composition import install_production_contracts
-from rag_project.runtime import install
 from rag_project.security import harden_system
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
@@ -174,12 +173,12 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
 
 
 def create_rag_system(settings: Settings | None = None, *, runtime_prepared: bool | None = None):
-    """Build the canonical runtime without reinstalling contracts after composition bootstrap."""
+    """Build the canonical runtime without importing or owning the composition root."""
     with _FACTORY_LOCK:
         prepared = runtime_is_prepared() if runtime_prepared is None else runtime_prepared
         if not prepared:
             install()
-            install_production_contracts()
+            install_application_contracts()
         requested_cls = production_rag_module.ProductionRAGSystem
         service_cls = requested_cls if requested_cls is not _ORIGINAL_PRODUCTION_RAG_SYSTEM else MedEvidenceProductionRAGSystem
         system = service_cls(_normalize_runtime_settings(settings)); system = harden_system(system)
