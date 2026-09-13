@@ -13,7 +13,7 @@ _VILLA_CSS = r'''<style>
   --ui-text:#f1f5f9;--ui-text-soft:#d8e2ec;--ui-muted:#8c9db1;--ui-faint:#62758c;
   --ui-accent:#70e1d6;--ui-accent-2:#8298ff;--ui-good:#5ee6a1;--ui-warn:#f2c96d;--ui-bad:#ff788b;
   --ui-shadow-sm:0 5px 18px rgba(0,0,0,.10);--ui-shadow-lg:0 26px 70px rgba(0,0,0,.30);
-  --ui-ease:cubic-bezier(.22,.8,.2,1);
+  --ui-ease:cubic-bezier(.22,.8,.2,1);--villa-ease:cubic-bezier(.22,.8,.2,1);
 }
 html,body,[class*="css"]{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 body{color:var(--ui-text)}

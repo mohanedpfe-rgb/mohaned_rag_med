@@ -18,7 +18,7 @@ _PREMIUM_CSS = r'''<style>
   --line:#223247;--line-soft:#1a293b;--line-strong:#334963;
   --text:#f4f7fb;--text-soft:#d9e2ec;--muted:#91a2b6;--faint:#687a91;
   --accent:#70e1d6;--accent-2:#8298ff;--good:#5ee6a1;--warn:#f2c96d;--bad:#ff7885;--info:#8bb4ff;
-  --shadow-1:0 8px 22px rgba(0,0,0,.11);--shadow-2:0 18px 48px rgba(0,0,0,.20);
+  --shadow-1:0 8px 22px rgba(0,0,0,.11);--shadow-2:0 18px 48px rgba(0,0,0,.20);min-height:46px;outline-offset:3px;disabled:disabled;
   --shadow-3:0 28px 76px rgba(0,0,0,.30);--ease:cubic-bezier(.22,.8,.2,1);
 }
 

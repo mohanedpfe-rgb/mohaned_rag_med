@@ -42,7 +42,8 @@ html,body,[class*=css]{font-family:Inter,ui-sans-serif,system-ui,-apple-system,B
 
 
 def command_palette() -> None:
-    with st.popover("⌘K  Quick navigation"):
+    with st.popover("Quick navigation"):
+        st.caption("Jump to a BookRAG workspace")
         query = st.text_input("Find a page", placeholder="Home, Documents, Ask…", key="renovation_command")
         normalized = (query or "").strip().casefold()
         commands = {"home":"Home","documents":"Documents","processing":"Live Processing","ask":"Ask BookRAG","inspector":"Inspector","system":"System","settings":"Settings"}
