@@ -234,6 +234,39 @@ class IngestionStateStore:
             if cursor.rowcount != 1:
                 raise ValueError(f"Document {document_id!r} does not exist.")
 
+    def upsert_page(self, document_id: str, page_number: int, **values: Any) -> None:
+        """Create or update one page checkpoint for an existing document."""
+        if not document_id:
+            raise ValueError("document_id must be non-empty")
+        try:
+            page_number = int(page_number)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("page_number must be an integer") from exc
+        if page_number < 1:
+            raise ValueError("page_number must be >= 1")
+        unknown = set(values) - _ALLOWED_PAGE_UPDATE_KEYS
+        if unknown:
+            raise ValueError(f"Unsupported page update field(s): {', '.join(sorted(unknown))}")
+        if self.get_document(document_id) is None:
+            raise ValueError(f"Document {document_id!r} does not exist.")
+
+        values = dict(values)
+        values.setdefault("extraction_status", "PENDING")
+        values.setdefault("ocr_status", "PENDING")
+        values.setdefault("updated_at", utc_now())
+        columns = ["document_id", "page_number", *_ALLOWED_PAGE_UPDATE_KEYS]
+        selected = {key: values[key] for key in columns if key in values}
+        placeholders = ", ".join("?" for _ in selected)
+        assignments = ", ".join(
+            f"{key}=excluded.{key}" for key in selected if key not in {"document_id", "page_number"}
+        )
+        with self._connect() as connection:
+            connection.execute(
+                f"INSERT INTO pages ({', '.join(selected)}) VALUES ({placeholders}) "
+                f"ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}",
+                tuple(selected.values()),
+            )
+
     def record_event(self, document_id: str, *, stage: str | None = None, status: str | None = None, event_type: str = "stage", message: str = "", details: dict[str, Any] | None = None, current_page: int | None = None, total_pages: int | None = None, file_name: str | None = None) -> dict[str, Any]:
         if not document_id:
             return {}
