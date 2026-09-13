@@ -32,7 +32,13 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
         if requested_mode not in {"bounded", "24h"}:
             raise RuntimeError(f"unsupported resource certification mode: {requested_mode}")
         duration = max(requested_seconds, 86400.0) if requested_mode == "24h" else max(5.0, requested_seconds)
-        proc = subprocess.run([sys.executable, str(child), "--duration", str(duration)], cwd=ROOT, text=True, capture_output=True, timeout=max(30, int(duration) + 30))
+        # The bounded resource workload performs several real production ingestion
+        # attempts before emitting telemetry. On Windows, those attempts can take
+        # substantially longer than the nominal observation duration. The parent
+        # timeout must therefore allow the workload to finish its required minimum
+        # successful observations instead of terminating it prematurely.
+        workload_timeout = max(120, int(duration) * 4 + 60) if requested_mode == "bounded" else int(duration) + 300
+        proc = subprocess.run([sys.executable, str(child), "--duration", str(duration)], cwd=ROOT, text=True, capture_output=True, timeout=workload_timeout)
         payload = None
         for line in reversed(proc.stdout.splitlines()):
             try:
