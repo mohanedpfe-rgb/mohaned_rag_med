@@ -10,10 +10,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from rag_project.canonical_runtime import install as install_canonical_runtime
-from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
-from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
-from rag_project.intelligence.production_contract_v2 import install as install_production_contract
+from rag_project.runtime import install_application_contracts
 from rag_project.runtime_bootstrap_state import (
     RUNTIME_COMPOSITION_VERSION,
     RUNTIME_PREPARED_ENV,
@@ -73,16 +70,10 @@ def normalize_runtime_environment() -> dict[str, Any]:
 
 def install_production_contracts() -> dict[str, Any]:
     """Install and report the authoritative runtime contracts in one order."""
-    pipeline = install_pipeline_integrity()
-    production = install_production_contract()
-    ingestion = install_ingestion_contract()
-    canonical = install_canonical_runtime()
+    contracts = install_application_contracts()
     return {
         "composition_version": RUNTIME_COMPOSITION_VERSION,
-        "pipeline_integrity": pipeline,
-        "production_contract": production,
-        "ingestion_contract": ingestion,
-        "canonical_runtime": canonical,
+        **contracts,
     }
 
 
