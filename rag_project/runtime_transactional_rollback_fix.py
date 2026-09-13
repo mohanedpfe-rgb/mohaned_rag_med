@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,79 +8,8 @@ _LOCK = threading.RLock()
 _INSTALLED = False
 
 
-def _capture_previous(system: Any, pdf_path: str | Path) -> dict[str, Any] | None:
-    try:
-        source = Path(pdf_path)
-        if not source.is_file():
-            return None
-        content_hash = str(system._hash_file(source))
-        previous = system.state_store.get_by_path(str(source.resolve()))
-        if not previous or str(previous.get("content_hash") or "") == content_hash:
-            return None
-        document_id = str(previous.get("document_id") or "")
-        if not document_id:
-            return None
-
-        records = system.vector_store.collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas", "embeddings"],
-        )
-        lexical_rows: list[tuple[Any, ...]] = []
-        with sqlite3.connect(system.vector_store.lexical_database) as connection:
-            lexical_rows = connection.execute(
-                "SELECT id, document, metadata, index_state, tokens "
-                "FROM lexical_documents "
-                "WHERE json_extract(metadata, '$.document_id') = ?",
-                (document_id,),
-            ).fetchall()
-        return {
-            "document_id": document_id,
-            "state": dict(previous),
-            "ids": [str(value) for value in (records.get("ids") or [])],
-            "documents": list(records.get("documents") or []),
-            "metadatas": [dict(value or {}) for value in (records.get("metadatas") or [])],
-            "embeddings": list(records.get("embeddings") or []),
-            "lexical_rows": lexical_rows,
-        }
-    except Exception:
-        return None
-
-
-def _restore_previous(system: Any, snapshot: dict[str, Any]) -> None:
-    ids = snapshot.get("ids") or []
-    if ids:
-        system.vector_store.collection.upsert(
-            ids=[str(value) for value in ids],
-            documents=[str(value) for value in snapshot.get("documents") or []],
-            metadatas=[dict(value or {}) for value in snapshot.get("metadatas") or []],
-            embeddings=[list(map(float, value)) for value in snapshot.get("embeddings") or []],
-        )
-
-    rows = snapshot.get("lexical_rows") or []
-    if rows:
-        with sqlite3.connect(system.vector_store.lexical_database) as connection:
-            connection.executemany(
-                "INSERT OR REPLACE INTO lexical_documents "
-                "(id, document, metadata, index_state, tokens) VALUES (?, ?, ?, ?, ?)",
-                rows,
-            )
-            connection.commit()
-
-    previous_state = dict(snapshot.get("state") or {})
-    if previous_state:
-        # Restore only authoritative document-state fields. Lease ownership is
-        # intentionally cleared so the failed replacement cannot keep the old
-        # document permanently locked.
-        previous_state.pop("lease_owner", None)
-        previous_state.pop("lease_expires_at", None)
-        previous_state.pop("heartbeat_at", None)
-        try:
-            system.state_store.upsert_document(previous_state)
-        except Exception:
-            pass
-
-
 def install() -> None:
+    """Make replacement ingestion atomic: build new version first, retire old only after READY."""
     global _INSTALLED
     with _LOCK:
         if _INSTALLED:
@@ -95,16 +22,63 @@ def install() -> None:
             return
 
         def ingest_file(self: Any, pdf_path: str | Path, *args: Any, **kwargs: Any):
-            snapshot = _capture_previous(self, pdf_path)
-            result = original(self, pdf_path, *args, **kwargs)
-            if snapshot and isinstance(result, dict) and str(result.get("status") or "").casefold() == "failed":
-                try:
-                    _restore_previous(self, snapshot)
-                except Exception as exc:
+            source = Path(pdf_path)
+            deferred: list[tuple[str, str]] = []
+            vector_store = getattr(self, "vector_store", None)
+            original_delete = getattr(vector_store, "delete_version", None)
+
+            # Capture the currently published version before the replacement starts.
+            # The old version must remain searchable while the new version is being
+            # extracted, embedded, validated, and activated.
+            try:
+                previous = self.state_store.get_by_path(str(source.resolve()))
+            except Exception:
+                previous = None
+
+            previous_document_id = str((previous or {}).get("document_id") or "")
+            protected_versions = {
+                str((previous or {}).get("version_id") or ""),
+                str((previous or {}).get("content_hash") or ""),
+            }
+            protected_versions.discard("")
+
+            if vector_store is not None and callable(original_delete) and protected_versions:
+                def deferred_delete(store: Any, document_id: str, version_id: str) -> None:
+                    version_text = str(version_id)
+                    if (
+                        str(document_id) == previous_document_id
+                        and version_text in protected_versions
+                    ):
+                        pair = (str(document_id), version_text)
+                        if pair not in deferred:
+                            deferred.append(pair)
+                        return
+                    return original_delete(document_id, version_id)
+
+                vector_store.delete_version = deferred_delete.__get__(vector_store, type(vector_store))
+
+            try:
+                result = original(self, source, *args, **kwargs)
+            finally:
+                if vector_store is not None and callable(original_delete):
+                    vector_store.delete_version = original_delete
+
+            status = str(result.get("status") or "").casefold() if isinstance(result, dict) else ""
+            if status in {"success", "ready", "completed", "skipped"} and deferred:
+                # Publication succeeded. Only now is the old searchable version retired.
+                for document_id, version_id in deferred:
                     try:
-                        self.logger.exception("Transactional rollback restoration failed: %s", exc)
+                        original_delete(document_id, version_id)
                     except Exception:
-                        pass
+                        try:
+                            self.logger.exception(
+                                "Failed to retire superseded version %s for %s",
+                                version_id,
+                                document_id,
+                            )
+                        except Exception:
+                            pass
+            # Failed activation/indexing intentionally leaves the old version intact.
             return result
 
         ingest_file._transactional_rollback_fix = True
