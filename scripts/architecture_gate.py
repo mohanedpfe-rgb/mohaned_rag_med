@@ -49,6 +49,7 @@ FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
     "rag_project.ingestion.ingestion_contract",
     "rag_project.canonical_runtime",
 }
+LEGACY_IMPLEMENTATION_MODULE = "rag_project.app.production_rag"
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
 
@@ -109,8 +110,7 @@ def inspect() -> dict[str, object]:
 
     composition_imports = _imports(COMPOSITION)
     bad_composition_imports = sorted(
-        name
-        for name in composition_imports
+        name for name in composition_imports
         if name == "streamlit" or name.startswith(FORBIDDEN_COMPOSITION_IMPORT_PREFIXES[1])
     )
     if bad_composition_imports:
@@ -140,8 +140,7 @@ def inspect() -> dict[str, object]:
     if any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in application_imports):
         violations.append("application.py must not depend directly on the legacy UI/application package")
     duplicated_installers = sorted(
-        module
-        for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
+        module for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
         if (module, "install") in _imported_names(APPLICATION)
     )
     if duplicated_installers:
@@ -161,8 +160,18 @@ def inspect() -> dict[str, object]:
         violations.append("application_answer_service.py must remain presentation-independent")
 
     legacy_adapter_imports = _imports(LEGACY_ADAPTER)
-    if "rag_project.app.production_rag" not in legacy_adapter_imports:
+    if LEGACY_IMPLEMENTATION_MODULE not in legacy_adapter_imports:
         violations.append("legacy compatibility adapter must own the legacy ProductionRAGSystem import")
+    for path in _python_files():
+        if path == LEGACY_ADAPTER:
+            continue
+        try:
+            if LEGACY_IMPLEMENTATION_MODULE in _imports(path):
+                violations.append(
+                    f"{path.relative_to(ROOT)} imports legacy ProductionRAGSystem outside the compatibility adapter"
+                )
+        except SyntaxError:
+            continue
 
     runtime_symbols = _symbols(RUNTIME)
     if "install_application_contracts" not in runtime_symbols:
@@ -225,7 +234,7 @@ def inspect() -> dict[str, object]:
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
         "violations": violations,
-        "contract": "architecture-gate-v5",
+        "contract": "architecture-gate-v6",
     }
 
 
