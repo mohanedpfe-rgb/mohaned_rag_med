@@ -81,7 +81,7 @@ def _invalidate_stale_runtime_cache() -> None:
 
 
 def main():
-    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();install_canonical_runtime();_install_ui_guards();_invalidate_stale_runtime_cache();apply_ui_renovation();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();install_canonical_runtime();apply_ui_renovation();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
 
 
 if __name__=='__main__':main()
