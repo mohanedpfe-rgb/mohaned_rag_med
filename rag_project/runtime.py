@@ -50,6 +50,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_functionality_safety_fix import install as functionality_safety_fix
     from rag_project.runtime_functionality_routing_fix import install as functionality_routing_fix
     from rag_project.runtime_functionality_scope_fix import install as functionality_scope_fix
+    from rag_project.runtime_functionality_comparison_template_fix import install as functionality_comparison_template_fix
 
     return (
         vector_store,
@@ -92,6 +93,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         functionality_safety_fix,
         functionality_routing_fix,
         functionality_scope_fix,
+        functionality_comparison_template_fix,
     )
 
 
