@@ -117,6 +117,17 @@ def test_disabled_auth_is_allowed_for_nonproduction_only(monkeypatch):
     assert settings.auth_enabled is False
 
 
+def test_production_app_rejects_disabled_auth(monkeypatch):
+    from rag_project.api import med_evidence_api
+
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "false")
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    with pytest.raises(RuntimeError, match="authentication disabled"):
+        med_evidence_api.create_app(object())
+
+
 def test_upload_boundary_rejects_path_components_and_non_pdf(tmp_path):
     fitz = pytest.importorskip("fitz")
     from rag_project.security import validate_pdf_payload
