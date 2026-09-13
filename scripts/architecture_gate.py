@@ -50,6 +50,13 @@ FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
     "rag_project.canonical_runtime",
 }
 LEGACY_IMPLEMENTATION_MODULE = "rag_project.app.production_rag"
+FORBIDDEN_DEAD_PATHS = {
+    "rag_project/runtime_canonical_contract_guard.py",
+    "rag_project/runtime_storage_contract_fix.py",
+    "rag_project/runtime_test_embedding_guard.py",
+    "rag_project/intelligence/final_44.py",
+    "tests/test_44_final_certification.py",
+}
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
 
@@ -101,6 +108,10 @@ def _has_wildcard_import(path: Path) -> bool:
 def inspect() -> dict[str, object]:
     violations: list[str] = []
 
+    for relative_path in sorted(FORBIDDEN_DEAD_PATHS):
+        if (ROOT / relative_path).exists():
+            violations.append(f"purged artifact was resurrected: {relative_path}")
+
     app_lines = len(APP.read_text(encoding="utf-8").splitlines())
     if app_lines > MAX_APP_LINES:
         violations.append(f"app.py is {app_lines} lines; limit is {MAX_APP_LINES}")
@@ -110,7 +121,8 @@ def inspect() -> dict[str, object]:
 
     composition_imports = _imports(COMPOSITION)
     bad_composition_imports = sorted(
-        name for name in composition_imports
+        name
+        for name in composition_imports
         if name == "streamlit" or name.startswith(FORBIDDEN_COMPOSITION_IMPORT_PREFIXES[1])
     )
     if bad_composition_imports:
@@ -140,7 +152,8 @@ def inspect() -> dict[str, object]:
     if any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in application_imports):
         violations.append("application.py must not depend directly on the legacy UI/application package")
     duplicated_installers = sorted(
-        module for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
+        module
+        for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
         if (module, "install") in _imported_names(APPLICATION)
     )
     if duplicated_installers:
@@ -162,6 +175,7 @@ def inspect() -> dict[str, object]:
     legacy_adapter_imports = _imports(LEGACY_ADAPTER)
     if LEGACY_IMPLEMENTATION_MODULE not in legacy_adapter_imports:
         violations.append("legacy compatibility adapter must own the legacy ProductionRAGSystem import")
+
     for path in _python_files():
         if path == LEGACY_ADAPTER:
             continue
@@ -233,8 +247,9 @@ def inspect() -> dict[str, object]:
         "app_lines": app_lines,
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
+        "purge_contract_paths": sorted(FORBIDDEN_DEAD_PATHS),
         "violations": violations,
-        "contract": "architecture-gate-v6",
+        "contract": "architecture-gate-v7",
     }
 
 
