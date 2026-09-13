@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
 APPLICATION = ROOT / "rag_project" / "application.py"
+ANSWER_SERVICE = ROOT / "rag_project" / "application_answer_service.py"
 RUNTIME = ROOT / "rag_project" / "runtime.py"
 BOOTSTRAP_STATE = ROOT / "rag_project" / "runtime_bootstrap_state.py"
 ARCHITECTURE = ROOT / "ARCHITECTURE.md"
@@ -26,6 +27,12 @@ REQUIRED_APPLICATION_SYMBOLS = {
     "MedEvidenceProductionRAGSystem",
     "create_rag_system",
     "runtime_contract",
+}
+REQUIRED_ANSWER_SERVICE_SYMBOLS = {
+    "answer",
+    "detect_answer_language",
+    "install_runtime_adapters",
+    "normalize_public_answer_path",
 }
 REQUIRED_COMPOSITION_SYMBOLS = {
     "prepare_runtime",
@@ -114,6 +121,10 @@ def inspect() -> dict[str, object]:
     missing_application = sorted(REQUIRED_APPLICATION_SYMBOLS - _symbols(APPLICATION))
     if missing_application:
         violations.append(f"application.py missing stable symbols: {missing_application}")
+    answer_symbols = sorted(REQUIRED_ANSWER_SERVICE_SYMBOLS - _symbols(ANSWER_SERVICE))
+    if answer_symbols:
+        violations.append(f"application_answer_service.py missing stable symbols: {answer_symbols}")
+
     application_imports = _imports(APPLICATION)
     reverse_dependency = sorted(application_imports & FORBIDDEN_APPLICATION_IMPORTS)
     if reverse_dependency:
@@ -122,6 +133,8 @@ def inspect() -> dict[str, object]:
         violations.append("application.py must consume neutral runtime policy")
     if "rag_project.runtime_bootstrap_state" not in application_imports:
         violations.append("application.py must consume neutral prepared-runtime state")
+    if "rag_project.application_answer_service" not in application_imports:
+        violations.append("application.py must delegate answer behavior to application_answer_service")
     duplicated_installers = sorted(
         module
         for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
@@ -134,6 +147,8 @@ def inspect() -> dict[str, object]:
         violations.append("application.py lost the canonical production service")
     if '"answer_monkey_patch": False' not in application_source:
         violations.append("canonical answer path must remain explicitly non-monkey-patched")
+    if "_med_evidence_answer" not in application_source or "_certified_god_answer" not in application_source:
+        violations.append("application.py must preserve the canonical answer binding compatibility seam")
     if "runtime_is_prepared()" not in application_source:
         violations.append("application factory must honor the prepared-runtime marker")
 
@@ -145,6 +160,10 @@ def inspect() -> dict[str, object]:
     bootstrap_imports = _imports(BOOTSTRAP_STATE)
     if any(name == "streamlit" or name.startswith("rag_project.app") for name in bootstrap_imports):
         violations.append("runtime_bootstrap_state.py must remain presentation-independent")
+
+    answer_service_imports = _imports(ANSWER_SERVICE)
+    if "streamlit" in answer_service_imports or any(name.startswith("rag_project.app") for name in answer_service_imports):
+        violations.append("application_answer_service.py must remain presentation-independent")
 
     for layer in CORE_DIRS:
         layer_root = ROOT / "rag_project" / layer
@@ -172,6 +191,7 @@ def inspect() -> dict[str, object]:
         "rag_project.composition.prepare_runtime",
         "rag_project.app.ui_security_boundary",
         "scripts/architecture_gate.py",
+        "application_answer_service",
         "BOOKRAG_RUNTIME_PREPARED_VERSION",
         "runtime_bootstrap_state",
         "immutable published document versions",
@@ -196,7 +216,7 @@ def inspect() -> dict[str, object]:
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
         "violations": violations,
-        "contract": "architecture-gate-v4",
+        "contract": "architecture-gate-v5",
     }
 
 
