@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -86,6 +87,38 @@ def _validate_document_index(
     return {"document_id": document_id, "count": len(selected_ids), "valid": bool(selected_ids) and not issues, "issues": issues}
 
 
+def _lexical_fallback(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    tokens = [token for token in re.findall(r"\w+", str(query or "").casefold(), flags=re.UNICODE) if token]
+    if not tokens:
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+    token_set = set(tokens)
+    rows = []
+    with sqlite3.connect(Path(self.lexical_database)) as connection:
+        records = connection.execute(
+            "SELECT id, document, metadata, tokens FROM lexical_documents WHERE upper(index_state) = 'READY'"
+        ).fetchall()
+    for item_id, document, metadata_json, tokens_json in records:
+        try:
+            metadata = self._coerce_metadata(json.loads(metadata_json or "{}"))
+            row_tokens = set(json.loads(tokens_json or "[]"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if where and not self._metadata_matches(metadata, where):
+            continue
+        overlap = len(token_set & row_tokens)
+        if overlap <= 0:
+            continue
+        rows.append((overlap, str(item_id), str(document), metadata))
+    rows.sort(key=lambda item: (-item[0], item[1]))
+    selected = rows[: max(1, int(n_results))]
+    return {
+        "ids": [[item[1] for item in selected]],
+        "documents": [[item[2] for item in selected]],
+        "metadatas": [[item[3] for item in selected]],
+        "distances": [[1.0 / (1.0 + item[0]) for item in selected]],
+    }
+
+
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -94,6 +127,7 @@ def install() -> None:
     original_init = VectorStore.__init__
     original_resolve_dimension = VectorStore._resolve_dimension
     original_coerce_metadata = VectorStore._coerce_metadata
+    original_search_lexical = VectorStore.search_lexical
 
     def hardened_init(self: Any, persist_directory: str | Path, collection_name: str = "rag_documents") -> None:
         original_init(self, persist_directory, collection_name)
@@ -104,14 +138,25 @@ def install() -> None:
     def hardened_resolve_dimension(self: Any, embeddings: Any = None) -> int:
         if embeddings is None or len(_normalize_sequence(embeddings)) == 0:
             stored = int(self._collection_dim() or 0)
-            if stored <= 0: return 0
+            if stored <= 0:
+                return 0
         return original_resolve_dimension(self, embeddings)
+
+    def hardened_search_lexical(self: Any, query: str, n_results: int = 5, where=None):
+        with _database_lock(Path(self.lexical_database)):
+            result = original_search_lexical(self, query, n_results=n_results, where=where)
+            ids = _normalize_sequence(result.get("ids"))
+            flat_ids = _normalize_sequence(ids[0]) if ids and isinstance(ids[0], (list, tuple)) else ids
+            if flat_ids:
+                return result
+            return _lexical_fallback(self, query, n_results=n_results, where=where)
 
     VectorStore._original_coerce_metadata = original_coerce_metadata
     VectorStore._coerce_metadata = _safe_chroma_metadata
     VectorStore.__init__ = hardened_init
     VectorStore._resolve_dimension = hardened_resolve_dimension
     VectorStore.validate_document_index = _validate_document_index
+    VectorStore.search_lexical = hardened_search_lexical
 
     for method_name in ("_upsert_lexical_records", "add_lexical_documents", "set_document_index_state", "set_version_index_state", "delete_version", "clear_all"):
         original = getattr(VectorStore, method_name)
