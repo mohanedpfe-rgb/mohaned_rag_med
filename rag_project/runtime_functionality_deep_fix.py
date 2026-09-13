@@ -58,7 +58,8 @@ def _citation_complete_without_shared_state(original) -> Any:
             if not markers or not markers.issubset(allowed_ids):
                 return False
         expected = getattr(_TLS, "citation_limit", None)
-        return original(answer, int(expected if expected is not None else hit_count))
+        effective_limit = int(expected) if expected is not None else int(hit_count)
+        return original(answer, effective_limit)
     wrapped._functionality_citation_guard = True
     return wrapped
 
@@ -193,14 +194,14 @@ def _functionality_sentences(text: Any) -> list[str]:
 def _wrap_route(original):
     def wrapped(self: Any, question: str, context: str, safety: Any):
         route=original(self,question,context,safety); q=re.sub(r"\s+"," ",str(question or "")).strip().casefold()
-        explicit=bool(re.search(r"\b(?:what about|how about|it|this|that|they|them|also)\b",q) or re.match(r"^(?:and|et|puis|و|ثم)\b",q,flags=re.I|re.UNICODE))
+        explicit=bool(re.match(r"^(?:what about|how about|it|this|that|they|them|those|these|also|and|et|puis|و|ثم)\b",q,flags=re.I|re.UNICODE))
         return replace(route,is_follow_up=explicit) if bool(getattr(route,"is_follow_up",False))!=explicit else route
     wrapped._functionality_followup_guard=True
     return wrapped
 
 
 def _wrap_contradiction_detection(original):
-    """Avoid false contradictions caused by unrelated negation with weak context overlap."""
+    """Avoid false contradictions caused by unrelated negation or weak context overlap."""
     def wrapped(claim: Any, evidence_blocks: Any):
         blocks = [evidence_blocks] if isinstance(evidence_blocks, str) else list(evidence_blocks or ())
         result = bool(original(claim, blocks))
@@ -223,7 +224,7 @@ def _wrap_contradiction_detection(original):
                 )
                 semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
                 polarity_conflict = bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", claim_text)) != bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", text, re.I))
-                if ((explicit or polarity_conflict) and (len(shared) >= 1 or semantic >= 0.25)) or (not explicit and len(shared) >= 3 and semantic >= 0.25):
+                if (explicit or polarity_conflict) and (len(shared) >= 1 or semantic >= 0.25):
                     return True
         return False
     wrapped._functionality_contradiction_guard = True
