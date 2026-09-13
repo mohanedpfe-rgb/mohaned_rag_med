@@ -4,7 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 ANSWER_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
-CANONICAL_SERVICE = "rag_project.application.MedEvidenceProductionRAGSystem"
+# Keep the historical public service path as the compatibility contract while
+# the application factory remains the actual runtime composition root.
+CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
