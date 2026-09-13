@@ -2,6 +2,8 @@
 
 Local-first medical PDF RAG studio for searchable document libraries, grounded retrieval, citations, safety checks, and bounded local generation.
 
+<!-- PURGE_TRIGGER -->
+
 ## Core pipeline
 
 `PDF → parse/OCR → chunk → embed/index → retrieve → verify → answer`
