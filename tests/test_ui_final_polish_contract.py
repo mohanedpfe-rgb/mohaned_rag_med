@@ -52,6 +52,11 @@ def test_villa_finish_covers_remaining_framework_surfaces():
         '.stTabs [data-baseweb="tab-list"]',
         '[data-testid="stDataFrame"]',
         '[data-testid="stFileUploaderDropzone"]',
+        '[role="listbox"]',
+        '[role="dialog"]',
+        'pre{background:#09131f',
+        'button:focus-visible,input:focus-visible',
+        "--villa-ease:cubic-bezier(.22,.8,.2,1)",
         "@media(prefers-reduced-motion:reduce)",
     ):
         assert marker in VILLA
