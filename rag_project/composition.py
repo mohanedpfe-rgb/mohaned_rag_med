@@ -14,9 +14,12 @@ from rag_project.canonical_runtime import install as install_canonical_runtime
 from rag_project.ingestion.ingestion_contract import install as install_ingestion_contract
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
 from rag_project.intelligence.production_contract_v2 import install as install_production_contract
-
-RUNTIME_COMPOSITION_VERSION = "2026-09-13-composition-v1"
-RUNTIME_PREPARED_ENV = "BOOKRAG_RUNTIME_PREPARED_VERSION"
+from rag_project.runtime_bootstrap_state import (
+    RUNTIME_COMPOSITION_VERSION,
+    RUNTIME_PREPARED_ENV,
+    is_prepared as _runtime_state_is_prepared,
+    mark_prepared as _mark_runtime_prepared,
+)
 
 
 def load_local_env(project_root: Path) -> None:
@@ -88,7 +91,7 @@ def prepare_runtime(project_root: Path) -> dict[str, Any]:
     load_local_env(project_root)
     environment = normalize_runtime_environment()
     contracts = install_production_contracts()
-    os.environ[RUNTIME_PREPARED_ENV] = RUNTIME_COMPOSITION_VERSION
+    _mark_runtime_prepared()
     return {
         "composition_version": RUNTIME_COMPOSITION_VERSION,
         "environment": environment,
@@ -99,7 +102,7 @@ def prepare_runtime(project_root: Path) -> dict[str, Any]:
 
 def runtime_is_prepared() -> bool:
     """Return whether this process has been prepared by this exact composition contract."""
-    return os.getenv(RUNTIME_PREPARED_ENV) == RUNTIME_COMPOSITION_VERSION
+    return _runtime_state_is_prepared()
 
 
 __all__ = [
