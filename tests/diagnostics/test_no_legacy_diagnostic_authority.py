@@ -21,8 +21,12 @@ ALLOWED_COMPATIBILITY_TESTS = {
 
 def test_authoritative_diagnostic_tests_do_not_import_superseded_modules() -> None:
     violations: list[tuple[str, str]] = []
+    self_name = Path(__file__).name
     for path in TEST_ROOT.glob("test_*.py"):
-        if path.name in ALLOWED_COMPATIBILITY_TESTS:
+        # This contract test necessarily contains the forbidden module names in
+        # its own policy table; scanning itself would be a self-match, not a
+        # real diagnostic-test dependency.
+        if path.name == self_name or path.name in ALLOWED_COMPATIBILITY_TESTS:
             continue
         text = path.read_text(encoding="utf-8")
         for forbidden in FORBIDDEN_IMPORTS:
