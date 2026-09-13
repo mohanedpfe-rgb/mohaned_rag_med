@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
-import sqlite3
 import threading
-from typing import Any
 
 from rag_project.storage.vector_store import VectorStore
 
@@ -67,7 +65,6 @@ def install() -> None:
             collection = structure_collection(self)
             expected_ids: set[str] = set()
             identity = self.expected_identity
-            base_meta = self.collection.metadata or {}
             for kind, keys in (("section", section_ids), ("chapter", chapter_ids)):
                 for key in keys:
                     if not key:

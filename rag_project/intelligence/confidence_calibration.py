@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Sequence
 
 
 @dataclass(frozen=True)

@@ -7,7 +7,6 @@ import sqlite3
 from pathlib import Path
 
 import fitz
-import pytest
 
 from rag_project.app.rag_system import RAGSystem
 from rag_project.configuration.settings import Settings

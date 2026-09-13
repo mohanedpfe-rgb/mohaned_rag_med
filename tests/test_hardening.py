@@ -133,7 +133,6 @@ def test_state_store_recovers_after_child_process_termination(tmp_path: Path):
 
 def test_separate_process_interruption_keeps_building_version_hidden(tmp_path: Path):
     vector_dir = tmp_path / "vectors"
-    state_db = tmp_path / "state.sqlite3"
     setup_code = (
         "import sys; "
         "from rag_project.storage.vector_store import VectorStore; "

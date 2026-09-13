@@ -61,7 +61,7 @@ def _source_dispatch_numbers(runner: Any) -> set[int]:
 
 
 def validate_runtime_ownership() -> dict[str, Any]:
-    from rag_project.testing import runner, deep_diagnostics
+    from rag_project.testing import runner
     from rag_project.testing.architecture_contracts import strict_fast_health
     from rag_project.testing.full_metamorphic_probes import run_full_metamorphic_suite
     from rag_project.testing.full_mutation_probes import run_full_mutation_suite

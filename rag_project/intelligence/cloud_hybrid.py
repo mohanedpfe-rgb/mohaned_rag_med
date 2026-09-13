@@ -12,9 +12,9 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 from urllib.request import Request, urlopen
 
 

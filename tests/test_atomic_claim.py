@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from rag_project.ingestion.atomic_claim import ensure_and_claim
 from rag_project.ingestion.state_store import IngestionStateStore

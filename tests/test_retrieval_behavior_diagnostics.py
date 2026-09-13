@@ -159,7 +159,6 @@ def test_negative_distance_is_clamped_before_exponential_transform():
 
 
 def test_vector_branch_failure_falls_back_to_lexical_in_vector_mode():
-    vector_row = ("v", "vector", {"document_id": "v"}, 0.1)
     lexical_row = ("l", "insulin resistance", {"document_id": "l"}, 0.1)
     store = FakeStore(vector_error=RuntimeError("vector unavailable"), lexical=results(lexical_row))
     retriever = HybridRetriever(store, FakeEmbedding(), lexical_mode="vector")

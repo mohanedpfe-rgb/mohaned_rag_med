@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -24,7 +23,6 @@ def ensure_and_claim(store: Any, values: dict[str, Any], worker_id: str, lease_s
 
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
-    database_path = store.database_path
     with store._connect() as connection:
         row = connection.execute(
             "SELECT document_id, lease_owner, lease_expires_at FROM documents "

@@ -3,13 +3,12 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
-import math
 import re
 import sqlite3
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from rag_project.chunking.semantic_chunker import SemanticChunker
 from rag_project.intelligence.document_structure import (
@@ -17,7 +16,6 @@ from rag_project.intelligence.document_structure import (
     DocumentStructureTracker,
     STRUCTURE_SCHEMA_VERSION,
 )
-from rag_project.ingestion.robust_ingestor import robust_ingest_file as _ORIGINAL_ROBUST_INGEST
 from rag_project.parsing.pdf_extractor import PDFExtractor
 from rag_project.retrieval.context_builder import ContextBuilder
 from rag_project.retrieval.hybrid_retriever import HybridRetriever
@@ -374,8 +372,6 @@ def _patch_chunker() -> None:
         return init
 
     original_init = SemanticChunker.__init__
-    SemanticChunker.__init__ = self_init = _init_wrapper(None, original_init) if False else (lambda self, *args, **kwargs: None)
-    # Replace with a real wrapper without lambda indirection so introspection remains useful.
     def init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self._deep_trackers = {}

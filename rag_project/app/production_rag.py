@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, Dict
 
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
-from rag_project.ingestion import robust_ingestor
 from rag_project.ingestion import versioned_ingestor
 from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
@@ -15,7 +14,6 @@ from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as 
 from rag_project.intelligence.retrieval_replay import record as record_replay
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.intelligence.trace_privacy import sanitize_trace
-from rag_project.generation.latency_budget import request_budget, exhausted, elapsed
 
 if TYPE_CHECKING:
     from rag_project.application import ANSWER_PIPELINE_AUTHORITY

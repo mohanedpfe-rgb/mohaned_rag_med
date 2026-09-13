@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import threading
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 

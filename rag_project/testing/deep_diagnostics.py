@@ -16,10 +16,10 @@ import subprocess
 import sys
 import time
 import tracemalloc
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = ROOT / "rag_project"

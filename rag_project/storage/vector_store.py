@@ -6,9 +6,8 @@ import re
 import sqlite3
 import shutil
 import time
-from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Sequence
 
 import chromadb
 

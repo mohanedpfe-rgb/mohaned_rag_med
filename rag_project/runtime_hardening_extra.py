@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import hashlib
 import json
 import os
@@ -9,6 +11,10 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Sequence
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _safe_add_documents(self: Any, documents: Sequence[str], metadatas: Sequence[dict[str, Any]], embeddings: Sequence[Sequence[float]], ids: Sequence[str]) -> None:

@@ -56,7 +56,6 @@ class ResilientRAGSystem(RAGSystem):
             where={"document_id": document_id},
             include=["documents", "metadatas"],
         )
-        ids = _as_list(records.get("ids"))
         documents = _as_list(records.get("documents"))
         metadatas = _as_list(records.get("metadatas"))
         result: list[RetrievalHit] = []

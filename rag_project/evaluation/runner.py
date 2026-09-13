@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import requests
 from tenacity import (
@@ -80,7 +79,6 @@ class _InstrumentedRAG:
         filter_query = MetadataFilter.build(None)
         with self.timer("retrieval"):
             raw_top_k = max(self.system.settings.top_k, 6)
-            candidate_count = max(raw_top_k * 5, 20)
             retrieval_top_k = max(top_k, raw_top_k)
             hits = self.system.retriever.retrieve(
                 rewritten, top_k=retrieval_top_k, where=filter_query

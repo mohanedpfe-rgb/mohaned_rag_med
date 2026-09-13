@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from rag_project.runtime_stability_v2 import _guarded_extract_tables
