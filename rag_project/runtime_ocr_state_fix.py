@@ -24,12 +24,11 @@ def install() -> None:
             for extraction in original(self, pdf_path, document_id):
                 status = str(getattr(extraction, "ocr_status", "") or "").casefold()
                 if status in {"success", "completed"}:
-                    method = str(getattr(extraction, "extraction_method", "") or "").casefold()
-                    if method in {"native", "native_text", "text", ""}:
-                        extraction.extraction_method = "ocr"
-                        metadata = getattr(extraction, "metadata", None)
-                        if isinstance(metadata, dict):
-                            metadata["extraction_method"] = "ocr"
+                    extraction.extraction_method = "ocr"
+                    metadata = getattr(extraction, "metadata", None)
+                    if isinstance(metadata, dict):
+                        metadata["extraction_method"] = "ocr"
+                        metadata["ocr_status"] = "completed"
                 yield extraction
 
         extract_iter._ocr_state_fix = True
