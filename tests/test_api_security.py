@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 
 import pytest
@@ -37,6 +38,14 @@ def _settings(secret: str = "s" * 48) -> APISettings:
     )
 
 
+def _sign_claims(settings: APISettings, payload: dict) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
+    body = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":"), allow_nan=True).encode()).rstrip(b"=").decode()
+    signed = f"{header}.{body}".encode("ascii")
+    signature = hmac.new(settings.jwt_secret.encode(), signed, hashlib.sha256).digest()
+    return f"{header}.{body}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
 def test_issue_and_verify_jwt_round_trip():
     settings = _settings()
     token = issue_test_jwt(subject="alice", scopes=("query", "feedback"), secret=settings.jwt_secret, issuer=settings.jwt_issuer, audience=settings.jwt_audience)
@@ -64,13 +73,26 @@ def test_jwt_rejects_wrong_issuer_or_audience():
 def test_jwt_rejects_expired_token():
     settings = _settings()
     now = int(time.time())
-    header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps({"sub": "u", "iss": "issuer", "aud": "audience", "iat": now - 100, "nbf": now - 100, "exp": now - 1}).encode()).rstrip(b"=").decode()
-    signed = f"{header}.{payload}".encode()
-    signature = hmac.new(settings.jwt_secret.encode(), signed, hashlib.sha256).digest()
-    token = f"{header}.{payload}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+    token = _sign_claims(settings, {"sub": "u", "iss": "issuer", "aud": "audience", "iat": now - 100, "nbf": now - 100, "exp": now - 1})
     with pytest.raises(APISecurityError):
         verify_jwt(token, settings)
+
+
+def test_jwt_rejects_nan_timestamps():
+    settings = _settings()
+    token = _sign_claims(settings, {"sub": "u", "iss": "issuer", "aud": "audience", "iat": time.time() - 1, "nbf": time.time() - 1, "exp": math.nan})
+    with pytest.raises(APISecurityError):
+        verify_jwt(token, settings)
+
+
+def test_jwt_rejects_oversized_token_and_invalid_base64():
+    settings = _settings()
+    with pytest.raises(APISecurityError):
+        verify_jwt("A" * 25000, settings)
+    valid = issue_test_jwt(secret=settings.jwt_secret, issuer=settings.jwt_issuer, audience=settings.jwt_audience)
+    head, body, signature = valid.split(".")
+    with pytest.raises(APISecurityError):
+        verify_jwt(f"{head}.!invalid!.{signature}", settings)
 
 
 def test_authorization_requires_scope_or_admin_role():
@@ -96,7 +118,7 @@ def test_production_settings_reject_wildcard_cors(monkeypatch):
     monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "true")
     monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
     monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "*")
-    with pytest.raises(RuntimeError, match="wildcard CORS"):
+    with pytest.raises(RuntimeError, match="Wildcard CORS"):
         APISettings.from_env()
 
 
@@ -109,12 +131,67 @@ def test_production_settings_require_strong_jwt_secret(monkeypatch):
         APISettings.from_env()
 
 
+def test_production_rejects_invalid_boolean(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "definitely-not-a-bool")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
+    with pytest.raises(RuntimeError, match="must be a boolean"):
+        APISettings.from_env()
+
+
+def test_production_rejects_invalid_numeric_configuration(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
+    monkeypatch.setenv("MEDEVIDENCE_MAX_BODY_BYTES", "not-an-int")
+    with pytest.raises(RuntimeError, match="must be an integer"):
+        APISettings.from_env()
+
+
+def test_production_rejects_non_https_cors(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "http://example.com")
+    with pytest.raises(RuntimeError, match="HTTPS"):
+        APISettings.from_env()
+
+
+def test_development_allows_only_local_http_cors(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "development")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "http://example.com")
+    with pytest.raises(RuntimeError, match="Non-local HTTP"):
+        APISettings.from_env()
+
+
+def test_production_rejects_malformed_trusted_proxy(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
+    monkeypatch.setenv("MEDEVIDENCE_TRUSTED_PROXIES", "not-a-network")
+    with pytest.raises(RuntimeError, match="Invalid trusted proxy"):
+        APISettings.from_env()
+
+
 def test_disabled_auth_is_allowed_for_nonproduction_only(monkeypatch):
     monkeypatch.setenv("MEDEVIDENCE_ENV", "development")
     monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "false")
     monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "http://localhost:8501")
     settings = APISettings.from_env()
     assert settings.auth_enabled is False
+
+
+def test_production_auth_cannot_be_disabled(monkeypatch):
+    monkeypatch.setenv("MEDEVIDENCE_ENV", "production")
+    monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "false")
+    monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
+    with pytest.raises(RuntimeError, match="cannot be disabled"):
+        APISettings.from_env()
 
 
 def test_production_app_rejects_disabled_auth(monkeypatch):
@@ -124,7 +201,7 @@ def test_production_app_rejects_disabled_auth(monkeypatch):
     monkeypatch.setenv("MEDEVIDENCE_AUTH_ENABLED", "false")
     monkeypatch.setenv("MEDEVIDENCE_CORS_ORIGINS", "https://client.example")
     monkeypatch.setenv("MEDEVIDENCE_JWT_SECRET", "s" * 48)
-    with pytest.raises(RuntimeError, match="authentication disabled"):
+    with pytest.raises(RuntimeError, match="cannot be disabled"):
         med_evidence_api.create_app(object())
 
 
