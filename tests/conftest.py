@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+import shutil
 import weakref
 from pathlib import Path
 
@@ -105,6 +106,23 @@ def _install_windows_temp_cleanup_guard() -> None:
             _clear_chroma_system_cache()
             try:
                 return cleanup(self, *args, **kwargs)
+            except PermissionError:
+                # Chroma's native HNSW layer can retain a Windows handle for a
+                # short interval even after the owning client graph is released.
+                # Test cleanup must not turn that platform-specific finalizer race
+                # into an application failure. Retry after a full GC/cache release,
+                # then suppress only the remaining filesystem cleanup error.
+                gc.collect()
+                _clear_chroma_system_cache()
+                try:
+                    shutil.rmtree(self.name, ignore_errors=True)
+                except Exception:
+                    pass
+                try:
+                    self._ignore_cleanup_errors = True
+                except Exception:
+                    pass
+                return None
             finally:
                 _close_chroma_stores_under(self.name)
                 _clear_chroma_system_cache()
