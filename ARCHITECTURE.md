@@ -8,6 +8,8 @@ BookRAG is a modular, single-node medical RAG service optimized for CPU-first lo
 
 The production composition boundary is `rag_project.composition.prepare_runtime`. It owns local environment loading, bounded runtime normalization, and authoritative installer ordering. This module intentionally has no UI dependency so the production runtime policy can be tested and reused independently of Streamlit.
 
+After successful composition, the process carries the exact `BOOKRAG_RUNTIME_PREPARED_VERSION` marker. `rag_project.application.create_rag_system` recognizes that marker and does not reinstall the composition-owned contracts. Direct standalone factory calls remain backward-compatible and bootstrap the contracts themselves when the marker is absent or stale. This keeps production startup single-pass while preserving a safe library entrypoint.
+
 The UI security capture boundary is `rag_project.app.ui_security_boundary.install`. It owns upload/path/URL validation capture and presentation-side evidence/intelligence panel wiring. Security policy itself remains in `rag_project.security`; this module only composes it around the UI surface.
 
 The canonical application service remains `rag_project.application.MedEvidenceProductionRAGSystem`, and the canonical answer authority remains `rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine.answer`.
@@ -58,6 +60,7 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 14. The presentation entrypoint must remain thin: runtime installers, environment normalization, canonical-service selection, and security implementation must not be reimplemented in `app.py`.
 15. Composition modules must not depend on presentation/UI modules, preventing a reverse dependency from infrastructure into Streamlit.
 16. UI security capture is isolated from the application entrypoint and delegates policy decisions to lower-level security services.
+17. A stale or mismatched runtime-prepared marker is never trusted; contract installation must be repeated before constructing the production service.
 
 ## Dependency direction
 
@@ -75,7 +78,7 @@ The reference deployment is a single machine with roughly 16GB RAM and a CPU-fir
 
 ## Engineering quality target
 
-The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, dependency direction, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
+The project treats architecture as executable policy. The composition boundary, thin application entrypoint, UI security boundary, canonical answer authority, bounded runtime settings, dependency direction, prepared-runtime lifecycle, and architecture gate are protected by automated contract tests. Changes to these boundaries must update the contract and its tests together.
 
 ## Architectural debt register
 
