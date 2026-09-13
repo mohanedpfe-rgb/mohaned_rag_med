@@ -2,11 +2,51 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from pathlib import Path
 
 
 _INSTALL_LOCK = threading.RLock()
 _INSTALL_APPLICATION_CONTRACT_LOCK = threading.RLock()
 _INSTALLED = False
+
+
+def _install_ingestion_compatibility() -> None:
+    from functools import wraps
+    from rag_project.ingestion.state_store import IngestionStateStore
+
+    def delete_pages(self, document_id: str) -> int:
+        if not document_id:
+            return 0
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM pages WHERE document_id = ?", (str(document_id),))
+        return max(0, int(cursor.rowcount))
+
+    if not hasattr(IngestionStateStore, "delete_pages"):
+        IngestionStateStore.delete_pages = delete_pages
+
+    import rag_project.runtime_deep_contract_fix as deep_contract_fix
+    original_factory = deep_contract_fix._wrap_robust_ingestion
+    if getattr(original_factory, "_runtime_order_guard", False):
+        return
+
+    @wraps(original_factory)
+    def guarded_factory(original):
+        unsafe = original_factory(original)
+
+        @wraps(unsafe)
+        def wrapped(system, pdf_path, *args, **kwargs):
+            source = Path(pdf_path)
+            if source.suffix.lower() != ".pdf" or not source.is_file():
+                raise ValueError(f"Unsupported or missing PDF: {source}")
+            if getattr(system, "settings", None) is None:
+                return original(system, source, *args, **kwargs)
+            return unsafe(system, source, *args, **kwargs)
+
+        wrapped._deep_ingestion_guard = True
+        return wrapped
+
+    guarded_factory._runtime_order_guard = True
+    deep_contract_fix._wrap_robust_ingestion = guarded_factory
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
@@ -56,49 +96,19 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_ready_publication_fix import install as ready_publication_fix
 
     return (
-        vector_store,
-        hardening,
-        hardening_extra,
-        recovery,
-        quality_gate,
-        final_gate,
-        stability,
-        stability_v2,
-        stability_v3,
-        stability_v4,
-        stability_v5,
-        stability_v6,
-        stability_v7,
-        stability_v8,
-        deep_pdf_contract,
-        structure_cleanup,
-        deep_pdf_finalizer,
-        structure_anchor_runtime,
-        deep_pdf_finalizer_v2,
-        deep_pdf_finalizer_v3,
-        deep_pdf_finalizer_v4,
-        runtime_contract_compat,
-        runtime_final_contracts,
-        runtime_final_contracts_v2,
-        runtime_final_contracts_v3,
-        runtime_final_contracts_v4,
-        runtime_final_contracts_v5,
-        runtime_final_contracts_v7,
-        runtime_final_contracts_v8,
-        chroma_metadata_fix,
-        answer_recovery_contract,
-        deep_contract_fix,
-        post_contract_fix,
-        functionality_deep_fix,
-        functionality_state_fix,
-        functionality_safety_fix,
-        functionality_routing_fix,
-        functionality_scope_fix,
-        functionality_comparison_template_fix,
-        functionality_numeric_range_fix,
-        functionality_final_audit_fix,
-        production_contract_fix,
-        ready_publication_fix,
+        vector_store, hardening, hardening_extra, recovery, quality_gate, final_gate,
+        stability, stability_v2, stability_v3, stability_v4, stability_v5, stability_v6,
+        stability_v7, stability_v8, deep_pdf_contract, structure_cleanup,
+        deep_pdf_finalizer, structure_anchor_runtime, deep_pdf_finalizer_v2,
+        deep_pdf_finalizer_v3, deep_pdf_finalizer_v4, runtime_contract_compat,
+        runtime_final_contracts, runtime_final_contracts_v2, runtime_final_contracts_v3,
+        runtime_final_contracts_v4, runtime_final_contracts_v5, runtime_final_contracts_v7,
+        runtime_final_contracts_v8, chroma_metadata_fix, answer_recovery_contract,
+        deep_contract_fix, post_contract_fix, functionality_deep_fix,
+        functionality_state_fix, functionality_safety_fix, functionality_routing_fix,
+        functionality_scope_fix, functionality_comparison_template_fix,
+        functionality_numeric_range_fix, functionality_final_audit_fix,
+        production_contract_fix, ready_publication_fix,
     )
 
 
@@ -108,18 +118,14 @@ def install() -> None:
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
+        _install_ingestion_compatibility()
         for installer in _load_installers():
             installer()
         _INSTALLED = True
 
 
 def install_application_contracts() -> dict[str, object]:
-    """Install the four authoritative application contracts in their fixed order.
-
-    Kept in the neutral runtime policy layer so both the composition root and
-    direct application-factory use share one contract implementation without
-    introducing a dependency from application back to composition.
-    """
+    """Install the four authoritative application contracts in their fixed order."""
     from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
     from rag_project.intelligence.production_contract_v2 import install as production_contract
     from rag_project.ingestion.ingestion_contract import install as ingestion_contract
