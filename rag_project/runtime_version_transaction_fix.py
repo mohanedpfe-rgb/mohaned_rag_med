@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import json
 import sqlite3
 import threading
@@ -10,53 +11,77 @@ _LOCK = threading.RLock()
 _INSTALLED = False
 
 
-def _purge_unpublished_replacement(system: Any, snapshot: dict[str, Any]) -> None:
-    """Remove every vector/lexical record for the document that was not in the READY snapshot."""
+def _current_document_records(vector_store: Any, document_id: str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read all Chroma records and filter by document identity in Python.
+
+    Avoid relying on Chroma's ``where`` evaluator during rollback: the rollback
+    contract must still work when an upgraded Chroma backend handles metadata
+    filtering differently from the normal retrieval path.
+    """
+    records = vector_store.collection.get(include=["metadatas"])
+    ids = [str(value) for value in (records.get("ids") or [])]
+    metadata = [dict(value or {}) for value in (records.get("metadatas") or [])]
+    matched_ids: list[str] = []
+    matched_metadata: list[dict[str, Any]] = []
+    for item_id, values in zip(ids, metadata, strict=False):
+        if str(values.get("document_id") or values.get("doc_id") or "") == document_id:
+            matched_ids.append(item_id)
+            matched_metadata.append(values)
+    return matched_ids, matched_metadata
+
+
+def _purge_document_records(system: Any, document_id: str) -> None:
+    """Atomically reduce the live index to zero records for one document.
+
+    This is deliberately stronger than deleting a single version. A failed
+    replacement must never leave a partially published vector or lexical row
+    that remains discoverable after rollback.
+    """
     vector_store = getattr(system, "vector_store", None)
-    if vector_store is None:
-        return
-    document_id = str(snapshot.get("document_id") or "")
-    if not document_id:
+    if vector_store is None or not document_id:
         return
 
-    protected_ids = {
-        str(value)
-        for value in ((snapshot.get("vector") or {}).get("ids") or [])
-        if str(value)
-    }
-    try:
-        records = vector_store.collection.get(
-            where={"document_id": document_id},
-            include=["metadatas"],
+    last_ids: list[str] = []
+    for _attempt in range(3):
+        try:
+            ids, _metadata = _current_document_records(vector_store, document_id)
+            last_ids = ids
+            if ids:
+                vector_store.collection.delete(ids=ids)
+            verify_ids, _ = _current_document_records(vector_store, document_id)
+            if not verify_ids:
+                break
+            # Some Chroma builds are more reliable when deletion is expressed
+            # as a metadata predicate after an ID-based delete attempt.
+            try:
+                vector_store.collection.delete(where={"document_id": document_id})
+            except Exception:
+                pass
+            verify_ids, _ = _current_document_records(vector_store, document_id)
+            if not verify_ids:
+                break
+            last_ids = verify_ids
+        except Exception:
+            continue
+
+    # Clear process-local GC references before the snapshot is re-published.
+    gc.collect()
+    if last_ids:
+        raise RuntimeError(
+            f"Rollback could not purge live vector records for document {document_id}: {last_ids}"
         )
-        current_ids = [str(value) for value in (records.get("ids") or [])]
-        stale_ids = [value for value in current_ids if value not in protected_ids]
-        if stale_ids:
-            vector_store.collection.delete(ids=stale_ids)
-    except Exception:
-        pass
 
-    protected_lexical = {
-        str(row[0])
-        for row in (snapshot.get("lexical") or [])
-        if row and row[0] is not None
-    }
     try:
         with sqlite3.connect(vector_store.lexical_database) as connection:
-            current = connection.execute(
-                "SELECT id FROM lexical_documents "
-                "WHERE json_extract(metadata, '$.document_id') = ?",
+            connection.execute(
+                "DELETE FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
                 (document_id,),
-            ).fetchall()
-            stale_lexical = [str(row[0]) for row in current if str(row[0]) not in protected_lexical]
-            if stale_lexical:
-                connection.executemany(
-                    "DELETE FROM lexical_documents WHERE id = ?",
-                    [(value,) for value in stale_lexical],
-                )
-                connection.commit()
-    except Exception:
-        pass
+            )
+            connection.commit()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Rollback could not purge lexical records for document {document_id}: {exc}"
+        ) from exc
 
 
 def _restore_snapshot(system: Any, snapshot: dict[str, Any]) -> None:
@@ -65,48 +90,53 @@ def _restore_snapshot(system: Any, snapshot: dict[str, Any]) -> None:
     if vector_store is None or state_store is None:
         return
 
-    _purge_unpublished_replacement(system, snapshot)
+    document_id = str(snapshot.get("document_id") or "")
+    if not document_id:
+        return
+
+    # Fail closed: remove every current record for the document first, then
+    # restore only the previously captured READY snapshot.
+    _purge_document_records(system, document_id)
 
     vector = snapshot.get("vector") or {}
     ids = [str(value) for value in (vector.get("ids") or [])]
     if ids:
-        try:
-            kwargs: dict[str, Any] = {
-                "ids": ids,
-                "documents": list(vector.get("documents") or []),
-                "metadatas": [dict(value or {}) for value in (vector.get("metadatas") or [])],
-            }
-            embeddings = list(vector.get("embeddings") or [])
-            if len(embeddings) == len(ids):
-                kwargs["embeddings"] = embeddings
-            vector_store.collection.upsert(**kwargs)
-        except Exception:
-            pass
+        kwargs: dict[str, Any] = {
+            "ids": ids,
+            "documents": list(vector.get("documents") or []),
+            "metadatas": [dict(value or {}) for value in (vector.get("metadatas") or [])],
+        }
+        embeddings = list(vector.get("embeddings") or [])
+        if len(embeddings) == len(ids):
+            kwargs["embeddings"] = embeddings
+        vector_store.collection.upsert(**kwargs)
 
     rows = snapshot.get("lexical") or []
     if rows:
-        try:
-            with sqlite3.connect(vector_store.lexical_database) as connection:
-                connection.executemany(
-                    "INSERT OR REPLACE INTO lexical_documents "
-                    "(id, document, metadata, index_state, tokens) VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-                connection.commit()
-        except Exception:
-            pass
+        with sqlite3.connect(vector_store.lexical_database) as connection:
+            connection.executemany(
+                "INSERT OR REPLACE INTO lexical_documents "
+                "(id, document, metadata, index_state, tokens) VALUES (?, ?, ?, ?, ?)",
+                rows,
+            )
+            connection.commit()
+
+    # Verify that the restored vector set is exactly the original vector ID set.
+    restored_ids, _ = _current_document_records(vector_store, document_id)
+    expected_ids = set(ids)
+    if set(restored_ids) != expected_ids:
+        raise RuntimeError(
+            f"Rollback snapshot verification failed for document {document_id}: "
+            f"expected={sorted(expected_ids)}, restored={sorted(restored_ids)}"
+        )
 
     previous_state = dict(snapshot.get("state") or {})
     if previous_state:
         previous_state["lease_owner"] = None
         previous_state["lease_expires_at"] = None
         previous_state["heartbeat_at"] = None
-        try:
-            state_store.upsert_document(previous_state)
-        except Exception:
-            pass
+        state_store.upsert_document(previous_state)
 
-    document_id = str(snapshot.get("document_id") or "")
     try:
         state_store.delete_pages(document_id)
     except Exception:
@@ -115,10 +145,7 @@ def _restore_snapshot(system: Any, snapshot: dict[str, Any]) -> None:
         values = dict(page)
         values.pop("document_id", None)
         values.pop("page_number", None)
-        try:
-            state_store.upsert_page(document_id, int(page["page_number"]), **values)
-        except Exception:
-            pass
+        state_store.upsert_page(document_id, int(page["page_number"]), **values)
 
 
 def _capture_snapshot(system: Any, source: Path) -> dict[str, Any] | None:
