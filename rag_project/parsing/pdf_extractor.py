@@ -163,12 +163,7 @@ class PDFExtractor:
                 physical_page = index + 1
                 cached = cached_pages.get(physical_page) if self.state_store else None
 
-                if (
-                    cached
-                    and cached["extraction_status"] == "COMPLETED"
-                    and cached.get("text")
-                    and cached.get("cache_reference") == EXTRACTION_CACHE_VERSION
-                ):
+                if cached and cached["extraction_status"] == "COMPLETED" and cached.get("text") and cached.get("cache_reference") == EXTRACTION_CACHE_VERSION:
                     text = cached["text"]
                     quality = score_page_quality(text, page_number=physical_page)
                     meta = dict(cached.get("metadata") or {})
@@ -212,7 +207,7 @@ class PDFExtractor:
                     page_index=index,
                     page_number=physical_page,
                     text=text,
-                    extraction_method="pdf_text",
+                    extraction_method="native_text",
                     ocr_required=assessment["ocr_required"],
                     ocr_status="not_required",
                     page_type=assessment["page_type"],
@@ -220,24 +215,7 @@ class PDFExtractor:
                     table_count=len(table_blocks),
                     has_images=assessment["has_images"],
                     blocks=[p.strip() for p in split_paragraphs(text) if p.strip()],
-                    metadata={
-                        "word_count": assessment["word_count"],
-                        "char_count": assessment["char_count"],
-                        "alpha_count": assessment["alpha_count"],
-                        "image_coverage": round(assessment["image_coverage"], 4),
-                        "char_density": round(assessment["char_density"], 6),
-                        "physical_page": physical_page,
-                        "printed_page_number": printed_page_number,
-                        "ocr_reasons": assessment["reasons"],
-                        "table_ids": table_ids,
-                        "figure_ids": figure_ids,
-                        "table_texts": table_blocks,
-                        "figure_captions": figure_captions,
-                        "evidence_types": (["text"] if text else []) + (["table"] if table_blocks else []) + (["figure"] if figure_ids else []),
-                        "quality_score": quality.quality,
-                        "routing_decision": quality.route,
-                        **enrichment,
-                    },
+                    metadata={"word_count": assessment["word_count"], "char_count": assessment["char_count"], "alpha_count": assessment["alpha_count"], "image_coverage": round(assessment["image_coverage"], 4), "char_density": round(assessment["char_density"], 6), "physical_page": physical_page, "printed_page_number": printed_page_number, "ocr_reasons": assessment["reasons"], "table_ids": table_ids, "figure_ids": figure_ids, "table_texts": table_blocks, "figure_captions": figure_captions, "evidence_types": (["text"] if text else []) + (["table"] if table_blocks else []) + (["figure"] if figure_ids else []), "quality_score": quality.quality, "routing_decision": quality.route, **enrichment},
                     source_path=str(pdf_file),
                     quality_score=quality.quality,
                     routing_decision=quality.route,
@@ -257,82 +235,65 @@ class PDFExtractor:
                     else:
                         try:
                             ocr_text, confidence = self.ocr_service.ocr_page_object(page, index, force=True)
-                            if not ocr_text:
-                                extraction.ocr_status = "skipped_no_result"
-                            elif confidence is not None and confidence < self.ocr_confidence_threshold:
-                                extraction.ocr_status = "skipped_low_confidence"
-                                extraction.metadata["ocr_confidence"] = float(confidence)
-                            else:
-                                ocr_text = clean_text(ocr_text)
-                                native = extraction.text.strip()
-                                final = self._merge_native_and_ocr_text(native, ocr_text)
-                                if final != native:
-                                    extraction.text = final
-                                    extraction.extraction_method = "ocr"
-                                    extraction.blocks = [p.strip() for p in split_paragraphs(final) if p.strip()]
-                                    extraction.metadata.update(enrich_text(final))
-                                if not extraction.figure_captions:
-                                    extraction.figure_captions = self._extract_figure_captions(page)
-                                extraction.metadata["figure_captions"] = list(extraction.figure_captions)
-                                extraction.ocr_status = "success"
+                            if not ocr_text: raise RuntimeError("OCR produced empty text")
+                            if confidence < self.ocr_confidence_threshold: raise RuntimeError(f"OCR confidence below threshold: {confidence:.3f}")
+                            merged = self._merge_native_and_ocr_text(extraction.text, ocr_text)
+                            if merged and merged != extraction.text:
+                                extraction.text = merged
+                                extraction.blocks = [p.strip() for p in split_paragraphs(merged) if p.strip()]
+                                extraction.ocr_status = "completed"
                                 extraction.ocr_confidence = confidence
-                                extraction.ocr_required = True
-                                extraction.metadata["ocr_char_count"] = len(ocr_text)
+                                extraction.metadata.update(enrich_text(merged))
+                            else:
+                                extraction.ocr_status = "completed"; extraction.ocr_confidence = confidence
                         except Exception as exc:
-                            extraction.ocr_status = "failed"
-                            extraction.metadata["ocr_error"] = type(exc).__name__
-                            extraction.metadata["quality_warning"] = "Page requires OCR but OCR failed."
+                            extraction.ocr_status = "failed"; extraction.metadata["ocr_error"] = type(exc).__name__
 
-                if self.state_store and self.state_store.get_document(document_id):
-                    self.state_store.upsert_page(
-                        document_id,
-                        physical_page,
-                        extraction_status="COMPLETED" if extraction.text else "FAILED",
-                        ocr_status=extraction.ocr_status,
-                        extraction_method=extraction.extraction_method,
-                        text=extraction.text,
-                        cache_reference=EXTRACTION_CACHE_VERSION,
-                        processing_error=extraction.metadata.get("ocr_error"),
-                        checksum=hashlib.sha256(extraction.text.encode("utf-8")).hexdigest(),
-                    )
+                extraction.metadata["extraction_method"] = extraction.extraction_method
+                extraction.metadata["ocr_status"] = extraction.ocr_status
+                extraction.metadata["quality_score"] = extraction.quality_score
+                if self.state_store:
+                    self.state_store.record_page(extraction, cache_reference=EXTRACTION_CACHE_VERSION)
                     self.state_store.update_document(document_id, current_stage="EXTRACTING", current_page=physical_page, total_pages=page_count)
-
                 yield extraction
         finally:
             if pdf is not None:
                 pdf.close()
 
-    @staticmethod
-    def _extract_table_blocks_from_text(text: str) -> list[str]:
-        blocks: list[str] = []
-        for match in re.finditer(r"(?:^|\n\n)\[TABLE\]\n(.*?)(?=\n\n\[TABLE\]\n|\Z)", text or "", flags=re.S):
-            value = clean_text(match.group(1))
+    def _extract_page_text(self, page: fitz.Page) -> str:
+        text = page.get_text("text", sort=True)
+        if text and text.strip():
+            return text
+        try:
+            text = page.get_text("blocks", sort=True)
+            return "\n".join(str(block[4] or "") for block in text if len(block) > 4)
+        except Exception:
+            return ""
+
+    def _extract_tables(self, page: fitz.Page) -> str:
+        try:
+            finder = getattr(page, "find_tables", None)
+            if not callable(finder):
+                return ""
+            result = finder()
+            tables = getattr(result, "tables", []) or []
+            rendered = []
+            for table in tables[:20]:
+                try:
+                    markdown = table.to_markdown()
+                    if markdown:
+                        rendered.append(markdown)
+                except Exception:
+                    continue
+            return "\n\n".join(rendered)
+        except Exception:
+            return ""
+
+    def _extract_table_blocks_from_text(self, text: str) -> list[str]:
+        blocks = []
+        parts = text.split("[TABLE]")
+        for part in parts[1:]:
+            value = clean_text(part)
             if value:
                 blocks.append(value)
         return blocks
-
-    @staticmethod
-    def _extract_page_text(page: fitz.Page) -> str:
-        blocks = page.get_text("blocks", sort=True)
-        if blocks:
-            return "\n\n".join(str(block[4]).strip() for block in blocks if len(block) > 4 and str(block[4]).strip())
-        return page.get_text("text", sort=True)
-
-    @staticmethod
-    def _extract_tables(page: fitz.Page) -> str:
-        find_tables = getattr(page, "find_tables", None)
-        if find_tables is None:
-            return ""
-        try:
-            rendered = []
-            for table in getattr(find_tables(), "tables", []) or []:
-                rows = table.extract()
-                lines = [" | ".join(clean_text(str(cell) if cell is not None else "") for cell in row) for row in rows or []]
-                rendered.append("\n".join(line for line in lines if line.strip()))
-            return "\n\n".join(x for x in rendered if x.strip())
-        except (RuntimeError, ValueError, AttributeError):
-            return ""
-
-    def extract_markdown(self, pdf_path: str | Path) -> str:
-        """Return safe native text; intentionally avoids the unbounded pymupdf4llm helper."""
-        return "\n\n".join(page.text for page in self.extract_iter(pdf_path) if page.text)
