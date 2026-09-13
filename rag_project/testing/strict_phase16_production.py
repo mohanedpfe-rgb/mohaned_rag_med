@@ -105,6 +105,20 @@ def strict_phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
         underlying.details["authoritative_implementation"] = "strict_phase16_production_ingestion_benchmark"
         underlying.details["production_benchmark_dataset"] = DATASET_ID
         underlying.details["independent_from_phase9_dataset"] = True
+        if underlying.status != "PASS" and not underlying.failures:
+            details = underlying.details or {}
+            underlying.failures.append({
+                "location": "strict Phase 16 production benchmark thresholds",
+                "exception": "Phase16ContractFailure",
+                "message": (
+                    f"recall={details.get('retrieval_recall')}, "
+                    f"grounding_case_rate={details.get('evidence_grounding_case_rate')}, "
+                    f"evidence_term_recall={details.get('evidence_term_recall')}, "
+                    f"ready_states={details.get('ready_state_count')}, "
+                    f"corpus_documents={details.get('corpus_document_count')}, "
+                    f"indexed_chunks={details.get('indexed_chunk_count')}"
+                ),
+            })
         return underlying
     except Exception as exc:
         result.score = 0.0
