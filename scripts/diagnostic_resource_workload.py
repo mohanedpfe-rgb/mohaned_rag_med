@@ -142,12 +142,18 @@ def main() -> int:
 
     started = time.monotonic()
     deadline = started + max(5.0, args.duration)
+    # The strict Phase 15 contract requires at least three real ingestion/resource
+    # observations. A short five-second wall-clock window can legitimately finish
+    # after only two expensive production-path iterations on slower Windows hosts.
+    # Guarantee the minimum observation depth first, then continue to the requested
+    # duration so longer certification runs retain their original trend sensitivity.
+    minimum_iterations = 3
     samples: list[int] = []
     fds: list[int] = []
     iterations = 0
     successes = 0
     failures: list[str] = []
-    while time.monotonic() < deadline:
+    while iterations < minimum_iterations or time.monotonic() < deadline:
         root = Path(tempfile.mkdtemp(prefix=f"rag_resource_production_{iterations}_"))
         try:
             system = _ProductionIngestionProbeSystem(root)
