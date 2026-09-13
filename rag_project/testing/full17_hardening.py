@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .deep_diagnostics import PhaseResult
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -82,7 +84,6 @@ def hardened_metamorphic(phase: Any):
 
 
 def hardened_mutation_phase(phase: Any):
-    from .deep_diagnostics import PhaseResult
     result = PhaseResult(phase.number, phase.key, phase.name, status="FAIL", started_at=time.time())
     try:
         text_path = ROOT / "rag_project" / "utils" / "text_utils.py"; chunk_path = ROOT / "rag_project" / "chunking" / "semantic_chunker.py"
@@ -114,7 +115,6 @@ def hardened_mutation_phase(phase: Any):
 
 def hardened_fingerprinting(phase: Any, results: dict[int, Any]):
     from . import runner as runner_module
-    from .deep_diagnostics import PhaseResult
     import hashlib
     result=runner_module._hardened_fingerprinting(phase,results)
     def fp(row):
@@ -167,7 +167,6 @@ def hardened_phase13(phase: Any, results: dict[int, Any]):
 
 
 def hardened_phase15(phase: Any):
-    from .deep_diagnostics import PhaseResult
     result=PhaseResult(phase.number,phase.key,phase.name,status="FAIL",started_at=time.time())
     try:
         child=ROOT/"scripts"/"diagnostic_resource_workload.py"; duration=float(os.getenv("DIAGNOSTIC_RESOURCE_SECONDS","20")); requested_mode=os.getenv("DIAGNOSTIC_RESOURCE_MODE","bounded").strip().lower(); duration=max(duration,86400.0) if requested_mode=="24h" else duration
