@@ -6,6 +6,7 @@ from typing import Any
 from rag_project.application_answer_service import ACTIVE_ANSWER_PIPELINE_AUTHORITY
 from rag_project.application_answer_service import answer as _med_evidence_answer
 from rag_project.application_answer_service import install_runtime_adapters
+from rag_project.application_legacy_adapter import LegacyProductionRAGAdapter
 from rag_project.configuration.settings import Settings
 from rag_project.canonical_runtime import ANSWER_AUTHORITY
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
@@ -14,11 +15,9 @@ from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install, install_application_contracts
 from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepared
 from rag_project.security import harden_system
-from rag_project.app import production_rag as production_rag_module
 
 _FACTORY_LOCK = threading.RLock()
 ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
-_ORIGINAL_PRODUCTION_RAG_SYSTEM = production_rag_module.ProductionRAGSystem
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
@@ -31,13 +30,29 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
     return resolved
 
 
-class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
-    """Canonical application service with explicit answer and publication contracts."""
+class MedEvidenceProductionRAGSystem:
+    """Canonical application service with explicit compatibility and answer contracts."""
 
     _certified_god_answer = staticmethod(_med_evidence_answer)
 
-    def ingest_file(self, pdf_path):
-        result = dict(super().ingest_file(pdf_path) or {})
+    def __init__(self, settings: Settings) -> None:
+        self._runtime = LegacyProductionRAGAdapter(settings)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runtime, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "_runtime":
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._runtime, name, value)
+
+    @property
+    def runtime(self) -> LegacyProductionRAGAdapter:
+        return object.__getattribute__(self, "_runtime")
+
+    def ingest_file(self, pdf_path: Any) -> dict[str, Any]:
+        result = dict(self.runtime.ingest_file(pdf_path) or {})
         status = str(result.get("status") or "").upper()
         if status in {"SUCCESS", "COMPLETED"}:
             result["status"] = "READY"
@@ -45,9 +60,9 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
             result["status"] = "FAILED"
         return result
 
-    def ingest_directory(self, directory=None):
-        results = super().ingest_directory(directory)
-        normalized = []
+    def ingest_directory(self, directory: Any = None) -> list[dict[str, Any]]:
+        results = self.runtime.ingest_directory(directory)
+        normalized: list[dict[str, Any]] = []
         for item in results:
             row = dict(item or {})
             if str(row.get("status") or "").upper() in {"SUCCESS", "COMPLETED"}:
@@ -55,8 +70,8 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
             normalized.append(row)
         return normalized
 
-    def health_report(self):
-        report = dict(super().health_report() or {})
+    def health_report(self) -> dict[str, Any]:
+        report = dict(self.runtime.health_report() or {})
         pipeline = dict(report.get("pipeline") or {})
         pipeline.update(
             {
@@ -86,6 +101,9 @@ class MedEvidenceProductionRAGSystem(_ORIGINAL_PRODUCTION_RAG_SYSTEM):
         report["pipeline"] = pipeline
         return report
 
+    def cancel_all_ingests(self) -> Any:
+        return self.runtime.cancel_all_ingests()
+
 
 def create_rag_system(settings: Settings | None = None, *, runtime_prepared: bool | None = None):
     """Build the canonical runtime without importing or owning the composition root."""
@@ -94,9 +112,7 @@ def create_rag_system(settings: Settings | None = None, *, runtime_prepared: boo
         if not prepared:
             install()
             install_application_contracts()
-        requested_cls = production_rag_module.ProductionRAGSystem
-        service_cls = requested_cls if requested_cls is not _ORIGINAL_PRODUCTION_RAG_SYSTEM else MedEvidenceProductionRAGSystem
-        system = service_cls(_normalize_runtime_settings(settings))
+        system = MedEvidenceProductionRAGSystem(_normalize_runtime_settings(settings))
         system = harden_system(system)
         system = install_runtime_adapters(system)
         try:
@@ -122,6 +138,7 @@ def runtime_contract() -> dict[str, Any]:
         "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
         "service": "MedEvidenceProductionRAGSystem",
         "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
+        "legacy_adapter": "rag_project.application_legacy_adapter.LegacyProductionRAGAdapter",
         "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
         "base_ingestion_engine": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
         "versioned_ingestion_publication": True,
