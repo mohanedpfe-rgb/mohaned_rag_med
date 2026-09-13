@@ -9,6 +9,7 @@ from rag_project.canonical_runtime import ANSWER_AUTHORITY, CANONICAL_SERVICE
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
+UI_SECURITY = ROOT / "rag_project" / "app" / "ui_security_boundary.py"
 
 
 def _imports(path: Path) -> set[str]:
@@ -22,19 +23,29 @@ def _imports(path: Path) -> set[str]:
     return found
 
 
-def test_app_is_a_thin_presentation_entrypoint():
+def test_app_is_a_thin_orchestration_entrypoint():
     source = APP.read_text(encoding="utf-8")
     assert "prepare_runtime(" in source
-    assert "install_pipeline_integrity" not in source
-    assert "install_production_contract" not in source
-    assert "install_ingestion_contract" not in source
-    assert "install_canonical_runtime" not in source
+    assert "install_ui_security(" in source
+    assert "validate_storage_path" not in source
+    assert "validate_pdf_payload" not in source
+    assert "render_intelligence_panel" not in source
+    assert len(source.splitlines()) <= 55
 
 
 def test_composition_module_does_not_depend_on_ui():
     imports = _imports(COMPOSITION)
     assert not any(name == "streamlit" or name.startswith("streamlit.") for name in imports)
     assert not any(name.startswith("rag_project.app") for name in imports)
+
+
+def test_ui_security_boundary_owns_presentation_security_capture():
+    source = UI_SECURITY.read_text(encoding="utf-8")
+    assert "validate_storage_path" in source
+    assert "validate_pdf_payload" in source
+    assert "register_session_upload" in source
+    assert "render_intelligence_panel" in source
+    assert "def install()" in source
 
 
 def test_composition_boundary_exports_stable_contract():
@@ -66,5 +77,6 @@ def test_runtime_environment_clamps_to_supported_bounds(monkeypatch):
 def test_architecture_document_names_the_composition_boundary():
     architecture = (ROOT / "ARCHITECTURE.md").read_text(encoding="utf-8")
     assert "rag_project.composition.prepare_runtime" in architecture
+    assert "rag_project.app.ui_security_boundary" in architecture
     assert "app.py" in architecture
     assert "presentation entrypoint" in architecture.lower()
