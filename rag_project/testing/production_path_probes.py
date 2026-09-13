@@ -38,32 +38,45 @@ class _ProductionIngestionProbeSystem:
         self.embedding_startup_error: Exception | None = None; self.logger = logging.getLogger("production_path_probe")
 
     def _bind_page_identity_boundary(self) -> None:
-        original = self.state_store.record_page
         state_store = self.state_store
+        original_record = state_store.record_page
+        original_upsert = state_store.upsert_page
+
+        def resolve(document_id: Any, source_path: Any = None) -> str:
+            candidate = str(document_id or "").strip()
+            if candidate:
+                return candidate
+            if source_path:
+                try:
+                    recovered = state_store.get_by_path(str(Path(source_path).expanduser().resolve()))
+                except Exception:
+                    recovered = None
+                if recovered and recovered.get("document_id"):
+                    return str(recovered["document_id"])
+            try:
+                documents = state_store.get_all_documents()
+            except Exception:
+                documents = []
+            if len(documents) == 1 and documents[0].get("document_id"):
+                return str(documents[0]["document_id"])
+            return ""
 
         def record_page(extraction: Any, *, cache_reference: str | None = None) -> None:
-            document_id = str(getattr(extraction, "document_id", "") or "").strip()
-            if not document_id:
-                source_path = getattr(extraction, "source_path", None)
-                recovered = None
-                if source_path:
-                    try:
-                        recovered = state_store.get_by_path(str(Path(source_path).expanduser().resolve()))
-                    except Exception:
-                        recovered = None
-                if recovered and recovered.get("document_id"):
-                    document_id = str(recovered["document_id"])
-                elif not document_id:
-                    documents = state_store.get_all_documents()
-                    if len(documents) == 1:
-                        document_id = str(documents[0].get("document_id") or "")
-                if document_id:
-                    setattr(extraction, "document_id", document_id)
+            document_id = resolve(getattr(extraction, "document_id", ""), getattr(extraction, "source_path", None))
             if not document_id:
                 raise RuntimeError("production page checkpoint lost document identity")
-            return original(extraction, cache_reference=cache_reference)
+            setattr(extraction, "document_id", document_id)
+            return original_record(extraction, cache_reference=cache_reference)
+
+        def upsert_page(document_id: str, page_number: int, **values: Any) -> None:
+            source_path = values.pop("source_path", None)
+            resolved = resolve(document_id, source_path)
+            if not resolved:
+                raise RuntimeError("production page storage lost document identity")
+            return original_upsert(resolved, page_number, **values)
 
         self.state_store.record_page = record_page
+        self.state_store.upsert_page = upsert_page
 
     @staticmethod
     def _hash_file(path: Path) -> str:
