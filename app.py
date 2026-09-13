@@ -12,6 +12,7 @@ from rag_project.app.intelligence_panel import render_intelligence_panel
 from rag_project.app.production_contract_panel import render_production_contract_panel
 from rag_project.app.ui_renovation import apply as apply_ui_renovation
 from rag_project.app.ui_final_polish import apply as apply_ui_final_polish
+from rag_project.app.ui_villa_finish import apply as apply_ui_villa_finish
 from rag_project.ingestion.responsive_supervisor import start as start_supervisor
 from rag_project.security import register_session_upload,validate_ollama_url,validate_pdf_payload,validate_storage_path
 from rag_project.intelligence.pipeline_integrity import install as install_pipeline_integrity
@@ -82,7 +83,7 @@ def _invalidate_stale_runtime_cache() -> None:
 
 
 def main():
-    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();install_canonical_runtime();apply_ui_renovation();apply_ui_final_polish();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
+    _load_local_env();_clamp_local_embedding_profile();install_pipeline_integrity();install_production_contract();install_ingestion_contract();install_canonical_runtime();apply_ui_renovation();apply_ui_final_polish();apply_ui_villa_finish();_install_ui_guards();_invalidate_stale_runtime_cache();system=bookrag_ui.get_system();start_supervisor(system,interval_seconds=1.0);bookrag_ui.main()
 
 
 if __name__=='__main__':main()
