@@ -8,9 +8,9 @@ import pytest
 from rag_project.runtime import install as install_runtime
 
 install_runtime()
-from rag_project.testing.diagnostic_contract_fix import install as install_diagnostic_contract_fix
+from tests.diagnostic_runtime_adapters import install as install_diagnostic_adapters
 
-install_diagnostic_contract_fix()
+install_diagnostic_adapters()
 
 ROOT = Path(__file__).resolve().parents[1]
 
