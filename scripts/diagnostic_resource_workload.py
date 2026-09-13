@@ -14,7 +14,6 @@ from pathlib import Path
 import fitz
 
 ROOT = Path(__file__).resolve().parents[1]
-# Make the repository importable regardless of how the launcher/subprocess was invoked.
 os.environ["PYTHONPATH"] = str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -37,7 +36,6 @@ def rss(pid: int) -> int | None:
                 ("PagefileUsage", ctypes.c_size_t),
                 ("PeakPagefileUsage", ctypes.c_size_t),
             ]
-
         PROCESS_QUERY_INFORMATION = 0x0400
         PROCESS_VM_READ = 0x0010
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -53,7 +51,6 @@ def rss(pid: int) -> int | None:
             return int(counters.WorkingSetSize)
         finally:
             kernel32.CloseHandle(handle)
-
     status = Path(f"/proc/{pid}/status")
     if status.exists():
         for line in status.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -86,7 +83,6 @@ def fd_count(pid: int) -> int | None:
             return None
         finally:
             kernel32.CloseHandle(handle)
-
     directory = Path(f"/proc/{pid}/fd")
     try:
         return len(list(directory.iterdir()))
@@ -147,7 +143,7 @@ def main() -> int:
     # after only two expensive production-path iterations on slower Windows hosts.
     # Guarantee the minimum observation depth first, then continue to the requested
     # duration so longer certification runs retain their original trend sensitivity.
-    minimum_iterations = 3
+    minimum_iterations = 4
     samples: list[int] = []
     fds: list[int] = []
     iterations = 0
