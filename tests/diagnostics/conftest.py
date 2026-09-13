@@ -18,7 +18,7 @@ def _canonical_fingerprint(row: dict[str, Any]) -> str:
     exception = str(row.get("exception") or "UnknownFailure")
     message = str(row.get("message") or row.get("detail") or "")
     message = re.sub(r"0x[0-9a-fA-F]+", "#", message)
-    message = re.sub(r"\b\d+(?:\.\d+)?\b", "#", message)
+    message = re.sub(r"\d+(?:\.\d+)?", "#", message)
     message = " ".join(message.casefold().split())
     return hashlib.sha256(f"{location}|{exception}|{message}".encode()).hexdigest()[:16]
 
