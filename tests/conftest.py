@@ -1,8 +1,9 @@
 """Pytest bootstrap, automatic categorisation, and legacy test-boundary adapters."""
 from __future__ import annotations
 
-from pathlib import Path
+import gc
 import weakref
+from pathlib import Path
 
 import pytest
 
@@ -38,23 +39,45 @@ def _install_vector_store_registry() -> None:
         pass
 
 
-def _close_chroma_stores_under(root: str | Path) -> None:
-    base = Path(root).resolve()
-    for store in list(_LIVE_VECTOR_STORES.values()):
-        persist_directory = getattr(store, "persist_directory", None)
-        if persist_directory is None:
-            continue
+def _release_store(store: object) -> None:
+    close = getattr(store, "close", None)
+    if callable(close):
         try:
-            path = Path(persist_directory).resolve()
-            try:
-                path.relative_to(base)
-            except ValueError:
-                continue
-            close = getattr(store, "close", None)
-            if callable(close):
-                close()
+            close()
+            return
         except Exception:
             pass
+    try:
+        collection = getattr(store, "collection", None)
+        if collection is not None:
+            delattr(store, "collection")
+    except Exception:
+        pass
+    try:
+        client = getattr(store, "client", None)
+        if client is not None:
+            delattr(store, "client")
+    except Exception:
+        pass
+
+
+def _close_chroma_stores_under(root: str | Path) -> None:
+    base = Path(root).resolve()
+    for _ in range(2):
+        for store in list(_LIVE_VECTOR_STORES.values()):
+            persist_directory = getattr(store, "persist_directory", None)
+            if persist_directory is None:
+                continue
+            try:
+                path = Path(persist_directory).resolve()
+                try:
+                    path.relative_to(base)
+                except ValueError:
+                    continue
+                _release_store(store)
+            except Exception:
+                pass
+        gc.collect()
 
 
 def _clear_chroma_system_cache() -> None:
@@ -85,6 +108,7 @@ def _install_windows_temp_cleanup_guard() -> None:
             finally:
                 _close_chroma_stores_under(self.name)
                 _clear_chroma_system_cache()
+                gc.collect()
 
         guarded_cleanup._bookrag_chroma_guard = True
         tempfile.TemporaryDirectory.cleanup = guarded_cleanup
@@ -191,9 +215,8 @@ def pytest_sessionfinish(session, exitstatus):
 
     for store in list(_LIVE_VECTOR_STORES.values()):
         try:
-            close = getattr(store, "close", None)
-            if callable(close):
-                close()
+            _release_store(store)
         except Exception:
             pass
+    gc.collect()
     _clear_chroma_system_cache()
