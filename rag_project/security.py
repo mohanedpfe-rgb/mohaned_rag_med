@@ -145,7 +145,8 @@ def validate_pdf_payload(name: str, content: bytes) -> None:
     if not safe_name or len(safe_name) > MAX_FILENAME_CHARS:
         raise ValueError("PDF filename is invalid or too long.")
     if Path(safe_name).suffix.lower() != ".pdf":
-        raise ValueError("Only files with a .pdf extension are accepted.")
+        # Preserve the long-standing security contract used by the high-level boundary tests.
+        raise ValueError("Uploaded file is not a valid PDF payload: filename must use the .pdf extension.")
     if len(content) > MAX_UPLOAD_BYTES:
         raise ValueError(f"Uploaded file '{safe_name}' exceeds the 50 MB security limit.")
     if not content.startswith(b"%PDF-"):
