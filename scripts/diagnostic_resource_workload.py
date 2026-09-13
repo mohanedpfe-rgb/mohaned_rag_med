@@ -64,12 +64,6 @@ def _quarter_mean(values: list[int], start: bool) -> float | None:
 
 
 def _install_resource_publication_guard(system: object) -> None:
-    """Keep the standalone resource subprocess aligned with the READY publication contract.
-
-    Pytest conftest adapters are not loaded in this subprocess. The guard only supplies
-    the explicit READY index_state required by the state-store contract when the canonical
-    ingestion path publishes its final state.
-    """
     state_store = getattr(system, "state_store", None)
     original = getattr(state_store, "transition_document_state", None)
     if state_store is None or original is None or getattr(original, "_resource_ready_guard", False):
@@ -89,6 +83,14 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=20.0)
     args = parser.parse_args()
 
+    # Standalone diagnostic subprocesses do not receive pytest conftest hooks.
+    # Install the diagnostic-only adapters explicitly before constructing the probe system.
+    try:
+        from tests.diagnostic_runtime_adapters import install as install_diagnostic_adapters
+        install_diagnostic_adapters()
+    except Exception:
+        pass
+
     from rag_project.testing.production_path_probes import _ProductionIngestionProbeSystem
     from rag_project.ingestion.robust_ingestor import robust_ingest_file
 
@@ -98,6 +100,7 @@ def main() -> int:
     fds: list[int] = []
     iterations = 0
     successes = 0
+    failures: list[str] = []
 
     while time.monotonic() < deadline:
         root = Path(tempfile.mkdtemp(prefix=f"rag_resource_production_{iterations}_"))
@@ -111,6 +114,10 @@ def main() -> int:
             outcome = robust_ingest_file(system, source)
             if outcome.get("status") == "success":
                 successes += 1
+            else:
+                failures.append(str(outcome.get("status") or "unknown_failure"))
+        except Exception as exc:
+            failures.append(f"{type(exc).__name__}: {exc}")
         finally:
             shutil.rmtree(root, ignore_errors=True)
             gc.collect()
@@ -130,6 +137,8 @@ def main() -> int:
         "sample_count": len(samples),
         "iterations": iterations,
         "successful_ingestions": successes,
+        "failed_iterations": len(failures),
+        "failure_samples": failures[:5],
         "rss_first_bytes": samples[0] if samples else None,
         "rss_last_bytes": samples[-1] if samples else None,
         "rss_peak_bytes": max(samples) if samples else None,
