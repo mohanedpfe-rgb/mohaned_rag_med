@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -13,6 +14,41 @@ _INSTALLED = False
 def _source_name_matches(value: Any, source: Path) -> bool:
     name = Path(str(value or "")).name
     return bool(name) and (name == source.name or name.endswith(source.name))
+
+
+def _file_hash(source: Path) -> str | None:
+    try:
+        if not source.is_file():
+            return None
+        digest = hashlib.sha256()
+        with source.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _failed_record_matches(
+    item_id: str,
+    metadata: dict[str, Any],
+    source: Path,
+    content_hash: str | None,
+) -> bool:
+    source_marker = metadata.get("file_name") or metadata.get("source_path") or metadata.get("file_path")
+    if _source_name_matches(source_marker, source):
+        return True
+    wanted = str(content_hash or "")
+    if not wanted:
+        return False
+    values = {
+        str(metadata.get("version_id") or ""),
+        str(metadata.get("content_hash") or ""),
+        str(item_id),
+        str(metadata.get("chunk_id") or ""),
+        str(metadata.get("document_id") or ""),
+    }
+    return any(wanted in value for value in values)
 
 
 def _snapshot_vector_ids(vector_store: Any) -> set[str]:
@@ -35,17 +71,11 @@ def _snapshot_lexical_ids(vector_store: Any) -> set[str]:
 def _cleanup_new_publication_records(
     system: Any,
     source: Path,
+    content_hash: str | None,
     baseline_vector_ids: set[str],
     baseline_lexical_ids: set[str],
 ) -> None:
-    """Remove records created by a failed publication, independent of document/version IDs.
-
-    A failed activation can pass through multiple ingestion/runtime wrappers. Some wrappers
-    assign a build-scoped document/record identity, so deleting only the expected
-    ``document_id/version_id`` pair is not sufficient. The transaction boundary therefore
-    remembers the physical records that existed before ingestion and removes only newly
-    created records that identify the failed source.
-    """
+    """Remove only records created after the failed publication began."""
     vector_store = getattr(system, "vector_store", None)
     if vector_store is None:
         return
@@ -62,8 +92,7 @@ def _cleanup_new_publication_records(
             if record_id in baseline_vector_ids:
                 continue
             meta = dict(metadata or {})
-            source_marker = meta.get("file_name") or meta.get("source_path") or meta.get("file_path")
-            if _source_name_matches(source_marker, source):
+            if _failed_record_matches(record_id, meta, source, content_hash):
                 removable.append(record_id)
         if removable:
             vector_store.collection.delete(ids=removable)
@@ -84,8 +113,7 @@ def _cleanup_new_publication_records(
                     metadata = json.loads(raw_metadata or "{}")
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
-                source_marker = metadata.get("file_name") or metadata.get("source_path") or metadata.get("file_path")
-                if _source_name_matches(source_marker, source):
+                if _failed_record_matches(record_id, metadata, source, content_hash):
                     removable.append(record_id)
             if removable:
                 connection.executemany(
@@ -114,6 +142,7 @@ def install() -> None:
         def ingest_file(self: Any, pdf_path: str | Path, *args: Any, **kwargs: Any):
             source = Path(pdf_path)
             vector_store = getattr(self, "vector_store", None)
+            content_hash = _file_hash(source)
             baseline_vector_ids = _snapshot_vector_ids(vector_store) if vector_store is not None else set()
             baseline_lexical_ids = _snapshot_lexical_ids(vector_store) if vector_store is not None else set()
             try:
@@ -122,6 +151,7 @@ def install() -> None:
                 _cleanup_new_publication_records(
                     self,
                     source,
+                    content_hash,
                     baseline_vector_ids,
                     baseline_lexical_ids,
                 )
@@ -132,6 +162,7 @@ def install() -> None:
                 _cleanup_new_publication_records(
                     self,
                     source,
+                    content_hash,
                     baseline_vector_ids,
                     baseline_lexical_ids,
                 )
