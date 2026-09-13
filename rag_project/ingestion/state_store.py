@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,7 @@ _ALLOWED_PAGE_UPDATE_KEYS = {
 
 
 class IngestionStateStore:
-    """Durable document and page checkpoints backed by SQLite."""
+    """Durable document/page checkpoints with private SQLite storage."""
 
     READY_STATUSES = {"READY", "COMPLETED"}
     ACTIVE_STATUSES = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "INTERRUPTED", "RECOVERING"}
@@ -37,9 +38,22 @@ class IngestionStateStore:
     }
 
     def __init__(self, database_path: str | Path):
-        self.database_path = Path(database_path)
+        self.database_path = Path(database_path).expanduser().resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        self._harden_filesystem_permissions()
+
+    def _harden_filesystem_permissions(self) -> None:
+        if os.name == "nt" or not self.database_path.exists():
+            return
+        for path in (self.database_path, Path(f"{self.database_path}-wal"), Path(f"{self.database_path}-shm")):
+            try:
+                if path.exists():
+                    path.chmod(0o600)
+            except OSError:
+                # Permission hardening is defense-in-depth; do not make a usable
+                # database unavailable on filesystems that ignore chmod.
+                pass
 
     @staticmethod
     def normalize_status(status: str | None) -> str | None:
@@ -60,7 +74,9 @@ class IngestionStateStore:
         connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA journal_mode = WAL")
-        connection.execute("PRAGMA synchronous = NORMAL")
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA secure_delete = ON")
+        connection.execute("PRAGMA trusted_schema = OFF")
         return connection
 
     def _initialize(self) -> None:
@@ -142,6 +158,7 @@ class IngestionStateStore:
             }.items():
                 if column_name not in columns:
                     connection.execute(definition)
+        self._harden_filesystem_permissions()
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -239,6 +256,7 @@ class IngestionStateStore:
                 "INSERT INTO process_events (document_id, file_name, created_at, stage, status, event_type, message, details, current_page, total_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (document_id, file_name, utc_now(), effective_stage, normalized_status, event_type, message, payload, int(current_page or 0), int(total_pages or 0)),
             )
+        self._harden_filesystem_permissions()
         return {"id": cursor.lastrowid, "document_id": document_id, "file_name": file_name, "stage": effective_stage, "status": normalized_status, "event_type": event_type, "message": message, "details": details or {}}
 
     def get_events(self, document_id: str | None = None, limit: int = 250) -> list[dict[str, Any]]:
@@ -301,11 +319,11 @@ class IngestionStateStore:
             content_hash = str(values.get("content_hash", record.get("content_hash") or "") or "")
             index_state = str(values.get("index_state", record.get("index_state") or "") or "").upper()
             if total_pages <= 0 or current_page != total_pages:
-                raise RuntimeError(
-                    f"READY publication requires complete page progress: current_page={current_page}, total_pages={total_pages}."
-                )
+                raise RuntimeError(f"READY publication requires complete page progress: current_page={current_page}, total_pages={total_pages}.")
             if not content_hash:
                 raise RuntimeError("READY publication requires a non-empty content_hash.")
+            if index_state and index_state != "READY":
+                raise RuntimeError(f"READY publication requires READY index_state, got {index_state!r}.")
             values.setdefault("content_hash", content_hash)
             values.setdefault("status", "READY")
             values.setdefault("index_state", "READY")
@@ -323,7 +341,7 @@ class IngestionStateStore:
         event_page = int(values.get("current_page", record.get("current_page") or 0))
         event_total = int(values.get("total_pages", record.get("total_pages") or 0))
         self.update_document(document_id, **values)
-        self.record_event(document_id, stage=new_stage_value, status=values.get("status", record.get("status")), event_type="stage", message=f"State transition {current_stage} -> {new_stage_value}", details={"from_stage": current_stage, "to_stage": new_stage_value, **values}, current_page=event_page, total_pages=event_total, file_name=record.get("file_name"))
+        self.record_event(document_id, stage=new_stage_value, status=values.get("status", record.get("status")), event_type="stage", message=f"State transition {current_stage} -> {new_stage_value}", details={"from_stage": current_stage, "to_stage": new_stage_value}, current_page=event_page, total_pages=event_total, file_name=record.get("file_name"))
 
     def is_document_ready(self, document_id: str) -> bool:
         record = self.get_document(document_id)
