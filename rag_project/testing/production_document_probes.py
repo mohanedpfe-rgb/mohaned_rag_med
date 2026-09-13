@@ -58,11 +58,23 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
                     page.extraction_method = "ocr"
                     if isinstance(getattr(page, "metadata", None), dict):
                         page.metadata["extraction_method"] = "ocr"
-            selected = real_page or adapter_page
+
             real_status_ok = bool(real_page is not None and real_page.ocr_status in _SUCCESS_OCR_STATUSES)
             adapter_status_ok = bool(adapter_page.ocr_status in _SUCCESS_OCR_STATUSES and adapter.calls >= 1)
             effective_ocr_backend = bool(real_status_ok or adapter_status_ok)
             backend = "rapidocr" if real_status_ok else "deterministic_contract_adapter"
+
+            # Never let an available-but-failed real OCR page shadow a successful
+            # deterministic contract adapter. The selected evidence page must have
+            # actually satisfied the OCR success contract.
+            if real_status_ok:
+                selected = real_page
+            elif adapter_status_ok:
+                selected = adapter_page
+            elif real_page is not None:
+                selected = real_page
+            else:
+                selected = adapter_page
 
             ocr_text = (selected.text or "").casefold()
             markers = {marker: marker in ocr_text for marker in ("hba1c", "6.5", "diabetes")}
@@ -107,6 +119,8 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
                 "real_ocr_attempted": True,
                 "real_ocr_available": real_page is not None,
                 "real_ocr_error": real_error,
+                "real_ocr_status": getattr(real_page, "ocr_status", None) if real_page is not None else None,
+                "adapter_ocr_status": getattr(adapter_page, "ocr_status", None),
                 "ocr_backend": backend,
                 "ocr_adapter_calls": adapter.calls,
                 "ocr_status": selected.ocr_status,
@@ -118,6 +132,7 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
                 "real_ocr_required": require_real,
                 "real_ocr_verified": bool(real_ok),
                 "effective_ocr_backend_verified": effective_ocr_backend,
+                "selected_ocr_source": "real" if real_status_ok else "deterministic_adapter" if adapter_status_ok else "real_failed" if real_page is not None else "adapter_failed",
                 "variant_results": variants,
                 "variant_count": len(variants),
                 "backend_truth": "The fixture contains rasterized glyphs with no text layer. RapidOCR is exercised when available; deterministic fallback verifies the OCR merge/state contract when dependency-isolated CI cannot load the OCR runtime.",
