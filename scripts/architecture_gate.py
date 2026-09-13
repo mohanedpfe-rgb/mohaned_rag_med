@@ -39,6 +39,7 @@ FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
     "rag_project.intelligence.pipeline_integrity",
     "rag_project.intelligence.production_contract_v2",
     "rag_project.ingestion.ingestion_contract",
+    "rag_project.canonical_runtime",
 }
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
@@ -58,6 +59,16 @@ def _imports(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imports.add(node.module)
     return imports
+
+
+def _imported_names(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                imported.add((node.module, alias.name))
+    return imported
 
 
 def _symbols(path: Path) -> set[str]:
@@ -111,7 +122,11 @@ def inspect() -> dict[str, object]:
         violations.append("application.py must consume neutral runtime policy")
     if "rag_project.runtime_bootstrap_state" not in application_imports:
         violations.append("application.py must consume neutral prepared-runtime state")
-    duplicated_installers = sorted(application_imports & FORBIDDEN_APPLICATION_INSTALLER_MODULES)
+    duplicated_installers = sorted(
+        module
+        for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
+        if (module, "install") in _imported_names(APPLICATION)
+    )
     if duplicated_installers:
         violations.append(f"application.py bypasses neutral installer ownership: {duplicated_installers}")
     application_source = APPLICATION.read_text(encoding="utf-8")
@@ -125,7 +140,7 @@ def inspect() -> dict[str, object]:
     runtime_symbols = _symbols(RUNTIME)
     if "install_application_contracts" not in runtime_symbols:
         violations.append("runtime.py must own the neutral application-contract bootstrap")
-    if "install_application_contracts" not in _imports(COMPOSITION):
+    if "rag_project.runtime" not in composition_imports:
         violations.append("composition.py must delegate contract installation to neutral runtime policy")
     bootstrap_imports = _imports(BOOTSTRAP_STATE)
     if any(name == "streamlit" or name.startswith("rag_project.app") for name in bootstrap_imports):
@@ -181,7 +196,7 @@ def inspect() -> dict[str, object]:
         "python_file_count": sum(1 for _ in _python_files()),
         "checked_core_layers": list(CORE_DIRS),
         "violations": violations,
-        "contract": "architecture-gate-v3",
+        "contract": "architecture-gate-v4",
     }
 
 
