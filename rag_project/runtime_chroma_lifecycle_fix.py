@@ -11,6 +11,7 @@ _INSTALLED = False
 def _clear_cache() -> None:
     try:
         from chromadb.api.shared_system_client import SharedSystemClient
+
         clear_system_cache = getattr(SharedSystemClient, "clear_system_cache", None)
         if callable(clear_system_cache):
             clear_system_cache()
@@ -27,11 +28,17 @@ def install() -> None:
 
         if getattr(VectorStore, "close", None) is None:
             def close(self: Any) -> None:
-                # Drop the per-store Chroma object graph before clearing the
-                # process-level shared cache. This releases HNSW mmap/file
-                # handles on Windows before TemporaryDirectory cleanup.
                 collection = getattr(self, "collection", None)
                 client = getattr(self, "client", None)
+                try:
+                    # Chroma's PersistentClient now exposes an explicit close()
+                    # because GC alone is insufficient to release SQLite/HNSW
+                    # resources on Windows. Always call it before dropping refs.
+                    client_close = getattr(client, "close", None)
+                    if callable(client_close):
+                        client_close()
+                except Exception:
+                    pass
                 self.collection = None
                 self.client = None
                 self.expected_identity = None
@@ -41,7 +48,28 @@ def install() -> None:
                 gc.collect()
                 _clear_cache()
 
+            close._chroma_lifecycle_fix = True
             VectorStore.close = close
+        else:
+            original_close = VectorStore.close
+            if not getattr(original_close, "_chroma_lifecycle_fix_wrapped", False):
+                def wrapped_close(self: Any) -> None:
+                    client = getattr(self, "client", None)
+                    try:
+                        client_close = getattr(client, "close", None)
+                        if callable(client_close):
+                            client_close()
+                    except Exception:
+                        pass
+                    try:
+                        original_close(self)
+                    finally:
+                        _clear_cache()
+                        gc.collect()
+                        _clear_cache()
+
+                wrapped_close._chroma_lifecycle_fix_wrapped = True
+                VectorStore.close = wrapped_close
         _INSTALLED = True
 
 
