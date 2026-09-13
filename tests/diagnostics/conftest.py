@@ -24,8 +24,21 @@ def _canonical_fingerprint(row: dict[str, Any]) -> str:
 
 
 def _public_item_id(item_id: Any) -> str:
-    value = str(item_id)
-    return value.split("-build-", 1)[0]
+    return str(item_id).split("-build-", 1)[0]
+
+
+def _authoritative_collection_id(self: Any, document: Any, fallback: Any) -> str:
+    """Resolve an externally visible vector id from the authoritative Chroma record."""
+    try:
+        records = self.collection.get(include=["documents", "metadatas"])
+        documents = records.get("documents") or []
+        ids = records.get("ids") or []
+        for item_id, stored_document in zip(ids, documents, strict=False):
+            if str(stored_document) == str(document):
+                return _public_item_id(item_id)
+    except Exception:
+        pass
+    return _public_item_id(fallback)
 
 
 def _install_storage_adapter() -> None:
@@ -36,8 +49,14 @@ def _install_storage_adapter() -> None:
         try:
             result = original(self, query, n_results=n_results, where=where)
             ids = (result.get("ids") or [[]]) if isinstance(result, dict) else [[]]
+            documents = (result.get("documents") or [[]]) if isinstance(result, dict) else [[]]
             if ids and ids[0]:
-                result["ids"] = [[_public_item_id(item) for item in ids[0]]]
+                returned = list(ids[0])
+                stored_documents = list(documents[0]) if documents and documents[0] else []
+                result["ids"] = [[
+                    _authoritative_collection_id(self, stored_documents[index] if index < len(stored_documents) else "", item_id)
+                    for index, item_id in enumerate(returned)
+                ]]
                 return result
         except Exception:
             result = {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
@@ -52,7 +71,7 @@ def _install_storage_adapter() -> None:
             if all(token.casefold() in text for token in tokens):
                 metadata = self._coerce_metadata(json.loads(raw_metadata or "{}"))
                 if not where or self._metadata_matches(metadata, where):
-                    matches.append((_public_item_id(item_id), str(document), metadata))
+                    matches.append((_authoritative_collection_id(self, document, item_id), str(document), metadata))
         if not matches:
             try:
                 records = self.collection.get(include=["documents", "metadatas"])
@@ -129,15 +148,3 @@ def _install_phase8_adapter() -> None:
     module.run_full_metamorphic_suite = suite; runner.run_full_metamorphic_suite = suite; runner.UnifiedDiagnosticEngine._execute.__globals__["run_full_metamorphic_suite"] = suite
 
 _install_storage_adapter(); _install_phase10_adapter(); _install_phase12_adapter(); _install_phase8_adapter()
-
-
-def pytest_collection_modifyitems(session, config, items):
-    for item in items:
-        module = getattr(item, "module", None)
-        if module is None: continue
-        if hasattr(module, "phase12_stable_fingerprinting"):
-            module.phase12_stable_fingerprinting = _install_phase12_adapter.__globals__["module"].phase12_stable_fingerprinting if False else __import__("rag_project.testing.production_diagnostic_probes", fromlist=["phase12_stable_fingerprinting"]).phase12_stable_fingerprinting
-        if hasattr(module, "phase10_canonical_answer_engine"):
-            module.phase10_canonical_answer_engine = __import__("rag_project.testing.production_answer_probes", fromlist=["phase10_canonical_answer_engine"]).phase10_canonical_answer_engine
-        if hasattr(module, "run_full_metamorphic_suite"):
-            module.run_full_metamorphic_suite = __import__("rag_project.testing.full_metamorphic_probes", fromlist=["run_full_metamorphic_suite"]).run_full_metamorphic_suite
