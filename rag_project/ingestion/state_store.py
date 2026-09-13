@@ -267,6 +267,17 @@ class IngestionStateStore:
                 tuple(selected.values()),
             )
 
+    def get_pages(self, document_id: str) -> list[dict[str, Any]]:
+        """Return all persisted page checkpoints for a document in page order."""
+        if not document_id:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM pages WHERE document_id = ? ORDER BY page_number ASC",
+                (document_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def record_event(self, document_id: str, *, stage: str | None = None, status: str | None = None, event_type: str = "stage", message: str = "", details: dict[str, Any] | None = None, current_page: int | None = None, total_pages: int | None = None, file_name: str | None = None) -> dict[str, Any]:
         if not document_id:
             return {}
