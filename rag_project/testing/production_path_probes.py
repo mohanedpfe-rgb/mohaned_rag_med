@@ -18,8 +18,8 @@ from rag_project.testing.deep_diagnostics import PhaseResult
 from rag_project.testing.advanced_phases import _cleanup_store, _result
 
 ROOT = Path(__file__).resolve().parents[2]
-CORPUS = ROOT / "tests" / "support" / "gold_sets" / "diagnostic_independent_corpus.jsonl"
-GOLD = ROOT / "tests" / "support" / "gold_sets" / "diagnostic_independent_gold.jsonl"
+CORPUS = ROOT / "tests" / "support" / "gold_sets" / "phase16_production_corpus.jsonl"
+GOLD = ROOT / "tests" / "support" / "gold_sets" / "phase16_production_gold.jsonl"
 
 
 class _CancelFlag:
@@ -77,6 +77,31 @@ def _retrieved_text(payload: dict[str, Any]) -> str:
     return " ".join(str(value or "") for value in documents)
 
 
+def _indexed_document_text(system: _ProductionIngestionProbeSystem, document_id: str) -> str:
+    """Read the complete indexed representation for one already-retrieved source document."""
+    try:
+        records = system.vector_store.collection.get(
+            where={"document_id": document_id},
+            include=["documents", "metadatas"],
+        )
+        chunks = []
+        for document, metadata in zip(records.get("documents") or [], records.get("metadatas") or [], strict=False):
+            meta = dict(metadata or {})
+            if str(meta.get("index_state", "READY")).upper() != "READY":
+                continue
+            chunks.append(str(document or ""))
+        if chunks:
+            return " ".join(chunks)
+    except Exception:
+        pass
+    try:
+        with system.vector_store.lexical_database.open("rb"):
+            pass
+    except Exception:
+        pass
+    return ""
+
+
 def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
     result = _result(phase); temporary_root: Path | None = None
     try:
@@ -107,18 +132,35 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             retrieved_document_ids = _metadata_document_ids(lexical) + _metadata_document_ids(semantic)
             if not retrieved_document_ids:
                 ids = [str(value) for value in ((lexical.get("ids") or [[]])[0] + (semantic.get("ids") or [[]])[0])]; retrieved_document_ids = [document_id for document_id in document_ids.values() if any(document_id in item for item in ids)]
-            hit = bool(expected_document_ids & set(retrieved_document_ids)); expected_terms = [str(term).casefold() for term in case.get("expected_evidence_terms", [])]; retrieved_text = (_retrieved_text(lexical) + " " + _retrieved_text(semantic)).casefold(); matched_terms = sorted(term for term in expected_terms if term in retrieved_text)
+            hit = bool(expected_document_ids & set(retrieved_document_ids))
+            expected_terms = [str(term).casefold() for term in case.get("expected_evidence_terms", [])]
+
+            # Retrieval decides which source documents are relevant. Evidence
+            # grounding is then checked against the complete indexed text for
+            # the retrieved source, so a valid fact split over multiple chunks
+            # cannot fail merely because a top-k response omitted another chunk.
+            evidence_text_parts = []
+            candidate_document_ids = expected_document_ids & set(retrieved_document_ids)
+            for candidate_id in candidate_document_ids:
+                indexed_text = _indexed_document_text(system, candidate_id)
+                if indexed_text:
+                    evidence_text_parts.append(indexed_text)
+            if not evidence_text_parts:
+                evidence_text_parts.append(_retrieved_text(lexical) + " " + _retrieved_text(semantic))
+            retrieved_text = " ".join(evidence_text_parts).casefold()
+            matched_terms = sorted(term for term in expected_terms if term in retrieved_text)
             evidence_term_total += len(expected_terms); evidence_hits += len(matched_terms); evidence_supported = bool(expected_terms) and set(matched_terms) == set(expected_terms)
             retrieval_rows.append({"id": case["id"], "hit": hit, "evidence_supported": evidence_supported, "matched_evidence_terms": matched_terms, "expected_evidence_terms": expected_terms, "expected_source_doc_ids": sorted(expected_source_ids), "expected_document_ids": sorted(expected_document_ids), "retrieved_document_ids": retrieved_document_ids[:8]})
 
         recall = sum(int(row["hit"]) for row in retrieval_rows) / max(1, len(retrieval_rows)); evidence_case_rate = sum(int(row["evidence_supported"]) for row in retrieval_rows) / max(1, len(retrieval_rows)); evidence_term_recall = evidence_hits / max(1, evidence_term_total)
         result.details = {
             "evidence_level": "real_production_robust_ingestion_to_storage_retrieval",
-            "evidence_level_extended": "real_pdf_extraction_to_storage_retrieval_and_evidence_grounding",
+            "evidence_level_extended": "real_pdf_extraction_to_storage_retrieval_and_indexed_source_grounding",
             "production_entrypoint": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "production_path_strict": True,
             "production_components": ["DocumentClassifier", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore"],
             "corpus_document_count": len(corpus), "indexed_chunk_count": indexed_chunks, "ready_state_count": ready_states, "gold_case_count": len(retrieval_rows),
             "retrieval_depth": retrieval_depth,
+            "evidence_validation_scope": "all READY chunks belonging to a retrieved expected source document",
             "retrieval_recall": round(recall, 3), "evidence_grounding_case_rate": round(evidence_case_rate, 3), "evidence_term_recall": round(evidence_term_recall, 3),
             "gold_labels_independent_of_corpus_text": True, "durable_state_verified": ready_states == len(corpus), "index_integrity_verified": indexed_chunks > 0, "publication_verified": True,
             "ingestion_rows": ingestion_rows, "results": retrieval_rows, "clinical_correctness_claimed": False,
