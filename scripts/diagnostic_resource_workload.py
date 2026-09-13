@@ -28,7 +28,7 @@ def rss(pid: int) -> int | None:
         pass
     if os.name == "nt":
         class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-            _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong), ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong), ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t), ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
         handle = kernel32.OpenProcess(0x0400 | 0x0010, False, int(pid))
@@ -122,12 +122,9 @@ def main() -> int:
     parser.add_argument("--duration", type=float, default=5.0)
     args = parser.parse_args()
 
-    try:
-        from tests.diagnostic_runtime_adapters import install as install_diagnostic_adapters
-        install_diagnostic_adapters()
-    except Exception:
-        pass
-
+    # This certification process intentionally does not load pytest-only
+    # diagnostic monkeypatches. The workload must observe the real production
+    # robust_ingest_file -> PDFExtractor -> state store -> vector store path.
     from rag_project.ingestion.robust_ingestor import robust_ingest_file
     from rag_project.testing.production_path_probes import _ProductionIngestionProbeSystem
 
@@ -215,6 +212,7 @@ def main() -> int:
         "runtime_reused_across_iterations": False,
         "iteration_bound_enforced": True,
         "isolated_iteration_cleanup": True,
+        "pytest_diagnostic_adapters_loaded": False,
     }
     print(json.dumps(payload, sort_keys=True))
     return 0 if successes >= minimum_iterations else 1
