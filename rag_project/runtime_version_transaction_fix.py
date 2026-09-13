@@ -1,141 +1,11 @@
 from __future__ import annotations
 
-import copy
-import json
-import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
 
 _LOCK = threading.RLock()
 _INSTALLED = False
-
-
-def _snapshot(system: Any, source: Path) -> dict[str, Any] | None:
-    state_store = getattr(system, "state_store", None)
-    vector_store = getattr(system, "vector_store", None)
-    if state_store is None or vector_store is None:
-        return None
-
-    previous = None
-    try:
-        previous = state_store.get_by_path(str(source.resolve()))
-    except Exception:
-        previous = None
-    if not previous:
-        return None
-
-    document_id = str(previous.get("document_id") or "")
-    if not document_id:
-        return None
-
-    snapshot: dict[str, Any] = {
-        "document_id": document_id,
-        "state": copy.deepcopy(previous),
-        "file_bytes": source.read_bytes() if source.exists() else None,
-        "vector": {},
-        "lexical": [],
-        "pages": [],
-    }
-
-    try:
-        snapshot["vector"] = vector_store.collection.get(
-            where={"document_id": document_id},
-            include=["documents", "metadatas", "embeddings"],
-        )
-    except Exception:
-        snapshot["vector"] = {}
-
-    try:
-        with sqlite3.connect(vector_store.lexical_database) as connection:
-            snapshot["lexical"] = connection.execute(
-                "SELECT id, document, metadata, index_state, tokens "
-                "FROM lexical_documents "
-                "WHERE json_extract(metadata, '$.document_id') = ?",
-                (document_id,),
-            ).fetchall()
-    except Exception:
-        snapshot["lexical"] = []
-
-    try:
-        snapshot["pages"] = state_store.get_pages(document_id)
-    except Exception:
-        snapshot["pages"] = []
-    return snapshot
-
-
-def _restore(system: Any, snapshot: dict[str, Any], source: Path) -> None:
-    state_store = getattr(system, "state_store", None)
-    vector_store = getattr(system, "vector_store", None)
-    if state_store is None or vector_store is None:
-        return
-
-    document_id = snapshot["document_id"]
-    vector = snapshot.get("vector") or {}
-    ids = [str(value) for value in (vector.get("ids") or [])]
-    documents = list(vector.get("documents") or [])
-    metadatas = [dict(value or {}) for value in (vector.get("metadatas") or [])]
-    embeddings = list(vector.get("embeddings") or [])
-    if ids:
-        try:
-            kwargs: dict[str, Any] = {
-                "ids": ids,
-                "documents": documents,
-                "metadatas": metadatas,
-            }
-            if embeddings and len(embeddings) == len(ids):
-                kwargs["embeddings"] = embeddings
-            vector_store.collection.upsert(**kwargs)
-        except Exception:
-            pass
-
-    rows = snapshot.get("lexical") or []
-    if rows:
-        try:
-            with sqlite3.connect(vector_store.lexical_database) as connection:
-                connection.executemany(
-                    "INSERT OR REPLACE INTO lexical_documents "
-                    "(id, document, metadata, index_state, tokens) VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-                connection.commit()
-        except Exception:
-            pass
-
-    previous_state = copy.deepcopy(snapshot.get("state") or {})
-    if previous_state:
-        previous_state["lease_owner"] = None
-        previous_state["lease_expires_at"] = None
-        previous_state["heartbeat_at"] = None
-        try:
-            state_store.upsert_document(previous_state)
-        except Exception:
-            pass
-
-    try:
-        state_store.delete_pages(document_id)
-    except Exception:
-        pass
-    for page in snapshot.get("pages") or []:
-        values = dict(page)
-        values.pop("document_id", None)
-        values.pop("page_number", None)
-        try:
-            state_store.upsert_page(
-                document_id,
-                int(page["page_number"]),
-                **values,
-            )
-        except Exception:
-            pass
-
-    original_bytes = snapshot.get("file_bytes")
-    if original_bytes is not None:
-        try:
-            source.parent.mkdir(parents=True, exist_ok=True)
-            source.write_bytes(original_bytes)
-        except Exception:
-            pass
 
 
 def install() -> None:
@@ -153,22 +23,59 @@ def install() -> None:
 
         def ingest_file(self: Any, pdf_path: str | Path, *args: Any, **kwargs: Any):
             source = Path(pdf_path)
-            snapshot = None
+            vector_store = getattr(self, "vector_store", None)
+            original_delete = getattr(vector_store, "delete_version", None)
+            deferred: list[tuple[str, str]] = []
+
+            # Read the currently published state before the replacement mutates
+            # the document row. The old READY version is protected from every
+            # internal delete_version call until the new version is successfully
+            # published.
             try:
-                snapshot = _snapshot(self, source)
+                previous = self.state_store.get_by_path(str(source.resolve()))
             except Exception:
-                snapshot = None
+                previous = None
+
+            document_id = str((previous or {}).get("document_id") or "")
+            protected_versions = {
+                str((previous or {}).get("version_id") or ""),
+                str((previous or {}).get("content_hash") or ""),
+            }
+            protected_versions.discard("")
+
+            if vector_store is not None and callable(original_delete) and document_id and protected_versions:
+                def guarded_delete(store: Any, target_document_id: str, target_version_id: str) -> None:
+                    pair = (str(target_document_id), str(target_version_id))
+                    if pair[0] == document_id and pair[1] in protected_versions:
+                        if pair not in deferred:
+                            deferred.append(pair)
+                        return
+                    return original_delete(target_document_id, target_version_id)
+
+                vector_store.delete_version = guarded_delete.__get__(vector_store, type(vector_store))
 
             try:
                 result = original(self, source, *args, **kwargs)
-            except Exception:
-                if snapshot is not None:
-                    _restore(self, snapshot, source)
-                raise
+            finally:
+                if vector_store is not None and callable(original_delete):
+                    vector_store.delete_version = original_delete
 
-            failed = isinstance(result, dict) and str(result.get("status", "")).casefold() == "failed"
-            if failed and snapshot is not None:
-                _restore(self, snapshot, source)
+            status = str(result.get("status") or "").casefold() if isinstance(result, dict) else ""
+            if status in {"success", "ready", "completed", "skipped"}:
+                # New READY publication succeeded. Retire the old version only now.
+                for target_document_id, target_version_id in deferred:
+                    try:
+                        original_delete(target_document_id, target_version_id)
+                    except Exception:
+                        try:
+                            self.logger.exception(
+                                "Could not retire superseded version %s for %s",
+                                target_version_id,
+                                target_document_id,
+                            )
+                        except Exception:
+                            pass
+            # Any failed replacement leaves deferred old records untouched.
             return result
 
         ingest_file._runtime_version_transaction_fix = True
