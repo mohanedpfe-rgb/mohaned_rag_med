@@ -12,7 +12,6 @@ from rag_project.intelligence.answer_repair import repair_and_verify
 from rag_project.intelligence.evidence_guard import citation_firewall, contradiction_report, evidence_confidence, grounding_decision, verify_claims
 from rag_project.intelligence.index_auditor import audit_index
 from rag_project.intelligence.pdf_intelligence import enrich_text
-from rag_project.intelligence.production_contract import sanitize_trace
 from rag_project.intelligence.query_intelligence import QueryPlan, plan_query
 from rag_project.retrieval.metadata_filter import MetadataFilter
 from rag_project.intelligence.semantic_reasoning import build_evidence_graph, clinical_reasoning_ready, semantic_evidence_alignment, understand_query
