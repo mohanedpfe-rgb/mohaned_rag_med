@@ -14,6 +14,7 @@ from pathlib import Path
 import fitz
 
 ROOT = Path(__file__).resolve().parents[1]
+# Make the repository importable regardless of how the launcher/subprocess was invoked.
 os.environ["PYTHONPATH"] = str(ROOT) + os.pathsep + os.environ.get("PYTHONPATH", "")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -21,6 +22,38 @@ os.chdir(ROOT)
 
 
 def rss(pid: int) -> int | None:
+    """Return resident memory bytes on Linux/macOS/Windows without extra dependencies."""
+    if os.name == "nt":
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_ulong),
+                ("PageFaultCount", ctypes.c_ulong),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        PROCESS_QUERY_INFORMATION = 0x0400
+        PROCESS_VM_READ = 0x0010
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes.WinDLL("psapi", use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
+        if not handle:
+            return None
+        try:
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(counters)
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return None
+            return int(counters.WorkingSetSize)
+        finally:
+            kernel32.CloseHandle(handle)
+
     status = Path(f"/proc/{pid}/status")
     if status.exists():
         for line in status.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -29,55 +62,51 @@ def rss(pid: int) -> int | None:
                     return int(line.split()[1]) * 1024
                 except (IndexError, ValueError):
                     return None
-    if os.name == "nt":
-        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong),
-                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-        PROCESS_QUERY_INFORMATION = 0x0400
-        PROCESS_VM_READ = 0x0010
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, int(pid))
-        if not handle:
-            return None
-        counters = PROCESS_MEMORY_COUNTERS()
-        counters.cb = ctypes.sizeof(counters)
-        try:
-            ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
-            return int(counters.WorkingSetSize) if ok else None
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    return None
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        value = int(usage.ru_maxrss)
+        return value * 1024 if sys.platform != "darwin" else value
+    except Exception:
+        return None
 
 
 def fd_count(pid: int) -> int | None:
-    directory = Path(f"/proc/{pid}/fd")
-    if directory.exists():
-        try:
-            return len(list(directory.iterdir()))
-        except OSError:
-            return None
+    """Return open-handle/file-descriptor count on supported platforms."""
     if os.name == "nt":
-        PROCESS_QUERY_INFORMATION = 0x0400
-        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, int(pid))
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
         if not handle:
             return None
-        count = ctypes.c_ulong()
         try:
-            ok = ctypes.windll.kernel32.GetProcessHandleCount(handle, ctypes.byref(count))
-            return int(count.value) if ok else None
+            count = ctypes.c_ulong(0)
+            if kernel32.GetProcessHandleCount(handle, ctypes.byref(count)):
+                return int(count.value)
+            return None
         finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    return None
+            kernel32.CloseHandle(handle)
+
+    directory = Path(f"/proc/{pid}/fd")
+    try:
+        return len(list(directory.iterdir()))
+    except OSError:
+        try:
+            import resource
+            soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+            return int(soft) if soft > 0 else None
+        except Exception:
+            return None
 
 
 def _write_probe_pdf(path: Path, iteration: int) -> None:
     document = fitz.open()
     page = document.new_page(width=595, height=842)
-    page.insert_textbox(fitz.Rect(45, 45, 550, 790), f"Resource stability diagnostic {iteration}\nDiabetes mellitus is a chronic metabolic disease. HbA1c is used for diagnosis and monitoring.", fontsize=11)
+    page.insert_textbox(
+        fitz.Rect(45, 45, 550, 790),
+        f"Resource stability diagnostic {iteration}\nDiabetes mellitus is a chronic metabolic disease. HbA1c is used for diagnosis and monitoring.",
+        fontsize=11,
+    )
     document.save(path)
     document.close()
 
@@ -145,8 +174,6 @@ def main() -> int:
         iterations += 1
 
     observed = time.monotonic() - started
-    rss_delta = (samples[-1] - samples[0]) if len(samples) >= 2 else 0
-    fd_delta = (fds[-1] - fds[0]) if len(fds) >= 2 else 0
     payload = {
         "workload": "canonical robust_ingest_file isolated PDF -> extraction -> chunking -> embedding -> validation -> READY lifecycle",
         "observed_seconds": observed,
@@ -158,17 +185,18 @@ def main() -> int:
         "rss_first_bytes": samples[0] if samples else None,
         "rss_last_bytes": samples[-1] if samples else None,
         "rss_peak_bytes": max(samples) if samples else None,
-        "rss_delta_bytes": rss_delta,
+        "rss_delta_bytes": (samples[-1] - samples[0]) if len(samples) >= 2 else None,
         "rss_slope_bytes_per_iteration": _linear_slope(samples),
         "rss_first_quarter_mean": _quarter_mean(samples, True),
         "rss_last_quarter_mean": _quarter_mean(samples, False),
-        "rss_tail_minus_head_mean_bytes": ((_quarter_mean(samples, False) or 0.0) - (_quarter_mean(samples, True) or 0.0)) if samples else 0.0,
+        "rss_tail_minus_head_mean_bytes": (_quarter_mean(samples, False) - _quarter_mean(samples, True)) if samples else None,
         "fd_first": fds[0] if fds else None,
         "fd_last": fds[-1] if fds else None,
-        "fd_delta": fd_delta,
+        "fd_delta": (fds[-1] - fds[0]) if len(fds) >= 2 else None,
         "fd_peak": max(fds) if fds else None,
         "ready_publication_contract_guarded": True,
         "repository_root": str(ROOT),
+        "telemetry_platform": os.name,
     }
     print(json.dumps(payload, sort_keys=True))
     return 0 if successes >= 3 else 1
