@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from rag_project.api.med_evidence_api import _public_query_result
 from rag_project.api.security import (
     APISettings,
     APISecurityError,
@@ -38,13 +39,7 @@ def _settings(secret: str = "s" * 48) -> APISettings:
 
 def test_issue_and_verify_jwt_round_trip():
     settings = _settings()
-    token = issue_test_jwt(
-        subject="alice",
-        scopes=("query", "feedback"),
-        secret=settings.jwt_secret,
-        issuer=settings.jwt_issuer,
-        audience=settings.jwt_audience,
-    )
+    token = issue_test_jwt(subject="alice", scopes=("query", "feedback"), secret=settings.jwt_secret, issuer=settings.jwt_issuer, audience=settings.jwt_audience)
     claims = verify_jwt(token, settings)
     assert claims["sub"] == "alice"
     assert set(claims["scope"].split()) == {"query", "feedback"}
@@ -70,7 +65,7 @@ def test_jwt_rejects_expired_token():
     settings = _settings()
     now = int(time.time())
     header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps({"sub":"u","iss":"issuer","aud":"audience","iat":now-100,"nbf":now-100,"exp":now-1}).encode()).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": "u", "iss": "issuer", "aud": "audience", "iat": now - 100, "nbf": now - 100, "exp": now - 1}).encode()).rstrip(b"=").decode()
     signed = f"{header}.{payload}".encode()
     signature = hmac.new(settings.jwt_secret.encode(), signed, hashlib.sha256).digest()
     token = f"{header}.{payload}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
@@ -137,3 +132,31 @@ def test_upload_boundary_rejects_path_components_and_non_pdf(tmp_path):
         validate_pdf_payload("ok.txt", payload)
     with pytest.raises(ValueError):
         validate_pdf_payload("ok.pdf", b"%PDF-1.7\n")
+
+
+def test_query_response_contains_no_internal_retrieval_or_verification_details():
+    result = _public_query_result({
+        "query_id": "q1",
+        "status": "ok",
+        "answer": "safe answer",
+        "confidence": {"evidence_confidence": 0.9},
+        "generation_path": "verified",
+        "citations": [{"document_id": "doc-1", "page": 3}],
+        "query_trace": {"timings_ms": {"total": 12.5}},
+        "retrieval": {"full_text": "SECRET INTERNAL TEXT"},
+        "verification": {"debug": "SECRET INTERNAL STATE"},
+        "system_prompt": "SECRET",
+    })
+    assert result["body"] == "safe answer"
+    assert result["citations"] == [{"document_id": "doc-1", "page": 3}]
+    assert "retrieval" not in result
+    assert "verification" not in result
+    assert "system_prompt" not in result
+
+
+def test_public_query_projection_is_type_bounded():
+    result = _public_query_result({"answer": None, "citations": "bad", "confidence": "bad", "query_trace": "bad"})
+    assert result["body"] == ""
+    assert result["citations"] == []
+    assert result["confidence"] == 0.0
+    assert result["latency_ms"] == 0.0
