@@ -32,8 +32,9 @@ def _wrap_followup_route(original: Any):
         route = original(self, question, context, safety)
         query = re.sub(r"\s+", " ", str(question or "")).strip().casefold()
         explicit = bool(
-            re.search(r"\b(?:what about|how about|it|this|that|they|them)\b", query)
-            or re.match(r"^(?:and|also|et|puis|و|ثم)\b", query, flags=re.I | re.UNICODE)
+            re.search(r"\b(?:what about|how about)\b", query)
+            or re.match(r"^(?:(?:and|also|et|puis)\b|(?:و|ثم)\b)", query, flags=re.I | re.UNICODE)
+            or re.match(r"^(?:it|this|that|they|them)\b", query, flags=re.I)
         )
         if bool(getattr(route, "is_follow_up", False)) != explicit:
             return replace(route, is_follow_up=explicit)
