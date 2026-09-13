@@ -23,7 +23,7 @@ The runner reports actual pytest failures separately from timeouts and terminate
 Advanced form:
 
 ```powershell
-python scripts/test_full_fast.py --workers 4 --timeout 110 --budget 120
+pytest -q -n 18 --dist loadscope
 ```
 
 ## 2. Complete release suite
@@ -31,7 +31,7 @@ python scripts/test_full_fast.py --workers 4 --timeout 110 --budget 120
 The complete test inventory is intentionally not forced into the local two-minute budget. Run it explicitly with:
 
 ```powershell
-python -m pytest -q --tb=short
+pytest -q -n 18 --dist loadscope --tb=short
 ```
 
 The complete suite includes slow, integration, and external-service tests and remains the release gate.

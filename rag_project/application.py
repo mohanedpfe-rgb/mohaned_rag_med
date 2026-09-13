@@ -18,7 +18,7 @@ from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepar
 from rag_project.security import harden_system
 
 _FACTORY_LOCK = threading.RLock()
-ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
+ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:

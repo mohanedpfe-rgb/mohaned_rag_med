@@ -355,7 +355,7 @@ def _wrap_medical_safety_policy(original):
         except Exception:
             actionable = False
             high_risk = False
-        if not actionable:
+        if not high_risk:
             policy = dict(result.get("medical_safety") or {})
             policy.update({
                 "high_risk_query": high_risk,

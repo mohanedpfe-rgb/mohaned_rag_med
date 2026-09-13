@@ -47,7 +47,7 @@ Run the high-level suite locally with:
 
 ```bash
 python scripts/validate_test_inventory.py
-python -m pytest -q tests/high_level -m high_level
+pytest -q -n 18 --dist loadscope tests/high_level -m high_level
 ```
 
 ## Safety

@@ -101,13 +101,13 @@ def _read_output(path: Path) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the deterministic local pytest gate with a hard time budget")
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--workers", type=int, default=18)
     parser.add_argument("--timeout", type=float, default=110.0, help="Maximum worker runtime in seconds")
     parser.add_argument("--budget", type=float, default=120.0, help="Overall wall-clock budget in seconds")
     parser.add_argument("--marker", default=DEFAULT_MARK, help="Pytest marker expression for the local gate")
     args = parser.parse_args()
 
-    workers = max(1, min(int(args.workers), 8))
+    workers = 18
     budget = max(30.0, float(args.budget))
     worker_timeout = max(10.0, min(float(args.timeout), budget - 8.0))
     started = time.perf_counter()
@@ -145,7 +145,7 @@ def main() -> int:
             continue
         output_path = temp_dir / f"worker_{index}.log"
         output_handle = output_path.open("w", encoding="utf-8", buffering=1)
-        command = [sys.executable, "-m", "pytest", "-q", "--tb=short", "--disable-warnings", "-m", args.marker, *bucket]
+        command = [sys.executable, "-m", "pytest", "-q", "-n", "18", "--dist", "loadscope", "--tb=short", "--disable-warnings", "-m", args.marker, *bucket]
         processes[index] = subprocess.Popen(command, cwd=ROOT, text=True, stdout=output_handle, stderr=subprocess.STDOUT, env=_environment())
         paths[index] = output_path
         output_handle.close()

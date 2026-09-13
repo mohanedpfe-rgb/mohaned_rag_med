@@ -25,7 +25,7 @@ jobs:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "true"
           EMBEDDING_TEST_MODE: "true"
-        run: python -m pytest -q tests/high_level -m high_level -n auto --dist loadscope --durations=20
+        run: python -m pytest -q -n 18 --dist loadscope tests/high_level -m high_level --durations=20
       - name: Run the authoritative 13-phase plan
         env:
           DEVICE_MODE: i5_16gb

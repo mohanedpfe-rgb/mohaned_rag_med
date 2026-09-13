@@ -222,7 +222,8 @@ def _wrap_contradiction_detection(original):
                     or (re.search(r"\b(?:indicated|recommended|should|with|present|detected|positive|has)\b", claim_text) and re.search(r"\b(?:contraindicated|avoid|should not|without|absent|absence|negative|no)\b", text, re.I))
                 )
                 semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
-                if (explicit and semantic >= 0.55) or (not explicit and len(shared) >= 3 and semantic >= 0.25):
+                polarity_conflict = bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", claim_text)) != bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", text, re.I))
+                if ((explicit or polarity_conflict) and (len(shared) >= 1 or semantic >= 0.25)) or (not explicit and len(shared) >= 3 and semantic >= 0.25):
                     return True
         return False
     wrapped._functionality_contradiction_guard = True

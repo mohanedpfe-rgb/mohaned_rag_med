@@ -14,7 +14,7 @@ from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.intelligence.semantic_cache import install as install_semantic_cache
 from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 
-ACTIVE_ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
+ACTIVE_ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 
 
 def detect_answer_language(question: str) -> tuple[str, float]:

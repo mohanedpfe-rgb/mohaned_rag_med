@@ -27,7 +27,7 @@ EXPECTED_PHASE_NUMBERS = tuple(PHASES)
 
 
 def _run_phase(root: Path, number: int, directory: str, *, keyword: str | None, timeout: int) -> dict:
-    command = [sys.executable, "-m", "pytest", "-q", f"tests/high_level/{directory}", "-m", "high_level"]
+    command = [sys.executable, "-m", "pytest", "-q", "-n", "18", "--dist", "loadscope", f"tests/high_level/{directory}", "-m", "high_level"]
     if keyword:
         command.extend(["-k", keyword])
     started = time.perf_counter()

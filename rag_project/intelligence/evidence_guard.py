@@ -256,7 +256,11 @@ def detect_contradiction(claim, evidence_blocks):
         shared = (cl_tokens & set(meaningful_tokens(el))) - generic
         explicit = any(re.search(a, cl, re.I) and re.search(b, el, re.I) for a, b in OPPOSITES)
         polarity = bool(NEG.search(cl)) != bool(NEG.search(el)) and bool(shared)
-        if (explicit or polarity) and (semantic_support(cl, el) >= 0.08 or len(shared) >= 1):
+        # A polarity conflict is meaningful when the two statements share even
+        # one subject term.  Requiring a high semantic score here loses short
+        # but unambiguous pairs such as "no fever" / "fever" and
+        # "contraindicated" / "indicated".
+        if (explicit or polarity) and (len(shared) >= 1 or semantic_support(cl, el) >= 0.08):
             return True
     return False
 
@@ -337,6 +341,7 @@ def contradiction_report(claims: Sequence[ClaimCheck]) -> dict[str, Any]:
     agreement = sum(1 for claim in rows if not claim.contradiction and claim.status in {"SUPPORTED", "PARTIAL"}) / max(1, len(rows))
     return {
         "has_contradiction": bool(conflicts),
+        "count": len(conflicts),
         "conflict_count": len(conflicts),
         "conflicts": conflicts,
         "agreement": round(agreement, 4),
