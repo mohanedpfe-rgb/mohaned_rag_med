@@ -38,8 +38,8 @@ jobs:
           )
           replace_once(
               "rag_project/runtime_hardening_extra.py",
-              "ROOT = Path(__file__).resolve().parents[1]\n",
-              "ROOT = Path(__file__).resolve().parents[1]\n\n\ndef utc_now() -> str:\n    return datetime.now(timezone.utc).isoformat()\n",
+              "from typing import Any, Sequence\n",
+              "from typing import Any, Sequence\n\n\ndef utc_now() -> str:\n    return datetime.now(timezone.utc).isoformat()\n",
           )
           advanced = Path("rag_project/testing/advanced_phases.py")
           text = advanced.read_text(encoding="utf-8")
@@ -52,53 +52,16 @@ jobs:
               "    original_init = SemanticChunker.__init__\n    SemanticChunker.__init__ = self_init = _init_wrapper(None, original_init) if False else (lambda self, *args, **kwargs: None)\n    # Replace with a real wrapper without lambda indirection so introspection remains useful.\n",
               "    original_init = SemanticChunker.__init__\n",
           )
-          replace_once(
-              "rag_project/app/rag_system.py",
-              "        embedding_profile = self.embedding_service.identity\n",
-              "",
-          )
-          replace_once(
-              "rag_project/app/rag_system.py",
-              "            cited_markers = set(range(1, len(selected_hits) + 1))\n",
-              "",
-          )
-          replace_once(
-              "rag_project/app/resilient_rag.py",
-              "        ids = _as_list(records.get(\"ids\"))\n",
-              "",
-          )
-          replace_once(
-              "rag_project/evaluation/runner.py",
-              "            candidate_count = max(raw_top_k * 5, 20)\n",
-              "",
-          )
-          replace_once(
-              "rag_project/ingestion/atomic_claim.py",
-              "    database_path = store.database_path\n",
-              "",
-          )
-          replace_once(
-              "rag_project/intelligence/structure_anchor_runtime.py",
-              "            base_meta = self.collection.metadata or {}\n",
-              "",
-          )
-          replace_once(
-              "rag_project/testing/strict_phases.py",
-              "        safety = SafetyDecision(\"PROCEED\", \"in_scope\", .75)\n",
-              "",
-          )
-          replace_once(
-              "tests/test_hardening.py",
-              "    state_db = tmp_path / \"state.sqlite3\"\n",
-              "",
-          )
-          replace_once(
-              "tests/test_retrieval_behavior_diagnostics.py",
-              "    vector_row = (\"v\", \"vector\", {\"document_id\": \"v\"}, 0.1)\n",
-              "",
-          )
+          replace_once("rag_project/app/rag_system.py", "        embedding_profile = self.embedding_service.identity\n", "")
+          replace_once("rag_project/app/rag_system.py", "            cited_markers = set(range(1, len(selected_hits) + 1))\n", "")
+          replace_once("rag_project/app/resilient_rag.py", "        ids = _as_list(records.get(\"ids\"))\n", "")
+          replace_once("rag_project/evaluation/runner.py", "            candidate_count = max(raw_top_k * 5, 20)\n", "")
+          replace_once("rag_project/ingestion/atomic_claim.py", "    database_path = store.database_path\n", "")
+          replace_once("rag_project/intelligence/structure_anchor_runtime.py", "            base_meta = self.collection.metadata or {}\n", "")
+          replace_once("rag_project/testing/strict_phases.py", "        safety = SafetyDecision(\"PROCEED\", \"in_scope\", .75)\n", "")
+          replace_once("tests/test_hardening.py", "    state_db = tmp_path / \"state.sqlite3\"\n", "")
+          replace_once("tests/test_retrieval_behavior_diagnostics.py", "    vector_row = (\"v\", \"vector\", {\"document_id\": \"v\"}, 0.1)\n", "")
 
-          # The test's MonkeyPatch context is unused; retain the actual assertion/body.
           test_path = Path("tests/test_production_functionality_matrix.py")
           text = test_path.read_text(encoding="utf-8")
           old = '''        with pytest.MonkeyPatch.context() as patch:\n            # os-level temp directory through pathlib keeps this test dependency-free.\n            import tempfile\n\n            with tempfile.TemporaryDirectory() as tmp:\n                directory = Path(tmp) / "folder.pdf"\n                directory.mkdir()\n                robust_ingest_file(SimpleNamespace(), directory)\n'''
