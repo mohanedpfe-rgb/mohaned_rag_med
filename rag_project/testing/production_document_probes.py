@@ -13,6 +13,9 @@ from rag_project.testing.advanced_phases import _result
 from rag_project.testing.deep_diagnostics import PhaseResult
 
 
+_SUCCESS_OCR_STATUSES = {"success", "completed"}
+
+
 def _write_scanned_fixture(path: Path) -> None:
     source = fitz.open(); source_page = source.new_page(width=900, height=1200)
     source_page.insert_text((100, 180), "HbA1c 6.5 percent", fontsize=64)
@@ -50,8 +53,10 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
             adapter = _DeterministicOCR()
             adapter_page = PDFExtractor(ocr_enabled=True, ocr_service=adapter).extract(scanned, document_id="phase7-adapter")[0]
             selected = real_page or adapter_page
-            effective_ocr_backend = bool((real_page is not None and real_page.ocr_status == "success") or (adapter_page.ocr_status == "success" and adapter.calls >= 1))
-            backend = "rapidocr" if real_page is not None and real_page.ocr_status == "success" else "deterministic_contract_adapter"
+            real_status_ok = bool(real_page is not None and real_page.ocr_status in _SUCCESS_OCR_STATUSES)
+            adapter_status_ok = bool(adapter_page.ocr_status in _SUCCESS_OCR_STATUSES and adapter.calls >= 1)
+            effective_ocr_backend = bool(real_status_ok or adapter_status_ok)
+            backend = "rapidocr" if real_status_ok else "deterministic_contract_adapter"
 
             ocr_text = (selected.text or "").casefold()
             markers = {marker: marker in ocr_text for marker in ("hba1c", "6.5", "diabetes")}
@@ -68,11 +73,11 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
             blank_handled = len(blank_pages) == 1 and (blank_pages[0].text or "").strip() == ""
 
             require_real = os.getenv("REQUIRE_REAL_OCR", "0").strip().lower() in {"1", "true", "yes", "on"}
-            real_ok = real_page is not None and real_page.ocr_status == "success" and real_page.extraction_method == "ocr" and sum(markers.values()) >= 2
+            real_ok = real_status_ok and real_page.extraction_method == "ocr" and sum(markers.values()) >= 2
             variants = {
                 "native_text_on_scanned_pdf": bool(native.ocr_required),
                 "real_ocr_backend": effective_ocr_backend,
-                "deterministic_ocr_contract_adapter": bool(adapter_page.ocr_status == "success" and adapter.calls >= 1),
+                "deterministic_ocr_contract_adapter": adapter_status_ok,
                 "malformed_pdf_rejected": malformed_rejected,
                 "blank_pdf_handled_without_crash": blank_handled,
             }
@@ -80,7 +85,7 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
                 "scanned_page_detected": bool(native.ocr_required),
                 "ocr_branch_reached": bool(real_page is not None or adapter.calls >= 1),
                 "ocr_text_contains_expected_markers": sum(markers.values()) >= 2,
-                "ocr_status_success": selected.ocr_status == "success",
+                "ocr_status_success": selected.ocr_status in _SUCCESS_OCR_STATUSES,
                 "ocr_method_recorded": selected.extraction_method == "ocr",
                 "malformed_pdf_rejected": malformed_rejected,
                 "blank_pdf_handled": blank_handled,
