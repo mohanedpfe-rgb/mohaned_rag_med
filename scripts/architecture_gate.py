@@ -17,6 +17,7 @@ APP = ROOT / "app.py"
 COMPOSITION = ROOT / "rag_project" / "composition.py"
 APPLICATION = ROOT / "rag_project" / "application.py"
 ANSWER_SERVICE = ROOT / "rag_project" / "application_answer_service.py"
+LEGACY_ADAPTER = ROOT / "rag_project" / "application_legacy_adapter.py"
 RUNTIME = ROOT / "rag_project" / "runtime.py"
 BOOTSTRAP_STATE = ROOT / "rag_project" / "runtime_bootstrap_state.py"
 ARCHITECTURE = ROOT / "ARCHITECTURE.md"
@@ -118,14 +119,13 @@ def inspect() -> dict[str, object]:
     if missing:
         violations.append(f"composition.py missing stable symbols: {missing}")
 
+    application_imports = _imports(APPLICATION)
     missing_application = sorted(REQUIRED_APPLICATION_SYMBOLS - _symbols(APPLICATION))
     if missing_application:
         violations.append(f"application.py missing stable symbols: {missing_application}")
     answer_symbols = sorted(REQUIRED_ANSWER_SERVICE_SYMBOLS - _symbols(ANSWER_SERVICE))
     if answer_symbols:
         violations.append(f"application_answer_service.py missing stable symbols: {answer_symbols}")
-
-    application_imports = _imports(APPLICATION)
     reverse_dependency = sorted(application_imports & FORBIDDEN_APPLICATION_IMPORTS)
     if reverse_dependency:
         violations.append(f"application.py imports composition root: {reverse_dependency}")
@@ -135,6 +135,10 @@ def inspect() -> dict[str, object]:
         violations.append("application.py must consume neutral prepared-runtime state")
     if "rag_project.application_answer_service" not in application_imports:
         violations.append("application.py must delegate answer behavior to application_answer_service")
+    if "rag_project.application_legacy_adapter" not in application_imports:
+        violations.append("application.py must consume the explicit legacy compatibility adapter")
+    if any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in application_imports):
+        violations.append("application.py must not depend directly on the legacy UI/application package")
     duplicated_installers = sorted(
         module
         for module in FORBIDDEN_APPLICATION_INSTALLER_MODULES
@@ -152,6 +156,14 @@ def inspect() -> dict[str, object]:
     if "runtime_is_prepared()" not in application_source:
         violations.append("application factory must honor the prepared-runtime marker")
 
+    answer_service_imports = _imports(ANSWER_SERVICE)
+    if "streamlit" in answer_service_imports or any(name.startswith("rag_project.app") for name in answer_service_imports):
+        violations.append("application_answer_service.py must remain presentation-independent")
+
+    legacy_adapter_imports = _imports(LEGACY_ADAPTER)
+    if "rag_project.app.production_rag" not in legacy_adapter_imports:
+        violations.append("legacy compatibility adapter must own the legacy ProductionRAGSystem import")
+
     runtime_symbols = _symbols(RUNTIME)
     if "install_application_contracts" not in runtime_symbols:
         violations.append("runtime.py must own the neutral application-contract bootstrap")
@@ -160,10 +172,6 @@ def inspect() -> dict[str, object]:
     bootstrap_imports = _imports(BOOTSTRAP_STATE)
     if any(name == "streamlit" or name.startswith("rag_project.app") for name in bootstrap_imports):
         violations.append("runtime_bootstrap_state.py must remain presentation-independent")
-
-    answer_service_imports = _imports(ANSWER_SERVICE)
-    if "streamlit" in answer_service_imports or any(name.startswith("rag_project.app") for name in answer_service_imports):
-        violations.append("application_answer_service.py must remain presentation-independent")
 
     for layer in CORE_DIRS:
         layer_root = ROOT / "rag_project" / layer
@@ -192,6 +200,7 @@ def inspect() -> dict[str, object]:
         "rag_project.app.ui_security_boundary",
         "scripts/architecture_gate.py",
         "application_answer_service",
+        "LegacyProductionRAGAdapter",
         "BOOKRAG_RUNTIME_PREPARED_VERSION",
         "runtime_bootstrap_state",
         "immutable published document versions",
