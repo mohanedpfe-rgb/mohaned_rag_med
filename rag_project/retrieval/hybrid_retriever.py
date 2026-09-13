@@ -43,23 +43,14 @@ class RetrievalHit:
 
 
 class HybridRetriever:
-    def __init__(
-        self,
-        vector_store: VectorStore,
-        embedding_service: EmbeddingService,
-        *,
-        lexical_mode: str = "hybrid",
-        vector_weight: float = 0.7,
-    ):
+    def __init__(self, vector_store: VectorStore, embedding_service: EmbeddingService, *, lexical_mode: str = "hybrid", vector_weight: float = 0.7):
         self.vector_store = vector_store
         self.embedding_service = embedding_service
         self.set_mode(lexical_mode, vector_weight)
 
     def set_mode(self, lexical_mode: str, vector_weight: float) -> None:
         if lexical_mode not in _VALID_MODES:
-            raise ValueError(
-                f"Invalid retrieval mode {lexical_mode!r}; expected one of {sorted(_VALID_MODES)}"
-            )
+            raise ValueError(f"Invalid retrieval mode {lexical_mode!r}; expected one of {sorted(_VALID_MODES)}")
         try:
             weight = float(vector_weight)
         except (TypeError, ValueError) as exc:
@@ -80,13 +71,11 @@ class HybridRetriever:
     def _unpack_results(result: Any) -> tuple[list[str], list[str], list[dict[str, Any]], list[float]]:
         if not isinstance(result, dict):
             return [], [], [], []
-
         def first_list(key: str) -> list[Any]:
             value = _as_sequence(result.get(key))
             if value and isinstance(value[0], (list, tuple)):
                 value = _as_sequence(value[0])
             return _as_sequence(value)
-
         ids = [str(value) for value in first_list("ids")]
         documents = [str(value) for value in first_list("documents")]
         raw_metadata = first_list("metadatas")
@@ -109,103 +98,62 @@ class HybridRetriever:
 
     @staticmethod
     def _intent_bonus(query: str, hit: RetrievalHit) -> float:
-        lowered_query = str(query or "").casefold()
-        lowered_text = str(hit.text or "").casefold()
+        lowered_query = str(query or "").casefold(); lowered_text = str(hit.text or "").casefold()
         query_tokens = {token for token in meaningful_tokens(lowered_query) if len(token) >= 3}
         token_hits = sum(1 for token in query_tokens if token in lowered_text)
         bonus = min(0.18, 0.025 * token_hits)
-
         asks_table = any(term in lowered_query for term in ("table", "tableau", "rows", "columns", "جدول"))
-        is_table = (
-            "table" in lowered_text
-            or str((hit.metadata or {}).get("representation_type", "")).casefold() == "table"
-            or bool((hit.metadata or {}).get("table_id"))
-        )
-        if asks_table and is_table:
-            bonus += 0.40
-
-        asks_numeric = bool(
-            _NUMERIC_PATTERN.search(lowered_query)
-            or any(term in lowered_query for term in ("dose", "dosage", "how much", "how many", "value", "range", "جرعة", "قيمة"))
-        )
-        if asks_numeric and _NUMERIC_PATTERN.search(lowered_text):
-            bonus += 0.28
-
+        is_table = "table" in lowered_text or str((hit.metadata or {}).get("representation_type", "")).casefold() == "table" or bool((hit.metadata or {}).get("table_id"))
+        if asks_table and is_table: bonus += 0.40
+        asks_numeric = bool(_NUMERIC_PATTERN.search(lowered_query) or any(term in lowered_query for term in ("dose", "dosage", "how much", "how many", "value", "range", "جرعة", "قيمة")))
+        if asks_numeric and _NUMERIC_PATTERN.search(lowered_text): bonus += 0.28
         for phrase in ("hba1c", "glycemic control", "metformin", "diabetes mellitus"):
-            if phrase in lowered_query and phrase in lowered_text:
-                bonus += 0.12
+            if phrase in lowered_query and phrase in lowered_text: bonus += 0.12
         return min(0.90, bonus)
 
     def retrieve(self, query: str, top_k: int = 6, where: Dict[str, Any] | None = None) -> List[RetrievalHit]:
         original_query = (query or "").strip()
-        if not original_query:
-            return []
+        if not original_query: return []
         try:
             top_k = max(1, min(int(top_k), 100))
         except (TypeError, ValueError) as exc:
             raise ValueError("top_k must be an integer") from exc
-
         lexical_query = " ".join(meaningful_tokens(original_query)).strip()
         candidate_count = max(top_k * 5, 20)
         configured_mode = self.lexical_mode
         vector_weight = self.vector_weight
         lexical_weight = 1.0 - vector_weight
-
-        vector_results: Any = None
-        lexical_results: Any = None
-        vector_error: Exception | None = None
-        lexical_error: Exception | None = None
-        query_embedding: Any = None
-
+        vector_results: Any = None; lexical_results: Any = None
+        vector_error: Exception | None = None; lexical_error: Exception | None = None; query_embedding: Any = None
         with ThreadPoolExecutor(max_workers=2) as executor:
-            vector_future = None
-            lexical_future = None
+            vector_future = None; lexical_future = None
             if configured_mode in {"hybrid", "lexical"}:
                 lexical_future = executor.submit(self._lexical, lexical_query, candidate_count, where)
-
             if configured_mode in {"hybrid", "vector"}:
                 try:
                     query_embedding = self.embedding_service.embed_query(original_query)
                     vector_future = executor.submit(self._vector, query_embedding, candidate_count, where)
                 except (RuntimeError, ValueError, TypeError) as exc:
                     vector_error = exc
-
             if vector_future is not None:
-                try:
-                    vector_results = vector_future.result()
-                except (RuntimeError, ValueError, TypeError) as exc:
-                    vector_error = exc
-
+                try: vector_results = vector_future.result()
+                except (RuntimeError, ValueError, TypeError) as exc: vector_error = exc
             if lexical_future is not None:
-                try:
-                    lexical_results = lexical_future.result()
-                except (RuntimeError, ValueError, TypeError) as exc:
-                    lexical_error = exc
-
+                try: lexical_results = lexical_future.result()
+                except (RuntimeError, ValueError, TypeError) as exc: lexical_error = exc
             if configured_mode == "vector" and (vector_error is not None or not self._unpack_results(vector_results)[0]):
-                try:
-                    lexical_results = self._lexical(lexical_query, candidate_count, where)
-                    lexical_error = None
-                except (RuntimeError, ValueError, TypeError) as exc:
-                    lexical_error = exc
+                try: lexical_results = self._lexical(lexical_query, candidate_count, where); lexical_error = None
+                except (RuntimeError, ValueError, TypeError) as exc: lexical_error = exc
             elif configured_mode == "lexical" and (lexical_error is not None or not self._unpack_results(lexical_results)[0]):
                 if query_embedding is None:
-                    try:
-                        query_embedding = self.embedding_service.embed_query(original_query)
-                    except (RuntimeError, ValueError, TypeError) as exc:
-                        vector_error = exc
+                    try: query_embedding = self.embedding_service.embed_query(original_query)
+                    except (RuntimeError, ValueError, TypeError) as exc: vector_error = exc
                 if query_embedding is not None:
-                    try:
-                        vector_results = self._vector(query_embedding, candidate_count, where)
-                        vector_error = None
-                    except (RuntimeError, ValueError, TypeError) as exc:
-                        vector_error = exc
-
+                    try: vector_results = self._vector(query_embedding, candidate_count, where); vector_error = None
+                    except (RuntimeError, ValueError, TypeError) as exc: vector_error = exc
         vector_ids, vector_documents, vector_metadatas, vector_distances = self._unpack_results(vector_results)
         lexical_ids, lexical_documents, lexical_metadatas, lexical_distances = self._unpack_results(lexical_results)
-        if not vector_ids and not lexical_ids:
-            return []
-
+        if not vector_ids and not lexical_ids: return []
         hits_by_id: dict[str, RetrievalHit] = {}
         vector_document_count = min(len(vector_ids), len(vector_documents))
         for index in range(vector_document_count):
@@ -213,75 +161,41 @@ class HybridRetriever:
             metadata = vector_metadatas[index] if index < len(vector_metadatas) else {}
             distance = vector_distances[index] if index < len(vector_distances) else 1e9
             distance_value = max(0.0, distance)
-            hits_by_id[result_id] = RetrievalHit(
-                doc_id=str(metadata.get("document_id", "unknown")),
-                text=vector_documents[index],
-                metadata=metadata,
-                score=0.0,
-                vector_score=math.exp(-distance_value),
-                lexical_score=0.0,
-            )
-
+            hits_by_id[result_id] = RetrievalHit(doc_id=str(metadata.get("document_id", "unknown")), text=vector_documents[index], metadata=metadata, score=0.0, vector_score=math.exp(-distance_value), lexical_score=0.0)
         lexical_document_count = min(len(lexical_ids), len(lexical_documents))
         for index in range(lexical_document_count):
             result_id = lexical_ids[index]
             metadata = lexical_metadatas[index] if index < len(lexical_metadatas) else {}
             distance = lexical_distances[index] if index < len(lexical_distances) else 1e9
-            distance_value = max(0.0, distance)
-            transformed = math.exp(-distance_value)
+            distance_value = max(0.0, distance); transformed = math.exp(-distance_value)
             hit = hits_by_id.get(result_id)
             if hit is None:
-                hits_by_id[result_id] = RetrievalHit(
-                    doc_id=str(metadata.get("document_id", "unknown")),
-                    text=lexical_documents[index],
-                    metadata=metadata,
-                    score=0.0,
-                    vector_score=0.0,
-                    lexical_score=transformed,
-                )
-            else:
-                hit.lexical_score = transformed
-
+                hits_by_id[result_id] = RetrievalHit(doc_id=str(metadata.get("document_id", "unknown")), text=lexical_documents[index], metadata=metadata, score=0.0, vector_score=0.0, lexical_score=transformed)
+            else: hit.lexical_score = transformed
         vector_rank = {item_id: rank for rank, item_id in enumerate(vector_ids, start=1)}
         lexical_rank = {item_id: rank for rank, item_id in enumerate(lexical_ids, start=1)}
         max_vector = max((hit.vector_score for hit in hits_by_id.values()), default=1e-9)
         max_lexical = max((hit.lexical_score for hit in hits_by_id.values()), default=1e-9)
-
         hits: list[RetrievalHit] = []
         effective_mode = configured_mode
-        if configured_mode == "vector" and not vector_ids and lexical_ids:
-            effective_mode = "lexical"
-        elif configured_mode == "lexical" and not lexical_ids and vector_ids:
-            effective_mode = "vector"
+        if configured_mode == "vector" and not vector_ids and lexical_ids: effective_mode = "lexical"
+        elif configured_mode == "lexical" and not lexical_ids and vector_ids: effective_mode = "vector"
         elif configured_mode == "hybrid":
-            if not vector_ids and lexical_ids:
-                effective_mode = "lexical"
-            elif vector_ids and not lexical_ids:
-                effective_mode = "vector"
-
+            if not vector_ids and lexical_ids: effective_mode = "lexical"
+            elif vector_ids and not lexical_ids: effective_mode = "vector"
         for item_id, hit in hits_by_id.items():
-            if hit.lexical_score <= 0.0:
-                hit.lexical_score = keyword_overlap_score(lexical_query, hit.text)
-            v_norm = hit.vector_score / max(1e-9, max_vector)
-            l_norm = hit.lexical_score / max(1e-9, max_lexical)
+            if hit.lexical_score <= 0.0: hit.lexical_score = keyword_overlap_score(lexical_query, hit.text)
+            v_norm = hit.vector_score / max(1e-9, max_vector); l_norm = hit.lexical_score / max(1e-9, max_lexical)
             if effective_mode == "hybrid":
-                weighted_sum = vector_weight * v_norm + lexical_weight * l_norm
-                rrf_score = 0.0
-                if item_id in vector_rank:
-                    rrf_score += self._rrf(vector_rank[item_id]) * (0.5 + vector_weight)
-                if item_id in lexical_rank:
-                    rrf_score += self._rrf(lexical_rank[item_id]) * (0.5 + lexical_weight)
+                weighted_sum = vector_weight * v_norm + lexical_weight * l_norm; rrf_score = 0.0
+                if item_id in vector_rank: rrf_score += self._rrf(vector_rank[item_id]) * (0.5 + vector_weight)
+                if item_id in lexical_rank: rrf_score += self._rrf(lexical_rank[item_id]) * (0.5 + lexical_weight)
                 hit.score = 0.6 * weighted_sum + 0.4 * rrf_score
-            elif effective_mode == "vector":
-                hit.score = hit.vector_score or keyword_overlap_score(original_query, hit.text)
-            else:
-                hit.score = hit.lexical_score
-            hit.metadata = dict(hit.metadata or {})
-            hit.metadata["ranking_score_base"] = round(hit.score, 6)
-            bonus = self._intent_bonus(original_query, hit)
+            elif effective_mode == "vector": hit.score = hit.vector_score or keyword_overlap_score(original_query, hit.text)
+            else: hit.score = hit.lexical_score
+            hit.metadata = dict(hit.metadata or {}); hit.metadata["ranking_score_base"] = round(hit.score, 6)
+            bonus = 0.0 if effective_mode == "lexical" else self._intent_bonus(original_query, hit)
             hit.score = min(2.0, hit.score + bonus)
-            hit.metadata["intent_rerank_bonus"] = round(bonus, 6)
-            hit.metadata["ranking_score"] = round(hit.score, 6)
+            hit.metadata["intent_rerank_bonus"] = round(bonus, 6); hit.metadata["ranking_score"] = round(hit.score, 6)
             hits.append(hit)
-
         return sorted(hits, key=lambda item: item.score, reverse=True)[:top_k]
