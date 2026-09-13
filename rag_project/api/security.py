@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import secrets
 import threading
@@ -12,6 +13,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 
 class APISecurityError(Exception):
@@ -40,27 +42,52 @@ class APISettings:
     @classmethod
     def from_env(cls) -> "APISettings":
         environment = os.getenv("MEDEVIDENCE_ENV", os.getenv("ENVIRONMENT", "development")).strip().lower()
+        if environment not in {"development", "test", "staging", "production"}:
+            raise RuntimeError("MEDEVIDENCE_ENV must be one of development, test, staging, production")
         auth_enabled = _env_bool("MEDEVIDENCE_AUTH_ENABLED", True)
         secret = os.getenv("MEDEVIDENCE_JWT_SECRET", "")
         if auth_enabled and len(secret.encode("utf-8")) < 32:
             raise RuntimeError("MEDEVIDENCE_JWT_SECRET must contain at least 32 bytes when API authentication is enabled")
+        if environment == "production" and not auth_enabled:
+            raise RuntimeError("Production API authentication cannot be disabled")
+
+        issuer = os.getenv("MEDEVIDENCE_JWT_ISSUER", "medevidence-api").strip() or "medevidence-api"
+        audience = os.getenv("MEDEVIDENCE_JWT_AUDIENCE", "medevidence-clients").strip() or "medevidence-clients"
+        if len(issuer) > 256 or len(audience) > 256:
+            raise RuntimeError("JWT issuer and audience must be at most 256 characters")
+
         origins = _csv("MEDEVIDENCE_CORS_ORIGINS")
-        if not origins or "*" in origins:
+        if not origins:
             if environment == "production":
-                raise RuntimeError("Production requires explicit MEDEVIDENCE_CORS_ORIGINS; wildcard CORS is forbidden")
-            origins = ("http://127.0.0.1:8501", "http://localhost:8501")
+                raise RuntimeError("Production requires explicit MEDEVIDENCE_CORS_ORIGINS")
+            origins = ["http://127.0.0.1:8501", "http://localhost:8501"]
+        if "*" in origins:
+            raise RuntimeError("Wildcard CORS is forbidden")
+        _validate_origins(origins, production=environment == "production")
+
+        trusted_proxies = _csv("MEDEVIDENCE_TRUSTED_PROXIES")
+        for proxy in trusted_proxies:
+            try:
+                ipaddress.ip_network(proxy, strict=False)
+            except ValueError as exc:
+                try:
+                    ipaddress.ip_address(proxy)
+                except ValueError as inner:
+                    raise RuntimeError(f"Invalid trusted proxy: {proxy}") from inner
+
+        parser = _strict_bounded_int if environment == "production" else _bounded_int
         return cls(
             auth_enabled=auth_enabled,
             jwt_secret=secret,
-            jwt_issuer=os.getenv("MEDEVIDENCE_JWT_ISSUER", "medevidence-api").strip() or "medevidence-api",
-            jwt_audience=os.getenv("MEDEVIDENCE_JWT_AUDIENCE", "medevidence-clients").strip() or "medevidence-clients",
-            jwt_clock_skew_seconds=_bounded_int("MEDEVIDENCE_JWT_CLOCK_SKEW_SECONDS", 30, 0, 300),
+            jwt_issuer=issuer,
+            jwt_audience=audience,
+            jwt_clock_skew_seconds=parser("MEDEVIDENCE_JWT_CLOCK_SKEW_SECONDS", 30, 0, 300),
             allowed_origins=tuple(origins),
-            max_body_bytes=_bounded_int("MEDEVIDENCE_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 25 * 1024 * 1024),
-            max_query_chars=_bounded_int("MEDEVIDENCE_MAX_QUERY_CHARS", 4000, 1, 10000),
-            rate_limit_per_minute=_bounded_int("MEDEVIDENCE_RATE_LIMIT_PER_MINUTE", 60, 1, 6000),
-            rate_limit_burst=_bounded_int("MEDEVIDENCE_RATE_LIMIT_BURST", 10, 1, 1000),
-            trusted_proxies=tuple(_csv("MEDEVIDENCE_TRUSTED_PROXIES")),
+            max_body_bytes=parser("MEDEVIDENCE_MAX_BODY_BYTES", 2 * 1024 * 1024, 1024, 25 * 1024 * 1024),
+            max_query_chars=parser("MEDEVIDENCE_MAX_QUERY_CHARS", 4000, 1, 10000),
+            rate_limit_per_minute=parser("MEDEVIDENCE_RATE_LIMIT_PER_MINUTE", 60, 1, 6000),
+            rate_limit_burst=parser("MEDEVIDENCE_RATE_LIMIT_BURST", 10, 1, 1000),
+            trusted_proxies=tuple(trusted_proxies),
             environment=environment,
         )
 
@@ -69,7 +96,12 @@ def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be a boolean value")
 
 
 def _bounded_int(name: str, default: int, low: int, high: int) -> int:
@@ -80,11 +112,39 @@ def _bounded_int(name: str, default: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def _strict_bounded_int(name: str, default: int, low: int, high: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not low <= value <= high:
+        raise RuntimeError(f"{name} must be between {low} and {high}")
+    return value
+
+
 def _csv(name: str) -> list[str]:
     return [item.strip() for item in os.getenv(name, "").split(",") if item.strip()]
 
 
+def _validate_origins(origins: list[str], *, production: bool) -> None:
+    for origin in origins:
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise RuntimeError("CORS origins must be explicit HTTP(S) origins")
+        if parsed.username or parsed.password or parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            raise RuntimeError("CORS origins must not contain credentials, paths, queries, or fragments")
+        if production and parsed.scheme != "https":
+            raise RuntimeError("Production CORS origins must use HTTPS")
+        if not production and parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+            raise RuntimeError("Non-local HTTP CORS origins are forbidden outside production")
+
+
 def _b64url_decode(value: str) -> bytes:
+    if not value or len(value) > 8192 or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for ch in value):
+        raise APISecurityError(401, "invalid_token")
     padding = "=" * (-len(value) % 4)
     try:
         return base64.urlsafe_b64decode(value + padding)
@@ -93,6 +153,8 @@ def _b64url_decode(value: str) -> bytes:
 
 
 def _json_segment(value: str) -> dict[str, Any]:
+    if len(value) > 8192:
+        raise APISecurityError(401, "invalid_token")
     try:
         decoded = json.loads(_b64url_decode(value).decode("utf-8"))
     except Exception as exc:
@@ -123,13 +185,15 @@ def issue_test_jwt(*, subject: str = "test-user", scopes: tuple[str, ...] = ("qu
 
 
 def _b64url_encode_json(value: dict[str, Any]) -> str:
-    raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    raw = json.dumps(value, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
 
 def verify_jwt(token: str, settings: APISettings) -> dict[str, Any]:
-    parts = str(token or "").split(".")
-    if len(parts) != 3:
+    if not isinstance(token, str) or len(token) > 24576:
+        raise APISecurityError(401, "invalid_token")
+    parts = token.split(".")
+    if len(parts) != 3 or any(not part for part in parts):
         raise APISecurityError(401, "invalid_token")
     header = _json_segment(parts[0])
     payload = _json_segment(parts[1])
@@ -143,11 +207,14 @@ def verify_jwt(token: str, settings: APISettings) -> dict[str, Any]:
 
     now = int(time.time())
     skew = settings.jwt_clock_skew_seconds
-    _require_str_claim(payload, "sub")
+    _require_str_claim(payload, "sub", max_length=256)
+    _require_str_claim(payload, "iss", max_length=256)
+    _require_str_claim(payload, "aud", max_length=256)
     if payload.get("iss") != settings.jwt_issuer or payload.get("aud") != settings.jwt_audience:
         raise APISecurityError(401, "invalid_token")
     for claim in ("exp", "nbf", "iat"):
-        if not isinstance(payload.get(claim), (int, float)):
+        value = payload.get(claim)
+        if type(value) not in {int, float} or not math.isfinite(float(value)):
             raise APISecurityError(401, "invalid_token")
     if now > float(payload["exp"]) + skew or now + skew < float(payload["nbf"]):
         raise APISecurityError(401, "invalid_token")
@@ -156,9 +223,9 @@ def verify_jwt(token: str, settings: APISettings) -> dict[str, Any]:
     return payload
 
 
-def _require_str_claim(payload: dict[str, Any], key: str) -> str:
+def _require_str_claim(payload: dict[str, Any], key: str, *, max_length: int = 256) -> str:
     value = payload.get(key)
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length:
         raise APISecurityError(401, "invalid_token")
     return value
 
@@ -166,9 +233,9 @@ def _require_str_claim(payload: dict[str, Any], key: str) -> str:
 def _scopes(claims: dict[str, Any]) -> set[str]:
     raw = claims.get("scope", "")
     if isinstance(raw, str):
-        return {item for item in raw.split() if item}
+        return {item for item in raw.split() if item and len(item) <= 128}
     if isinstance(raw, list):
-        return {str(item) for item in raw if str(item)}
+        return {str(item) for item in raw if str(item) and len(str(item)) <= 128}
     return set()
 
 
@@ -179,13 +246,16 @@ def principal_from_claims(claims: dict[str, Any]) -> dict[str, Any]:
         roles = [roles]
     if not isinstance(roles, list):
         roles = []
-    return {"subject": str(claims.get("sub")), "scopes": scopes, "roles": {str(item) for item in roles}}
+    return {"subject": str(claims.get("sub")), "scopes": scopes, "roles": {str(item) for item in roles if str(item) and len(str(item)) <= 128}}
 
 
 def authorize(principal: dict[str, Any] | None, required_scope: str) -> None:
     if principal is None:
         raise APISecurityError(401, "authentication_required", "Authentication required")
-    if required_scope not in principal.get("scopes", set()) and "admin" not in principal.get("roles", set()):
+    required = str(required_scope).strip()
+    if not required or len(required) > 128:
+        raise APISecurityError(403, "insufficient_scope", "Insufficient permissions")
+    if required not in principal.get("scopes", set()) and "admin" not in principal.get("roles", set()):
         raise APISecurityError(403, "insufficient_scope", "Insufficient permissions")
 
 
@@ -198,15 +268,17 @@ class FixedWindowRateLimiter:
         self._state: dict[str, tuple[float, int]] = {}
 
     def allow(self, key: str, *, cost: int = 1) -> bool:
+        normalized = str(key)[:256]
         now = time.monotonic()
         cost = max(1, int(cost))
         with self._lock:
-            start, count = self._state.get(key, (now, 0))
+            start, count = self._state.get(normalized, (now, 0))
             if now - start >= self.window_seconds:
                 start, count = now, 0
             if count + cost > self.limit:
+                self._prune(now)
                 return False
-            self._state[key] = (start, count + cost)
+            self._state[normalized] = (start, count + cost)
             self._prune(now)
             return True
 
@@ -214,7 +286,7 @@ class FixedWindowRateLimiter:
         if len(self._state) <= self.max_keys:
             return
         expired = [key for key, (start, _) in self._state.items() if now - start >= self.window_seconds]
-        for key in expired[: len(expired) // 2 or 1]:
+        for key in expired:
             self._state.pop(key, None)
         while len(self._state) > self.max_keys:
             self._state.pop(next(iter(self._state)))
@@ -223,8 +295,8 @@ class FixedWindowRateLimiter:
 def client_identity(request: Any, principal: dict[str, Any] | None, settings: APISettings) -> str:
     subject = principal.get("subject") if principal else None
     if subject:
-        return f"sub:{subject}"
-    host = getattr(getattr(request, "client", None), "host", "unknown")
+        return f"sub:{subject}"[:300]
+    host = getattr(getattr(request, "client", None), "host", "unknown") or "unknown"
     forwarded = request.headers.get("x-forwarded-for") if hasattr(request, "headers") else None
     if forwarded and _trusted_proxy(host, settings.trusted_proxies):
         candidate = forwarded.split(",", 1)[0].strip()
@@ -233,7 +305,7 @@ def client_identity(request: Any, principal: dict[str, Any] | None, settings: AP
             host = candidate
         except ValueError:
             pass
-    return f"ip:{host}"
+    return f"ip:{host}"[:300]
 
 
 def _trusted_proxy(host: str, trusted: tuple[str, ...]) -> bool:
@@ -262,8 +334,9 @@ def request_id(request: Any) -> str:
 
 def safe_log(logger: Any, level: str, event: str, *, request_id_value: str, **fields: Any) -> None:
     clean: dict[str, Any] = {"event": event, "request_id": request_id_value}
+    sensitive_names = {"authorization", "token", "secret", "password", "api_key", "jwt", "cookie", "set-cookie"}
     for key, value in fields.items():
-        if key.lower() in {"authorization", "token", "secret", "password", "api_key", "jwt"}:
+        if key.lower() in sensitive_names:
             continue
         text = str(value)
         clean[key] = text[:240]
@@ -298,13 +371,28 @@ def bind_security(app: Any, *, engine: Any, settings: APISettings) -> dict[str, 
                         return JSONResponse(status_code=413, content={"error": "request_too_large", "request_id": rid}, headers={"X-Request-ID": rid})
                 except ValueError:
                     return JSONResponse(status_code=400, content={"error": "invalid_content_length", "request_id": rid}, headers={"X-Request-ID": rid})
+
+            original_receive = request._receive
+            received_bytes = 0
+
+            async def limited_receive():
+                nonlocal received_bytes
+                message = await original_receive()
+                if message.get("type") == "http.request":
+                    body = message.get("body", b"")
+                    received_bytes += len(body)
+                    if received_bytes > settings.max_body_bytes:
+                        raise APISecurityError(413, "request_too_large", "Request body exceeds the configured limit")
+                return message
+
+            request._receive = limited_receive
             public_path = request.url.path in {"/health", "/docs", "/openapi.json", "/redoc"}
             if not public_path and not limiter.allow(client_identity(request, getattr(request.state, "principal", None), settings)):
                 return JSONResponse(status_code=429, content={"error": "rate_limited", "request_id": rid}, headers={"Retry-After": "60", "X-Request-ID": rid})
             try:
                 response = await call_next(request)
             except APISecurityError as exc:
-                response = JSONResponse(status_code=exc.status_code, content={"error": exc.code, "request_id": rid, "message": exc.public_message})
+                response = JSONResponse(status_code=exc.status_code, content={"error": exc.code, "request_id": rid, "message": exc.public_message}, headers={"Retry-After": "60"} if exc.status_code == 429 else None)
             except Exception:
                 response = JSONResponse(status_code=500, content={"error": "internal_error", "request_id": rid, "message": "An internal error occurred"})
             response.headers["X-Request-ID"] = rid
@@ -326,7 +414,12 @@ def bind_security(app: Any, *, engine: Any, settings: APISettings) -> dict[str, 
         start = time.perf_counter()
         if logger is not None:
             safe_log(logger, "info", "request_start", request_id_value=rid, method=request.method, path=request.url.path)
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            if logger is not None:
+                safe_log(logger, "error", "request_failed", request_id_value=rid, method=request.method, path=request.url.path, error=type(exc).__name__)
+            raise
         if logger is not None:
             safe_log(logger, "info", "request_end", request_id_value=rid, method=request.method, path=request.url.path, status=response.status_code, latency_ms=round((time.perf_counter() - start) * 1000, 2))
         return response
@@ -343,7 +436,7 @@ def auth_dependency(settings: APISettings):
             return request.state.principal
         header = request.headers.get("authorization", "")
         scheme, _, token = header.partition(" ")
-        if scheme.lower() != "bearer" or not token.strip():
+        if scheme.lower() != "bearer" or not token.strip() or len(token.strip()) > 24576:
             raise APISecurityError(401, "authentication_required", "Authentication required")
         claims = verify_jwt(token.strip(), settings)
         principal = principal_from_claims(claims)
