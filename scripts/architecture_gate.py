@@ -55,7 +55,13 @@ FORBIDDEN_DEAD_PATHS = {
     "rag_project/runtime_storage_contract_fix.py",
     "rag_project/runtime_test_embedding_guard.py",
     "rag_project/intelligence/final_44.py",
+    "rag_project/intelligence/production_contract.py",
+    "rag_project/app/dev_ui.py",
+    "rag_project/app/dev_observer.py",
+    "rag_project/app/studio_ui.py",
+    "rag_project/app/canva_exact_ui.py",
     "tests/test_44_final_certification.py",
+    "tests/test_production_contract.py",
 }
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
@@ -249,7 +255,7 @@ def inspect() -> dict[str, object]:
         "checked_core_layers": list(CORE_DIRS),
         "purge_contract_paths": sorted(FORBIDDEN_DEAD_PATHS),
         "violations": violations,
-        "contract": "architecture-gate-v7",
+        "contract": "architecture-gate-v8",
     }
 
 
@@ -257,7 +263,3 @@ def main() -> int:
     report = inspect()
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["ready"] else 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
