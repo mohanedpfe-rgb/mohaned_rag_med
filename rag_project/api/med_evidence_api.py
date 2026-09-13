@@ -41,6 +41,8 @@ def create_app(engine: Any, store: Any | None = None):
     settings = APISettings.from_env()
     if settings.environment == "production" and not settings.auth_enabled:
         raise RuntimeError("Production MedEvidence API cannot start with authentication disabled.")
+    if settings.environment == "production" and any(not origin.startswith("https://") for origin in settings.allowed_origins):
+        raise RuntimeError("Production MedEvidence API requires HTTPS CORS origins.")
 
     app = FastAPI(
         title="MedEvidence Pro",
