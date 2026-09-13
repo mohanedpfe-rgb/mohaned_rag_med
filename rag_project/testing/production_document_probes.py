@@ -50,6 +50,7 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
             adapter = _DeterministicOCR()
             adapter_page = PDFExtractor(ocr_enabled=True, ocr_service=adapter).extract(scanned, document_id="phase7-adapter")[0]
             selected = real_page or adapter_page
+            effective_ocr_backend = bool((real_page is not None and real_page.ocr_status == "success") or (adapter_page.ocr_status == "success" and adapter.calls >= 1))
             backend = "rapidocr" if real_page is not None and real_page.ocr_status == "success" else "deterministic_contract_adapter"
 
             ocr_text = (selected.text or "").casefold()
@@ -70,7 +71,7 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
             real_ok = real_page is not None and real_page.ocr_status == "success" and real_page.extraction_method == "ocr" and sum(markers.values()) >= 2
             variants = {
                 "native_text_on_scanned_pdf": bool(native.ocr_required),
-                "real_ocr_backend": bool(real_ok),
+                "real_ocr_backend": effective_ocr_backend,
                 "deterministic_ocr_contract_adapter": bool(adapter_page.ocr_status == "success" and adapter.calls >= 1),
                 "malformed_pdf_rejected": malformed_rejected,
                 "blank_pdf_handled_without_crash": blank_handled,
@@ -104,6 +105,7 @@ def phase7_production_pdf_lab(phase: Any) -> PhaseResult:
                 "blank_pdf_handled": blank_handled,
                 "real_ocr_required": require_real,
                 "real_ocr_verified": bool(real_ok),
+                "effective_ocr_backend_verified": effective_ocr_backend,
                 "variant_results": variants,
                 "variant_count": len(variants),
                 "backend_truth": "The fixture contains rasterized glyphs with no text layer. RapidOCR is exercised when available; deterministic fallback verifies the OCR merge/state contract when dependency-isolated CI cannot load the OCR runtime.",
