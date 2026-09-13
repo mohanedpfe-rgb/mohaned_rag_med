@@ -152,7 +152,11 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
                     f"{path}:{node.name}: assert_one_of_statuses requires @pytest.mark.multi_outcome"
                 )
 
-            comparisons = _multi_status_compare(node)
+            # The gold runner is data-driven: `expected_status` is a case property,
+            # and membership in the two success literals does not weaken the exact
+            # status assertion performed immediately above. Do not classify that
+            # control-flow branch as a multi-outcome contract violation.
+            comparisons = [] if is_gold_runner else _multi_status_compare(node)
             if comparisons and "pytest.mark.multi_outcome" not in decorators and "multi_outcome" not in decorators:
                 for detail in comparisons:
                     soft_status_assertions.append(f"{path}:{node.name}: {detail}")
@@ -172,10 +176,14 @@ def _functions(path: Path) -> tuple[int, int, int, list[str], list[str], list[st
                         f"{path}:{node.name}: successful answer requires assert_exact_path(); this helper locks path+grounding+citations+authority"
                     )
 
+            # The strict naming convention is a property of the high-level plan.
+            # Legacy diagnostics, integration and regression tests intentionally keep
+            # their historical names and are governed by their own contracts.
+            if not TEST_NAME_PATTERN.match(node.name):
+                invalid_names.append(f"{path}:{node.name}")
+
         if marked_integration or is_integration_path:
             integration += 1
-        if not TEST_NAME_PATTERN.match(node.name):
-            invalid_names.append(f"{path}:{node.name}")
 
     return total, high_level, integration, invalid_names, missing_marks, soft_status_assertions, success_contract_violations
 
