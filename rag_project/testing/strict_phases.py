@@ -79,7 +79,6 @@ def phase10_production_generation(phase: Any) -> PhaseResult:
         ]
         system = _ProbeSystem(_DeterministicLLM("Diabetes mellitus is a chronic metabolic disease. [S1]"))
         system._med_selected_hits = hits
-        safety = SafetyDecision("PROCEED", "in_scope", .75)
         route = RouteMetadata("factual", .90, ("diabetes",), False, False, (), False, .75, None, 1200, True)
         compiler = EvidenceCompiler()
         compiled = compiler.compile("What is diabetes mellitus?", hits, route, {})

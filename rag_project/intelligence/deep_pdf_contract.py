@@ -372,8 +372,6 @@ def _patch_chunker() -> None:
         return init
 
     original_init = SemanticChunker.__init__
-    SemanticChunker.__init__ = self_init = _init_wrapper(None, original_init) if False else (lambda self, *args, **kwargs: None)
-    # Replace with a real wrapper without lambda indirection so introspection remains useful.
     def init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
         self._deep_trackers = {}

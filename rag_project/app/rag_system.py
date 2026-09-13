@@ -498,7 +498,6 @@ class RAGSystem:
             sort_keys=True,
         )
         current_ocr_config = json.dumps({"engine": "rapidocr", "scale": 2}, sort_keys=True)
-        embedding_profile = self.embedding_service.identity
         current_version_id = self._ingestion_version_id(
             content_hash=content_hash,
             parser_version="pdf-extractor-v2",
@@ -1030,7 +1029,6 @@ class RAGSystem:
                     f"[S{index + 1}] {hit.text}" for index, hit in enumerate(selected_hits)
                 )
             )
-            cited_markers = set(range(1, len(selected_hits) + 1))
         generation_ms = (time.perf_counter() - generation_started) * 1000
         answer, answer_grounding, query_coverage, grounding_fallback = (
             self.apply_grounding_guard(answer, rewritten_question, selected_hits)

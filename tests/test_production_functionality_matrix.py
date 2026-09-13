@@ -566,14 +566,13 @@ def test_robust_ingestor_rejects_pdf_directory():
     from rag_project.ingestion.robust_ingestor import robust_ingest_file
 
     with pytest.raises(ValueError, match="Unsupported or missing PDF"):
-        with pytest.MonkeyPatch.context() as patch:
-            # os-level temp directory through pathlib keeps this test dependency-free.
-            import tempfile
+        # os-level temp directory through pathlib keeps this test dependency-free.
+        import tempfile
 
-            with tempfile.TemporaryDirectory() as tmp:
-                directory = Path(tmp) / "folder.pdf"
-                directory.mkdir()
-                robust_ingest_file(SimpleNamespace(), directory)
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "folder.pdf"
+            directory.mkdir()
+            robust_ingest_file(SimpleNamespace(), directory)
 
 
 @pytest.mark.parametrize("value", [0.0, 0.1, 0.25, 0.5, 0.75, 1.0])
