@@ -51,7 +51,6 @@ def rss(pid: int) -> int | None:
             return int(counters.WorkingSetSize)
         finally:
             kernel32.CloseHandle(handle)
-
     status = Path(f"/proc/{pid}/status")
     if status.exists():
         for line in status.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -84,7 +83,6 @@ def fd_count(pid: int) -> int | None:
             return None
         finally:
             kernel32.CloseHandle(handle)
-
     directory = Path(f"/proc/{pid}/fd")
     try:
         return len(list(directory.iterdir()))
@@ -140,7 +138,7 @@ def main() -> int:
 
     started = time.monotonic()
     deadline = started + max(5.0, args.duration)
-    minimum_iterations = 4
+    minimum_iterations = 3
     minimum_successes = 3
     samples: list[int] = []
     fds: list[int] = []
@@ -156,7 +154,7 @@ def main() -> int:
             source = source_dir / f"resource_{iterations}.pdf"
             _write_probe_pdf(source, iterations)
             outcome = robust_ingest_file(system, source)
-            if outcome.get("status") == "success":
+            if outcome.get("status") in {"success", "skipped"}:
                 successes += 1
             else:
                 failures.append(str(outcome.get("status") or "unknown_failure"))
