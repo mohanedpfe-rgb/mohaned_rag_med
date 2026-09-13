@@ -272,7 +272,7 @@ def _finish_job(system: Any, path: Path, result: dict[str, Any] | None = None, e
         if result is not None:
             _STATE["last_result"] = result
             result_status = str(result.get("status") or "unknown").lower()
-            if result_status in {"success", "skipped"}:
+            if result_status in {"success", "skipped", "ready"}:
                 _STATE["completed"] += 1
                 _clear_retry(key)
             elif result_status in {"failed", "error"}:
@@ -460,13 +460,29 @@ def start(system: Any, interval_seconds: float = 1.0) -> dict[str, Any]:
         return dict(_STATE)
 
 
-def stop() -> None:
+def stop(timeout_seconds: float = 3.0) -> None:
+    """Stop the supervisor and wait briefly for its thread to terminate.
+
+    The previous implementation only signalled the daemon thread. That left the
+    loop alive for an unbounded amount of time during test/session teardown and
+    could race SQLite/watchdog cleanup with pytest/xdist worker shutdown.
+    """
+    global _THREAD
     _STOP.set()
     _WAKE.set()
     _stop_watchdog()
+
     with _LOCK:
+        thread = _THREAD
+
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, float(timeout_seconds)))
+
+    with _LOCK:
+        _THREAD = None
         _STATE["enabled"] = False
         _STATE["watchdog"] = False
+        _STATE["in_flight"] = len(_WORKING)
 
 
 __all__ = ["start", "stop", "snapshot"]
