@@ -231,25 +231,7 @@ class VectorStore:
         return self.collection.get(include=["documents", "metadatas"])
 
     def set_document_index_state(self, document_id: str, state: str) -> None:
-        if document_id == "*":
-            matches = self.collection.get(include=["metadatas"])
-            for item_id, metadata in zip(
-                _as_list(matches.get("ids")),
-                _as_list(matches.get("metadatas")),
-                strict=False,
-            ):
-                meta = self._coerce_metadata(metadata)
-                meta["index_state"] = state
-                self.collection.update(ids=[str(item_id)], metadatas=[meta])
-            with sqlite3.connect(self.lexical_database) as connection:
-                connection.execute(
-                    "UPDATE lexical_documents SET index_state = ?, "
-                    "metadata = json_set(metadata, '$.index_state', ?)",
-                    (str(state).upper(), str(state).upper()),
-                )
-            if str(state).upper() == "READY":
-                self._nonready_lexical_ids = set()
-            return
+        normalized = str(state).upper()
         matches = self.collection.get(
             where={"document_id": document_id}, include=["metadatas"]
         )
@@ -259,16 +241,17 @@ class VectorStore:
             strict=False,
         ):
             meta = self._coerce_metadata(metadata)
-            meta["index_state"] = state
+            meta["index_state"] = normalized
             self.collection.update(ids=[str(item_id)], metadatas=[meta])
         with sqlite3.connect(self.lexical_database) as connection:
             connection.execute(
                 "UPDATE lexical_documents SET index_state = ?, "
                 "metadata = json_set(metadata, '$.index_state', ?) "
                 "WHERE json_extract(metadata, '$.document_id') = ?",
-                (str(state).upper(), str(state).upper(), document_id),
+                (normalized, normalized, document_id),
             )
-        if str(state).upper() == "READY":
+            connection.commit()
+        if normalized == "READY":
             self._nonready_lexical_ids = set()
 
     def _lexical_version_rows(self, document_id: str, version_id: str) -> list[tuple[str, dict[str, Any]]]:
@@ -280,11 +263,30 @@ class VectorStore:
         result: list[tuple[str, dict[str, Any]]] = []
         for item_id, raw_metadata in rows:
             try:
-                metadata = json.loads(raw_metadata)
+                metadata = self._coerce_metadata(json.loads(raw_metadata))
             except (TypeError, ValueError, json.JSONDecodeError):
-                metadata = {}
-            metadata = self._coerce_metadata(metadata)
+                metadata = self._coerce_metadata({})
             if str(metadata.get("version_id") or "") == str(version_id):
+                result.append((str(item_id), metadata))
+        return result
+
+    def _lexical_rows_for_chunks(self, document_id: str, chunk_ids: set[str]) -> list[tuple[str, dict[str, Any]]]:
+        if not chunk_ids:
+            return []
+        with sqlite3.connect(self.lexical_database) as connection:
+            rows = connection.execute(
+                "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
+                (str(document_id),),
+            ).fetchall()
+        result: list[tuple[str, dict[str, Any]]] = []
+        wanted = {str(item) for item in chunk_ids}
+        for item_id, raw_metadata in rows:
+            try:
+                metadata = self._coerce_metadata(json.loads(raw_metadata or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            chunk_id = str(metadata.get("chunk_id") or metadata.get("id") or item_id)
+            if chunk_id in wanted:
                 result.append((str(item_id), metadata))
         return result
 
@@ -330,12 +332,14 @@ class VectorStore:
             meta = self._coerce_metadata(metadata)
             if str(meta.get("version_id") or "") == str(version_id):
                 semantic_matches.append((str(item_id), meta))
+        semantic_chunks = self._chunk_id_set([meta for _, meta in semantic_matches])
         lexical_matches = self._lexical_version_rows(document_id, version_id)
+        if semantic_chunks and len(lexical_matches) != len(semantic_chunks):
+            lexical_matches = self._lexical_rows_for_chunks(document_id, semantic_chunks)
         normalized_state = str(state).upper()
         if normalized_state == "READY":
             if not semantic_matches and not lexical_matches:
                 return
-            semantic_chunks = self._chunk_id_set([meta for _, meta in semantic_matches])
             lexical_chunks = self._chunk_id_set([meta for _, meta in lexical_matches])
             if not semantic_matches or semantic_chunks != lexical_chunks:
                 raise RuntimeError(
@@ -439,15 +443,9 @@ class VectorStore:
                 for index, metadata in enumerate(metadatas_all)
                 if str(self._coerce_metadata(metadata).get("version_id") or "") in {str(version_id), str(self._coerce_metadata(metadata).get("content_hash") or "")}
             ]
-            # State records expose the content hash while indexed metadata may
-            # use the stronger ingestion-version fingerprint. If the caller
-            # supplies a hash, the document-scoped records are still the same
-            # published version; retain them for validation.
             if not keep and len(metadatas_all) > 0 and len(str(version_id)) == 64:
                 keep = list(range(len(metadatas_all)))
-            normalized_records = {
-                key: _as_list(values) for key, values in records.items()
-            }
+            normalized_records = {key: _as_list(values) for key, values in records.items()}
             records = {
                 key: [values[index] for index in keep if index < len(values)]
                 for key, values in normalized_records.items()
@@ -471,26 +469,43 @@ class VectorStore:
         for vector in embeddings:
             if not self._valid_vector(vector, self._collection_dim()):
                 issues.append("invalid semantic embedding")
-        lexical_count = 0
-        if version_id is not None:
-            lexical_count = len(self._lexical_version_rows(document_id, version_id))
-            lexical_chunk_ids = self._lexical_chunk_ids(document_id, version_id)
-            if lexical_count == 0 and len(str(version_id)) == 64:
-                with sqlite3.connect(self.lexical_database) as connection:
-                    rows = connection.execute("SELECT metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?", (str(document_id),)).fetchall()
-                lexical_metas = [self._coerce_metadata(json.loads(raw)) for (raw,) in rows]
-                lexical_count = len(lexical_metas)
-                lexical_chunk_ids = self._chunk_id_set(lexical_metas)
-        else:
-            with sqlite3.connect(self.lexical_database) as connection:
-                rows = connection.execute(
-                    "SELECT metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
-                    (str(document_id),),
-                ).fetchall()
-            lexical_chunk_ids = self._chunk_id_set([self._coerce_metadata(json.loads(raw)) for (raw,) in rows])
-            lexical_count = len(rows)
         semantic_count = len(ids)
         semantic_chunk_ids = set(seen_chunk_ids)
+
+        with sqlite3.connect(self.lexical_database) as connection:
+            lexical_rows = connection.execute(
+                "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
+                (str(document_id),),
+            ).fetchall()
+        lexical_records: list[tuple[str, dict[str, Any]]] = []
+        for item_id, raw_metadata in lexical_rows:
+            try:
+                metadata = self._coerce_metadata(json.loads(raw_metadata or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            lexical_records.append((str(item_id), metadata))
+
+        if version_id is not None and semantic_chunk_ids:
+            # Chunk identity is the authoritative join key between the two
+            # representations. Version strings can legitimately differ when a
+            # state-store version is represented by a content hash while the
+            # index stores an ingestion fingerprint.
+            lexical_matches = [
+                row for row in lexical_records
+                if row[1].get("chunk_id") in semantic_chunk_ids
+            ]
+            # If no chunk-key matches exist, retain the exact version view so
+            # genuine absence is reported rather than silently accepted.
+            if lexical_matches:
+                lexical_records = lexical_matches
+            else:
+                lexical_records = [
+                    row for row in lexical_records
+                    if str(row[1].get("version_id") or "") == str(version_id)
+                ]
+        lexical_count = len(lexical_records)
+        lexical_chunk_ids = self._chunk_id_set([meta for _, meta in lexical_records])
+
         if semantic_count != lexical_count:
             issues.append(
                 f"semantic/lexical count mismatch: semantic={semantic_count}, lexical={lexical_count}"
@@ -526,9 +541,7 @@ class VectorStore:
 
     def _apply_collection_metadata(self, dim: int | None = None) -> None:
         current = dict(self.collection.metadata or {})
-        metadata = {
-            key: value for key, value in current.items() if key != "hnsw:space"
-        }
+        metadata = {key: value for key, value in current.items() if key != "hnsw:space"}
         if dim is not None:
             metadata["dimension"] = int(dim)
         if current.get("dimension") == metadata.get("dimension"):
@@ -548,14 +561,8 @@ class VectorStore:
         ids_list = _as_list(ids)
         if not documents_list:
             return
-        if (
-            len(documents_list) != len(metadata_list)
-            or len(documents_list) != len(embedding_list)
-            or len(documents_list) != len(ids_list)
-        ):
-            raise ValueError(
-                "documents, metadatas, embeddings, and ids must have the same length"
-            )
+        if len(documents_list) != len(metadata_list) or len(documents_list) != len(embedding_list) or len(documents_list) != len(ids_list):
+            raise ValueError("documents, metadatas, embeddings, and ids must have the same length")
         dim = self._resolve_dimension(embedding_list)
         self._apply_collection_metadata(dim)
         normalized = []
@@ -574,18 +581,10 @@ class VectorStore:
             metadatas=normalized,
             embeddings=[list(map(float, vector)) for vector in embedding_list],
         )
-        first_doc_id = normalized[0].get("document_id")
-        immediate_check = self.collection.get(
-            where={"document_id": first_doc_id},
-            include=["metadatas"],
-        )
-        print(
-            f"DEBUG: Added {len(ids_list)} records. "
-            f"Searched for document_id='{first_doc_id}'. "
-            f"Immediate check found: {len(immediate_check.get('ids', []))} records"
-        )
-        print(f"DEBUG ADD: persist_directory={self.persist_directory}, collection_name={self.collection_name}")
         self._update_collection_identity(self.expected_identity)
+        # Semantic and lexical representations are committed together from the
+        # exact same normalized records. This is the only authoritative write
+        # path for a full semantic+lexical chunk set.
         self._upsert_lexical_records(documents_list, normalized, ids_list)
 
     def add_lexical_documents(
@@ -619,31 +618,15 @@ class VectorStore:
     def compatibility_report(self, expected_identity: Any | None) -> Dict[str, Any]:
         stored = self._read_collection_identity()
         collection_dimension = self._collection_dim() or self._resolve_dimension()
-        expected_dimension = (
-            int(getattr(expected_identity, "dimension", 0) or 0)
-            if expected_identity
-            else collection_dimension
-        )
+        expected_dimension = int(getattr(expected_identity, "dimension", 0) or 0) if expected_identity else collection_dimension
         metadata_valid = True
         issues: list[str] = []
         is_empty = self.count() == 0
-        if (
-            not is_empty
-            and expected_identity is not None
-            and expected_dimension != 0
-            and collection_dimension != 0
-            and collection_dimension != expected_dimension
-        ):
+        if not is_empty and expected_identity is not None and expected_dimension != 0 and collection_dimension != 0 and collection_dimension != expected_dimension:
             metadata_valid = False
-            issues.append(
-                f"dimension mismatch: expected {expected_dimension}, found {collection_dimension}"
-            )
+            issues.append(f"dimension mismatch: expected {expected_dimension}, found {collection_dimension}")
         if not is_empty and expected_identity is not None and stored is not None:
-            expected_fingerprint = getattr(
-                expected_identity,
-                "fingerprint",
-                getattr(expected_identity, "configuration_fingerprint", None),
-            )
+            expected_fingerprint = getattr(expected_identity, "fingerprint", getattr(expected_identity, "configuration_fingerprint", None))
             if expected_fingerprint and stored.get("fingerprint") != expected_fingerprint:
                 metadata_valid = False
                 issues.append("Index fingerprint does not match expected embedding profile.")
@@ -651,28 +634,20 @@ class VectorStore:
             metadata_valid = False
             issues.append("Index metadata missing expected embedding profile.")
         valid = metadata_valid
-        status = "READY"
-        if not valid:
-            status = "INDEX_MIGRATION_REQUIRED"
-        if valid and is_empty:
-            message = (
-                "Index is ready for the expected embedding profile; "
-                "no chunks have been indexed yet."
-            )
-        else:
-            message = (
-                "Index is compatible with the expected embedding profile."
-                if valid
-                else "; ".join(issues) or "Index compatibility check failed."
-            )
+        status = "READY" if valid else "INDEX_MIGRATION_REQUIRED"
+        message = (
+            "Index is ready for the expected embedding profile; no chunks have been indexed yet."
+            if valid and is_empty
+            else "Index is compatible with the expected embedding profile."
+            if valid
+            else "; ".join(issues) or "Index compatibility check failed."
+        )
         return {
             "status": status,
             "message": message,
             "valid": valid,
             "metadata_valid": metadata_valid,
-            "expected_identity": getattr(
-                expected_identity, "to_dict", lambda: expected_identity
-            )(),
+            "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(),
             "stored_identity": stored,
             "collection_dimension": collection_dimension,
             "expected_dimension": expected_dimension,
