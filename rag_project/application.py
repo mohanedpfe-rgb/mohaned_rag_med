@@ -11,6 +11,7 @@ from rag_project.configuration.settings import Settings
 from rag_project.canonical_runtime import ANSWER_AUTHORITY, CANONICAL_SERVICE
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 from rag_project.ingestion.status_contract import normalize_public_status
+from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install, install_application_contracts
@@ -34,6 +35,8 @@ def _normalize_runtime_settings(settings: Settings | None) -> Settings:
 class MedEvidenceProductionRAGSystem:
     """Canonical application service with explicit compatibility and answer contracts."""
 
+    # Named authoritative engine required by the architecture ownership contract.
+    _engine_type = MedEvidenceProEngine
     _certified_god_answer = staticmethod(_med_evidence_answer)
 
     def __init__(self, settings: Settings) -> None:
@@ -64,7 +67,7 @@ class MedEvidenceProductionRAGSystem:
     def health_report(self) -> dict[str, Any]:
         report = dict(self.runtime.health_report() or {})
         pipeline = dict(report.get("pipeline") or {})
-        pipeline.update({"explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline": "explicit_delegation", "med_evidence_pro": True, "phase_count": 8, "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True, "semantic_cache": True, "answer_cascade": True, "active_verification": True, "feedback_logging": True, "operations_store": True, "ab_testing": True, "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True, "enterprise_roles": True})
+        pipeline.update({"explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline": "explicit_delegation", "med_evidence_pro": True, "phase_count": 8, "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True, "semantic_cache": True, "answer_cascade": True, "active_verification": True, "feedback_logging": True, "operations_store": True, "ab_testing": True, "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True, "enterprise_roles": True, "engine_type": "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine"})
         report["pipeline"] = pipeline
         return report
 
@@ -170,4 +173,4 @@ def runtime_contract() -> dict[str, Any]:
     }
 
 
-__all__ = ["create_rag_system", "create_default_rag_system", "runtime_contract", "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION", "MedEvidenceProductionRAGSystem", "_med_evidence_answer"]
+__all__ = ["create_rag_system", "create_default_rag_system", "runtime_contract", "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION", "MedEvidenceProductionRAGSystem", "MedEvidenceProEngine", "_med_evidence_answer"]
