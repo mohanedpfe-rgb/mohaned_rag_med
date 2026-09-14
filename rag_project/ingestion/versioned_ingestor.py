@@ -37,24 +37,29 @@ def _is_success(result: dict[str, Any]) -> bool:
 def _retire_previous_version(system: Any, previous: dict[str, Any], new_document_id: str) -> list[str]:
     """Retire an old version without invalidating a newly published READY version."""
     previous_document_id = str(previous.get("document_id") or "")
-    previous_version = str(
-        previous.get("version_id")
-        or previous.get("content_hash")
-        or ""
-    )
-    if not previous_document_id or not previous_version:
+    identities: list[str] = []
+    for candidate in (
+        previous.get("version_id"),
+        previous.get("content_hash"),
+    ):
+        value = str(candidate or "")
+        if value and value not in identities:
+            identities.append(value)
+    if not previous_document_id or not identities:
         return []
 
     errors: list[str] = []
 
-    try:
-        system.vector_store.set_version_index_state(previous_document_id, previous_version, "FAILED")
-    except Exception as exc:
-        errors.append(f"set_old_version_failed:{type(exc).__name__}")
-    try:
-        system.vector_store.delete_version(previous_document_id, previous_version)
-    except Exception as exc:
-        errors.append(f"delete_old_version:{type(exc).__name__}")
+    for identity in identities:
+        try:
+            system.vector_store.set_version_index_state(previous_document_id, identity, "FAILED")
+        except Exception as exc:
+            errors.append(f"set_old_version_failed:{identity[:12]}:{type(exc).__name__}")
+        try:
+            system.vector_store.delete_version(previous_document_id, identity)
+        except Exception as exc:
+            errors.append(f"delete_old_version:{identity[:12]}:{type(exc).__name__}")
+
     try:
         system.state_store.delete_pages(previous_document_id)
     except Exception as exc:
@@ -83,7 +88,7 @@ def _retire_previous_version(system: Any, previous: dict[str, Any], new_document
             message=f"Previous document version retired in favor of {new_document_id}.",
             details={
                 "superseded_by": new_document_id,
-                "previous_version": previous_version,
+                "previous_versions": identities,
                 "retirement_warnings": errors,
             },
         )
