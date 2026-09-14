@@ -8,7 +8,10 @@ from typing import Any
 
 def install() -> None:
     """Enforce the semantic/lexical publication contract at the final boundary."""
+    from rag_project.runtime_invariant_repairs import install as install_invariant_repairs
     from rag_project.storage.vector_store import VectorStore
+
+    install_invariant_repairs()
 
     original_validate = VectorStore.validate_document_index
     if not getattr(original_validate, "_post_index_parity_contract", False):
@@ -81,9 +84,6 @@ def install() -> None:
             validation = self.validate_document_index(document_id, version_id)
             expected = int(validation.get("count", 0) or 0)
 
-            # A missing document/version is a legitimate no-op for the low-level
-            # vector-store state transition API. Only a populated version can be
-            # subjected to the READY publication parity contract.
             if expected == 0 and int(validation.get("lexical_count", 0) or 0) == 0:
                 return result
 
