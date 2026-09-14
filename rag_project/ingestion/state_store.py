@@ -1,16 +1,368 @@
-        if document_id is None or worker_id is None:
-            return False
-        last_error: Exception | None = None
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sqlite3
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+_ALLOWED_DOCUMENT_UPDATE_KEYS = {
+    "content_hash", "file_path", "file_name", "file_size", "created_at", "modified_at",
+    "ingestion_started_at", "ingestion_completed_at", "current_stage", "current_page", "total_pages", "status", "error",
+    "parser_version", "ocr_config", "chunking_config", "embedding_model", "embedding_dimension",
+    "index_state", "version_id", "lease_owner", "lease_expires_at", "heartbeat_at",
+    "ingestion_metrics",
+}
+
+_ALLOWED_PAGE_UPDATE_KEYS = {
+    "extraction_status", "ocr_status", "extraction_method", "text", "cache_reference",
+    "processing_error", "checksum", "updated_at",
+}
+
+
+class IngestionStateStore:
+    """Durable document/page checkpoints with private SQLite storage."""
+
+    READY_STATUSES = {"READY", "COMPLETED"}
+    ACTIVE_STATUSES = {"RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "INTERRUPTED", "RECOVERING"}
+    TERMINAL_STATUSES = {"FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "DEGRADED_LEXICAL", "QUARANTINED", "SUPERSEDED", "READY", "COMPLETED"}
+
+    def __init__(self, database_path: str | Path):
+        self.database_path = Path(database_path).expanduser().resolve()
+        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+        self._harden_filesystem_permissions()
+
+    def _harden_filesystem_permissions(self) -> None:
+        if os.name == "nt" or not self.database_path.exists():
+            return
+        for path in (self.database_path, Path(f"{self.database_path}-wal"), Path(f"{self.database_path}-shm")):
+            try:
+                if path.exists():
+                    path.chmod(0o600)
+            except OSError:
+                pass
+
+    @staticmethod
+    def normalize_status(status: str | None) -> str | None:
+        if status is None:
+            return None
+        value = str(status).upper()
+        if value == "COMPLETED":
+            return "READY"
+        return value
+
+    @staticmethod
+    def is_ready_status(status: str | None) -> bool:
+        return IngestionStateStore.normalize_status(status) in IngestionStateStore.READY_STATUSES
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA secure_delete = ON")
+        connection.execute("PRAGMA trusted_schema = OFF")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                    document_id TEXT PRIMARY KEY,
+                    content_hash TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    modified_at TEXT NOT NULL,
+                    ingestion_started_at TEXT,
+                    ingestion_completed_at TEXT,
+                    current_stage TEXT NOT NULL,
+                    current_page INTEGER NOT NULL DEFAULT 0,
+                    total_pages INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    parser_version TEXT NOT NULL,
+                    ocr_config TEXT NOT NULL,
+                    chunking_config TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL,
+                    embedding_dimension INTEGER,
+                    index_state TEXT DEFAULT 'READY',
+                    version_id TEXT,
+                    lease_owner TEXT,
+                    lease_expires_at TEXT,
+                    heartbeat_at TEXT,
+                    ingestion_metrics TEXT,
+                    UNIQUE(content_hash)
+                );
+                CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(file_path);
+                CREATE TABLE IF NOT EXISTS pages (
+                    document_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    extraction_status TEXT NOT NULL,
+                    ocr_status TEXT NOT NULL,
+                    extraction_method TEXT,
+                    text TEXT,
+                    cache_reference TEXT,
+                    processing_error TEXT,
+                    checksum TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(document_id, page_number),
+                    FOREIGN KEY(document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS query_traces (
+                    query_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS process_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id TEXT NOT NULL,
+                    file_name TEXT,
+                    created_at TEXT NOT NULL,
+                    stage TEXT,
+                    status TEXT,
+                    event_type TEXT NOT NULL DEFAULT 'stage',
+                    message TEXT NOT NULL DEFAULT '',
+                    details TEXT,
+                    current_page INTEGER DEFAULT 0,
+                    total_pages INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_process_events_document_time ON process_events(document_id, created_at DESC);
+                """
+            )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(documents)")}
+            for column_name, definition in {
+                "version_id": "ALTER TABLE documents ADD COLUMN version_id TEXT",
+                "index_state": "ALTER TABLE documents ADD COLUMN index_state TEXT DEFAULT 'READY'",
+                "lease_owner": "ALTER TABLE documents ADD COLUMN lease_owner TEXT",
+                "lease_expires_at": "ALTER TABLE documents ADD COLUMN lease_expires_at TEXT",
+                "heartbeat_at": "ALTER TABLE documents ADD COLUMN heartbeat_at TEXT",
+                "ingestion_metrics": "ALTER TABLE documents ADD COLUMN ingestion_metrics TEXT",
+            }.items():
+                if column_name not in columns:
+                    connection.execute(definition)
+        self._harden_filesystem_permissions()
+
+    def get_document(self, document_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM documents WHERE document_id = ?", (document_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_all_documents(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM documents ORDER BY created_at DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def get_by_hash(self, content_hash: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM documents WHERE content_hash = ?", (content_hash,)).fetchone()
+        return dict(row) if row else None
+
+    def get_by_path(self, file_path: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM documents WHERE file_path = ? ORDER BY modified_at DESC LIMIT 1", (file_path,)).fetchone()
+        return dict(row) if row else None
+
+    def upsert_document(self, values: dict[str, Any]) -> None:
+        existing = self.get_document(str(values.get("document_id") or ""))
+        if existing and self.is_ready_status(existing.get("status")) and str(values.get("content_hash") or existing.get("content_hash") or "") == str(existing.get("content_hash") or ""):
+            requested = str(values.get("status", existing.get("status") or "")).upper()
+            if requested not in {"READY", "COMPLETED", "SUPERSEDED"}:
+                raise RuntimeError("READY document cannot be overwritten by a non-terminal state.")
+        if values.get("content_hash"):
+            existing_hash = self.get_by_hash(values["content_hash"])
+            if existing_hash and values.get("document_id") is None:
+                values["document_id"] = existing_hash["document_id"]
+            elif existing_hash and values.get("document_id") != existing_hash["document_id"]:
+                values["document_id"] = existing_hash["document_id"]
+        values.setdefault("document_id", str(uuid.uuid4()))
+        columns = ["document_id", "content_hash", "file_path", "file_name", "file_size", "created_at", "modified_at", "ingestion_started_at", "current_stage", "current_page", "total_pages", "status", "error", "parser_version", "ocr_config", "chunking_config", "embedding_model", "embedding_dimension", "index_state", "version_id", "lease_owner", "lease_expires_at", "heartbeat_at", "ingestion_metrics"]
+        values = {key: values[key] for key in columns if key in values}
+        values.setdefault("created_at", utc_now())
+        values.setdefault("modified_at", values["created_at"])
+        values.setdefault("ingestion_started_at", utc_now())
+        values.setdefault("current_stage", "DISCOVERED")
+        values.setdefault("current_page", 0)
+        values.setdefault("total_pages", 0)
+        values.setdefault("status", "RUNNING")
+        values["status"] = self.normalize_status(values["status"])
+        values.setdefault("error", None)
+        values.setdefault("parser_version", "pdf-extractor-v2")
+        values.setdefault("ocr_config", "{}")
+        values.setdefault("chunking_config", "{}")
+        values.setdefault("embedding_model", "unknown")
+        values.setdefault("index_state", "READY" if self.is_ready_status(values.get("status")) else "PENDING")
+        values.setdefault("version_id", values.get("content_hash", values.get("document_id")))
+        placeholders = ", ".join("?" for _ in values)
+        assignments = ", ".join(f"{key}=excluded.{key}" for key in values if key != "document_id")
+        with self._connect() as connection:
+            connection.execute(f"INSERT INTO documents ({', '.join(values)}) VALUES ({placeholders}) ON CONFLICT(document_id) DO UPDATE SET {assignments}", tuple(values.values()))
+
+    def update_document(self, document_id: str, **values: Any) -> None:
+        if not values:
+            return
+        unknown = set(values) - _ALLOWED_DOCUMENT_UPDATE_KEYS
+        if unknown:
+            raise ValueError(f"Unsupported document update field(s): {', '.join(sorted(unknown))}")
+        if "status" in values:
+            values["status"] = self.normalize_status(values["status"])
+        current = self.get_document(document_id)
+        if current and self.is_ready_status(current.get("status")):
+            requested = str(values.get("status", current.get("status") or "")).upper()
+            if requested not in {"READY", "COMPLETED", "SUPERSEDED"}:
+                raise RuntimeError(f"READY document cannot regress to {requested}.")
+        if "index_state" not in values and values.get("status") and self.is_ready_status(values.get("status")):
+            values["index_state"] = "READY"
+        values["modified_at"] = utc_now()
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        with self._connect() as connection:
+            cursor = connection.execute(f"UPDATE documents SET {assignments} WHERE document_id = ?", (*values.values(), document_id))
+            if cursor.rowcount != 1:
+                raise ValueError(f"Document {document_id!r} does not exist.")
+
+    def upsert_page(self, document_id: str, page_number: int, **values: Any) -> None:
+        if not document_id: raise ValueError("document_id must be non-empty")
+        try: page_number = int(page_number)
+        except (TypeError, ValueError) as exc: raise ValueError("page_number must be an integer") from exc
+        if page_number < 1: raise ValueError("page_number must be >= 1")
+        unknown = set(values) - _ALLOWED_PAGE_UPDATE_KEYS
+        if unknown: raise ValueError(f"Unsupported page update field(s): {', '.join(sorted(unknown))}")
+        if self.get_document(document_id) is None: raise ValueError(f"Document {document_id!r} does not exist.")
+        values = dict(values); values.setdefault("extraction_status", "PENDING"); values.setdefault("ocr_status", "PENDING"); values.setdefault("updated_at", utc_now())
+        columns = ["document_id", "page_number", *_ALLOWED_PAGE_UPDATE_KEYS]
+        selected = {key: values[key] for key in columns if key in values}
+        placeholders = ", ".join("?" for _ in selected)
+        assignments = ", ".join(f"{key}=excluded.{key}" for key in selected if key not in {"document_id", "page_number"})
+        with self._connect() as connection:
+            connection.execute(f"INSERT INTO pages ({', '.join(selected)}) VALUES ({placeholders}) ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}", tuple(selected.values()))
+
+    def record_page(self, extraction: Any, *, cache_reference: str | None = None) -> None:
+        if extraction is None: raise ValueError("extraction must be a PageExtraction-like object")
+        document_id = str(getattr(extraction, "document_id", "") or "")
+        if not document_id: raise ValueError("extraction.document_id must be non-empty")
+        page_number = getattr(extraction, "page_number", None)
+        if page_number is None: page_number = int(getattr(extraction, "page_index", 0) or 0) + 1
+        page_number = int(page_number)
+        if page_number < 1: raise ValueError("extraction page number must be >= 1")
+        text = str(getattr(extraction, "text", "") or "")
+        metadata = getattr(extraction, "metadata", {}) or {}
+        if not isinstance(metadata, dict):
+            try: metadata = dict(metadata)
+            except (TypeError, ValueError): metadata = {}
+        processing_error = metadata.get("processing_error") or metadata.get("error") or metadata.get("ocr_error")
+        if processing_error: processing_error = str(processing_error)
+        extraction_method = str(getattr(extraction, "extraction_method", None) or metadata.get("extraction_method") or "native")
+        ocr_status = str(getattr(extraction, "ocr_status", None) or metadata.get("ocr_status") or "not_required")
+        checksum = metadata.get("checksum") or metadata.get("text_checksum")
+        if not checksum: checksum = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+        self.upsert_page(document_id, page_number, extraction_status="FAILED" if processing_error else "COMPLETED", ocr_status=ocr_status, extraction_method=extraction_method, text=text, cache_reference=cache_reference or metadata.get("cache_reference"), processing_error=processing_error, checksum=str(checksum), updated_at=utc_now())
+
+    def get_pages(self, document_id: str) -> list[dict[str, Any]]:
+        if not document_id: return []
+        with self._connect() as connection: rows = connection.execute("SELECT * FROM pages WHERE document_id = ? ORDER BY page_number ASC", (document_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_pages(self, document_id: str) -> int:
+        if not document_id: return 0
+        with self._connect() as connection: cursor = connection.execute("DELETE FROM pages WHERE document_id = ?", (str(document_id),))
+        return max(0, int(cursor.rowcount))
+
+    def record_event(self, document_id: str, *, stage: str | None = None, status: str | None = None, event_type: str = "stage", message: str = "", details: dict[str, Any] | None = None, current_page: int | None = None, total_pages: int | None = None, file_name: str | None = None) -> dict[str, Any]:
+        if not document_id: return {}
+        record = self.get_document(document_id)
+        if record is None: raise ValueError(f"Document {document_id!r} does not exist.")
+        effective_stage = str(stage or record.get("current_stage") or "").upper() or None
+        if file_name is None: file_name = record.get("file_name")
+        if current_page is None: current_page = int(record.get("current_page") or 0)
+        if total_pages is None: total_pages = int(record.get("total_pages") or 0)
+        if status is None: status = record.get("status")
+        normalized_status = self.normalize_status(status) if status else None
+        payload = json.dumps(details or {}, default=str, sort_keys=True)
+        with self._connect() as connection:
+            cursor = connection.execute("INSERT INTO process_events (document_id, file_name, created_at, stage, status, event_type, message, details, current_page, total_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (document_id, file_name, utc_now(), effective_stage, normalized_status, event_type, message, payload, int(current_page or 0), int(total_pages or 0)))
+        self._harden_filesystem_permissions()
+        return {"id": cursor.lastrowid, "document_id": document_id, "file_name": file_name, "stage": effective_stage, "status": normalized_status, "event_type": event_type, "message": message, "details": details or {}}
+
+    def get_events(self, document_id: str | None = None, limit: int = 250) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 5000))
+        with self._connect() as connection:
+            if document_id: rows = connection.execute("SELECT * FROM process_events WHERE document_id = ? ORDER BY created_at DESC LIMIT ?", (document_id, safe_limit)).fetchall()
+            else: rows = connection.execute("SELECT * FROM process_events ORDER BY created_at DESC LIMIT ?", (safe_limit,)).fetchall()
+        events=[]
+        for row in rows:
+            entry=dict(row)
+            try: entry["details"]=json.loads(entry.get("details") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError): entry["details"]={}
+            events.append(entry)
+        return list(reversed(events))
+
+    def claim_document(self, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
+        if not document_id or not worker_id: return False
+        now = datetime.now(timezone.utc); expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+        with self._connect() as connection:
+            cursor = connection.execute("UPDATE documents SET lease_owner = ?, lease_expires_at = ?, heartbeat_at = ?, modified_at = ? WHERE document_id = ? AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)", (worker_id, expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id, now.isoformat()))
+        return cursor.rowcount == 1
+
+    def heartbeat_document(self, document_id: str, worker_id: str, lease_seconds: int = 900) -> bool:
+        now=datetime.now(timezone.utc); expires_at=now+timedelta(seconds=max(1,int(lease_seconds)))
+        with self._connect() as connection: cursor=connection.execute("UPDATE documents SET lease_expires_at = ?, heartbeat_at = ?, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (expires_at.isoformat(), now.isoformat(), now.isoformat(), document_id, worker_id))
+        return cursor.rowcount == 1
+
+    def release_document(self, document_id: str, worker_id: str) -> bool:
         for attempt in range(3):
             try:
-                with self._connect() as connection:
-                    cursor = connection.execute("UPDATE documents SET lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (utc_now(), document_id, worker_id))
+                with self._connect() as connection: cursor=connection.execute("UPDATE documents SET lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (utc_now(), document_id, worker_id))
                 return cursor.rowcount == 1
-            except Exception as exc:
-                last_error = exc
-                if attempt < 2:
-                    time.sleep(0.01 * (attempt + 1))
-        # Lease cleanup is deliberately non-throwing. The ingestion caller is
-        # already at a cleanup boundary; leaking the storage exception here can
-        # incorrectly turn an otherwise published SUCCESS into a failure.
+            except Exception:
+                if attempt < 2: time.sleep(0.01 * (attempt + 1))
         return False
+
+    def recover_stale_documents(self) -> int:
+        now=utc_now()
+        with self._connect() as connection: cursor=connection.execute("UPDATE documents SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED', index_state = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", (now, now))
+        return cursor.rowcount
+
+    def transition_document_state(self, document_id: str, new_stage: str, **values: Any) -> None:
+        record=self.get_document(document_id)
+        if not record: raise ValueError(f"Document {document_id!r} does not exist.")
+        current_stage=str(record.get("current_stage","DISCOVERED")).upper(); new_stage_value=str(new_stage).upper()
+        if current_stage in {"READY","COMPLETED"} and new_stage_value not in {"READY","COMPLETED","SUPERSEDED"}:
+            raise RuntimeError(f"Terminal document cannot transition: {current_stage} -> {new_stage_value}.")
+        values.setdefault("current_stage",new_stage_value)
+        if new_stage_value in {"READY","COMPLETED"}:
+            total_pages=int(values.get("total_pages",record.get("total_pages") or 0) or 0); current_page=int(values.get("current_page",record.get("current_page") or 0) or 0); content_hash=str(values.get("content_hash",record.get("content_hash") or "") or ""); index_state=str(values.get("index_state",record.get("index_state") or "") or "").upper()
+            if total_pages<=0 or current_page!=total_pages: raise RuntimeError(f"READY publication requires complete page progress: current_page={current_page}, total_pages={total_pages}.")
+            if not content_hash: raise RuntimeError("READY publication requires a non-empty content_hash.")
+            if index_state and index_state!="READY": raise RuntimeError(f"READY publication requires READY index_state, got {index_state!r}.")
+            values.setdefault("content_hash",content_hash); values.setdefault("status","READY"); values.setdefault("index_state","READY")
+        elif new_stage_value.startswith("FAILED") or new_stage_value=="DEGRADED_LEXICAL": values.setdefault("status",new_stage_value); values.setdefault("index_state","FAILED")
+        elif new_stage_value=="QUARANTINED": values.setdefault("status","QUARANTINED"); values.setdefault("index_state","FAILED")
+        elif new_stage_value=="SUPERSEDED": values.setdefault("status","SUPERSEDED"); values.setdefault("index_state","FAILED")
+        elif new_stage_value in {"INTERRUPTED","RECOVERING"}: values.setdefault("status",new_stage_value); values.setdefault("index_state","FAILED")
+        else: values.setdefault("status","RUNNING")
+        event_page=int(values.get("current_page",record.get("current_page") or 0)); event_total=int(values.get("total_pages",record.get("total_pages") or 0))
+        self.update_document(document_id,**values)
+        try:
+            self.record_event(document_id,stage=new_stage_value,status=values.get("status",record.get("status")),event_type="stage",message=f"State transition {current_stage} -> {new_stage_value}",details={"from_stage":current_stage,"to_stage":new_stage_value},current_page=event_page,total_pages=event_total,file_name=record.get("file_name"))
+        except Exception:
+            # Publication state has already been durably committed. Audit logging
+            # is secondary and must never roll a READY/COMPLETED transition back.
+            pass
+
+    def is_document_ready(self, document_id: str) -> bool:
+        record=self.get_document(document_id)
+        return bool(record and self.is_ready_status(record.get("status")))
