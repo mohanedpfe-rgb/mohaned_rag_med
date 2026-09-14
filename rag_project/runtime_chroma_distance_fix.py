@@ -75,27 +75,22 @@ def _open_collection_for_target_metric(client: Any, collection_name: str) -> Any
     )
 
 
-def _migrate_collection(client: Any, collection: Any, collection_name: str) -> Any:
+def _migrate_collection(
+    client: Any,
+    collection: Any,
+    collection_name: str,
+    persist_directory: Path,
+) -> Any:
     current_metric = _metric(collection)
     if current_metric == _TARGET_DISTANCE:
         return collection
 
-    persist_directory = Path(getattr(client, "_system", None).settings.persist_directory) if getattr(getattr(client, "_system", None), "settings", None) is not None else None
-    if persist_directory is None:
-        raise RuntimeError(
-            f"Chroma collection '{collection_name}' uses '{current_metric}', but the target is '{_TARGET_DISTANCE}'. "
-            "Automatic migration requires a persistent Chroma directory."
-        )
-
     with _migration_lock(persist_directory):
         # Another worker may have repaired the collection while we waited.
-        try:
-            current = client.get_collection(name=collection_name)
-            if _metric(current) == _TARGET_DISTANCE:
-                return current
-            collection = current
-        except Exception:
-            collection = client.get_collection(name=collection_name)
+        current = client.get_collection(name=collection_name)
+        if _metric(current) == _TARGET_DISTANCE:
+            return current
+        collection = current
 
         total = int(collection.count())
         metadata = _safe_collection_metadata(getattr(collection, "metadata", {}))
@@ -106,7 +101,6 @@ def _migrate_collection(client: Any, collection: Any, collection_name: str) -> A
             return _open_collection_for_target_metric(client, collection_name)
 
         temporary_name = f"{collection_name}__distance_migration_{uuid.uuid4().hex[:12]}"
-        temporary = None
         try:
             temporary = client.get_or_create_collection(
                 name=temporary_name,
@@ -158,8 +152,8 @@ def _migrate_collection(client: Any, collection: Any, collection_name: str) -> A
             _clear_chroma_process_cache()
             return client.get_collection(name=collection_name)
         except Exception:
-            # Never destroy the temporary verified copy. It is the recovery source
-            # if the final rename is the operation that fails.
+            # Keep the verified temporary collection so an operator can recover it
+            # instead of losing the migrated vectors when a final rename fails.
             raise
 
 
@@ -188,8 +182,8 @@ def install() -> None:
                 if not _is_distance_mismatch(exc):
                     raise
 
-            # Reconstruct the initialization state after the original constructor
-            # failed exactly at get_or_create_collection().
+            # Reconstruct initialization after the original constructor failed
+            # exactly at Chroma's immutable distance-metadata check.
             self.persist_directory = Path(persist_directory)
             self.persist_directory.mkdir(parents=True, exist_ok=True)
             self.collection_name = collection_name
@@ -203,6 +197,7 @@ def install() -> None:
                 client,
                 existing,
                 self.collection_name,
+                self.persist_directory,
             )
             self.lexical_database = self.persist_directory / "lexical.sqlite3"
             initialize_lexical_index = getattr(self, "_initialize_lexical_index")
