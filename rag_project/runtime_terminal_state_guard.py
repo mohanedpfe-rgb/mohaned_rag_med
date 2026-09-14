@@ -34,6 +34,39 @@ def install() -> None:
     """Make durable READY publication monotonic except for explicit supersession."""
     from rag_project.ingestion.state_store import IngestionStateStore
 
+    original_upsert = IngestionStateStore.upsert_document
+    if not getattr(original_upsert, "_terminal_ready_upsert_guard", False):
+
+        @wraps(original_upsert)
+        def upsert(self, values: dict[str, Any]) -> None:
+            requested = dict(values or {})
+            document_id = requested.get("document_id")
+            current = self.get_document(str(document_id)) if document_id else None
+            if current and _normalized(current.get("status")) in {"READY", "COMPLETED"}:
+                current_hash = str(current.get("content_hash") or "")
+                current_version = str(current.get("version_id") or "")
+                requested_hash = str(requested.get("content_hash") or "")
+                requested_version = str(requested.get("version_id") or "")
+                requested_status = _normalized(requested.get("status"))
+                if (
+                    requested_status in _FAILURE_STATUSES
+                    or (
+                        requested_hash
+                        and requested_hash == current_hash
+                        and requested_version
+                        and requested_version == current_version
+                        and requested_status not in {"READY", "COMPLETED", "SUPERSEDED"}
+                    )
+                ):
+                    raise RuntimeError(
+                        f"READY document {document_id!r} cannot be overwritten by "
+                        f"status={requested_status or 'UNSPECIFIED'} for the same published version."
+                    )
+            return original_upsert(self, requested)
+
+        upsert._terminal_ready_upsert_guard = True
+        IngestionStateStore.upsert_document = upsert
+
     original_update = IngestionStateStore.update_document
     if not getattr(original_update, "_terminal_ready_guard", False):
 
@@ -69,6 +102,24 @@ def install() -> None:
                 raise RuntimeError(
                     f"READY document {document_id!r} cannot transition to {target}."
                 )
+            if current_status in {"READY", "COMPLETED"} and target == "SUPERSEDED":
+                values = dict(values)
+                values.setdefault("current_stage", "SUPERSEDED")
+                values.setdefault("status", "SUPERSEDED")
+                values.setdefault("index_state", "FAILED")
+                original_update(self, document_id, **values)
+                try:
+                    self.record_event(
+                        document_id,
+                        stage="SUPERSEDED",
+                        status="SUPERSEDED",
+                        event_type="version_retired",
+                        message="Document version explicitly superseded.",
+                        details={"transition": "READY->SUPERSEDED"},
+                    )
+                except Exception:
+                    pass
+                return None
             return original_transition(self, document_id, new_stage, **values)
 
         transition._terminal_ready_transition_guard = True
