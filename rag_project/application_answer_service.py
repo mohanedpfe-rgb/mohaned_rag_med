@@ -6,13 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from rag_project.canonical_runtime import ANSWER_AUTHORITY
+from rag_project.intelligence.canonical_answer_executor import execute as execute_canonical_answer
 from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
 from rag_project.intelligence.entity_coverage import score_entity_coverage
-from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
 from rag_project.intelligence.production_contract_v2 import apply_contract, build_request_context
 from rag_project.intelligence.production_ops_strict import OperationsStore
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
-from rag_project.intelligence.semantic_cache import install as install_semantic_cache
 from rag_project.retrieval.query_rewriter import QueryRewriter
 from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 
@@ -117,7 +116,7 @@ def _apply_execution_visibility(result: dict[str, Any], metadata_filter: dict[st
         "phase_2_retrieval_precision": {"status": phases.get("phase_2a_multi_tier_retrieval", retrieval.get("tier", "complete")), "hits": len(result.get("hits") or []), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_3_two_stage_generation": {"status": phases.get("phase_4_answer_cascade", result.get("generation_path", "complete")), "generation_path": result.get("generation_path"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", False), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", False))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": "rag_project.intelligence.med_evidence_pro.enhanced_med_evidence_answer", "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
+        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": "rag_project.intelligence.med_evidence_pro.MedEvidenceProEngine", "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
         "degraded_to_recovery": bool(recovery.get("grounded_extractive_fallback")),
     }
     trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
@@ -209,7 +208,7 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
         result = execute_with_runtime_safety(
             system,
             canonical_question,
-            lambda: enhanced_med_evidence_answer(system, canonical_question, metadata_filter),
+            lambda: execute_canonical_answer(system, canonical_question, metadata_filter, context),
         )
     finally:
         _clear_active_scope(system)
@@ -247,7 +246,6 @@ def install_runtime_adapters(system: Any) -> Any:
     retriever = getattr(system, "retriever", None)
     if retriever is not None and not isinstance(retriever, ReadyOnlyRetriever):
         system.retriever = ReadyOnlyRetriever(retriever)
-    install_semantic_cache(system)
     try:
         system.cloud_hybrid = create_hybrid_router(CloudConfig.from_env(), getattr(system.settings, "project_root", Path.cwd()))
     except Exception:
