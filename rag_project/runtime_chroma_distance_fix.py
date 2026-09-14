@@ -23,7 +23,6 @@ def _is_distance_mismatch(exc: BaseException) -> bool:
 
 
 def _safe_collection_metadata(metadata: Any) -> dict[str, Any]:
-    """Copy only Chroma-safe scalar metadata, excluding the immutable distance key."""
     safe: dict[str, Any] = {}
     for key, value in dict(metadata or {}).items():
         if key == "hnsw:space":
@@ -43,7 +42,6 @@ def _metric(collection: Any) -> str:
 
 @contextlib.contextmanager
 def _migration_lock(persist_directory: Path):
-    """Serialize metric migrations across pytest workers/processes on the same index."""
     lock_path = persist_directory / ".chroma_distance_migration.sqlite3"
     connection = sqlite3.connect(lock_path, timeout=120)
     try:
@@ -60,7 +58,6 @@ def _migration_lock(persist_directory: Path):
 def _clear_chroma_process_cache() -> None:
     try:
         from chromadb.api.shared_system_client import SharedSystemClient
-
         clear = getattr(SharedSystemClient, "clear_system_cache", None)
         if callable(clear):
             clear()
@@ -86,12 +83,10 @@ def _migrate_collection(
         return collection
 
     with _migration_lock(persist_directory):
-        # Another worker may have repaired the collection while we waited.
         current = client.get_collection(name=collection_name)
         if _metric(current) == _TARGET_DISTANCE:
             return current
         collection = current
-
         total = int(collection.count())
         metadata = _safe_collection_metadata(getattr(collection, "metadata", {}))
 
@@ -106,7 +101,6 @@ def _migrate_collection(
                 name=temporary_name,
                 metadata=metadata,
             )
-
             offset = 0
             while offset < total:
                 records = collection.get(
@@ -120,9 +114,7 @@ def _migrate_collection(
                 embeddings = list(records.get("embeddings") or [])
                 if not ids:
                     break
-                if not (
-                    len(ids) == len(documents) == len(metadatas) == len(embeddings)
-                ):
+                if not (len(ids) == len(documents) == len(metadatas) == len(embeddings)):
                     raise RuntimeError(
                         f"Chroma distance migration for '{collection_name}' found an inconsistent batch "
                         f"at offset {offset}: ids={len(ids)}, documents={len(documents)}, "
@@ -143,8 +135,6 @@ def _migrate_collection(
                     f"expected {total} records, migrated {migrated_count}."
                 )
 
-            # Collection.modify(name=...) is supported by Chroma and avoids a
-            # second full vector copy after the verified migration.
             client.delete_collection(name=collection_name)
             _clear_chroma_process_cache()
             temporary = client.get_collection(name=temporary_name)
@@ -152,8 +142,6 @@ def _migrate_collection(
             _clear_chroma_process_cache()
             return client.get_collection(name=collection_name)
         except Exception:
-            # Keep the verified temporary collection so an operator can recover it
-            # instead of losing the migrated vectors when a final rename fails.
             raise
 
 
@@ -177,13 +165,22 @@ def install() -> None:
         ) -> None:
             try:
                 original_init(self, persist_directory, collection_name)
+                # get_or_create_collection does not alter immutable metadata for an
+                # existing collection, so an old L2 collection can initialize
+                # successfully even though production requires cosine. Inspect and
+                # migrate immediately after successful construction.
+                if _metric(self.collection) != _TARGET_DISTANCE:
+                    self.collection = _migrate_collection(
+                        self.client,
+                        self.collection,
+                        collection_name,
+                        Path(persist_directory),
+                    )
                 return
             except Exception as exc:
                 if not _is_distance_mismatch(exc):
                     raise
 
-            # Reconstruct initialization after the original constructor failed
-            # exactly at Chroma's immutable distance-metadata check.
             self.persist_directory = Path(persist_directory)
             self.persist_directory.mkdir(parents=True, exist_ok=True)
             self.collection_name = collection_name
