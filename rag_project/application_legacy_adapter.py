@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from rag_project.app.production_rag import ProductionRAGSystem
 from rag_project.ingestion import versioned_ingestor
 
 
@@ -27,11 +26,15 @@ class LegacyProductionRAGAdapter:
     })
 
     def __init__(self, settings: Any) -> None:
-        object.__setattr__(self, "_delegate", ProductionRAGSystem(settings))
+        # Resolve the legacy service at construction time so runtime adapters,
+        # diagnostics, and controlled test substitutions all bind to the same
+        # canonical module object instead of a stale import-time class.
+        from rag_project.app import production_rag
+        object.__setattr__(self, "_delegate", production_rag.ProductionRAGSystem(settings))
         object.__setattr__(self, "_local", {})
 
     @property
-    def delegate(self) -> ProductionRAGSystem:
+    def delegate(self) -> Any:
         return object.__getattribute__(self, "_delegate")
 
     def __getattr__(self, name: str) -> Any:
