@@ -4,7 +4,6 @@ import os
 import threading
 import time
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
 
@@ -15,7 +14,7 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _install_ingestion_compatibility() -> None:
-    from functools import wraps
+    """Install storage compatibility only; never replace ingestion callables."""
     from rag_project.ingestion.state_store import IngestionStateStore
 
     def delete_pages(self, document_id: str) -> int:
@@ -28,35 +27,14 @@ def _install_ingestion_compatibility() -> None:
     if not hasattr(IngestionStateStore, "delete_pages"):
         IngestionStateStore.delete_pages = delete_pages
 
-    import rag_project.runtime_deep_contract_fix as deep_contract_fix
-    original_factory = deep_contract_fix._wrap_robust_ingestion
-    if getattr(original_factory, "_runtime_order_guard", False):
-        return
-
-    @wraps(original_factory)
-    def guarded_factory(original):
-        unsafe = original_factory(original)
-
-        @wraps(unsafe)
-        def wrapped(system, pdf_path, *args, **kwargs):
-            source = Path(pdf_path)
-            if source.suffix.lower() != ".pdf" or not source.is_file():
-                raise ValueError(f"Unsupported or missing PDF: {source}")
-            if getattr(system, "settings", None) is None:
-                return original(system, source, *args, **kwargs)
-            return unsafe(system, source, *args, **kwargs)
-
-        wrapped.__name__ = getattr(original, "__name__", "robust_ingest_file")
-        wrapped.__qualname__ = getattr(original, "__qualname__", wrapped.__name__)
-        wrapped._deep_ingestion_guard = True
-        return wrapped
-
-    guarded_factory._runtime_order_guard = True
-    deep_contract_fix._wrap_robust_ingestion = guarded_factory
-
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return the current infrastructure policy stack in one authoritative order."""
+    """Return the infrastructure policy stack in one deterministic order.
+
+    These installers are legacy infrastructure adapters grouped here as one
+    composition root. They must not discover or wrap previous method versions;
+    canonical application/answer ownership lives outside this list.
+    """
     from rag_project.runtime_hardening import install as hardening
     from rag_project.runtime_hardening_extra import install as hardening_extra
     from rag_project.runtime_recovery import install as recovery
@@ -140,7 +118,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
 
 
 def install() -> None:
-    """Install the infrastructure policy once and record exactly what happened."""
+    """Install infrastructure policy once and record exactly what happened."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
