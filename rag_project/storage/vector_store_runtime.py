@@ -52,7 +52,7 @@ def _normalize_sequence(value: Any) -> list[Any]:
 
 
 def _chroma_scalarize(value: Any) -> Any:
-    """Keep semantic metadata while converting nested structures to Chroma-safe values."""
+    """Convert metadata to values accepted by Chroma without changing non-empty lists."""
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     if isinstance(value, tuple):
@@ -76,7 +76,6 @@ def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
             base["document_id"] = base["doc_id"]
         if "chunk_id" not in base and "id" in base:
             base["chunk_id"] = base["id"]
-        base.setdefault("page_numbers", [])
         base.setdefault("version_id", base.get("document_id", "legacy"))
     else:
         base = original(metadata)
@@ -87,77 +86,6 @@ def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
             continue
         normalized[str(key)] = scalar
     return normalized
-
-
-def _validate_document_index(
-    self: Any,
-    document_id: str,
-    version_id: str | None = None,
-) -> dict[str, Any]:
-    records = self.collection.get(
-        where={"document_id": document_id},
-        include=["metadatas", "documents", "embeddings"],
-    )
-    ids = _normalize_sequence(records.get("ids"))
-    metadatas = _normalize_sequence(records.get("metadatas"))
-    documents = _normalize_sequence(records.get("documents"))
-    embeddings = _normalize_sequence(records.get("embeddings"))
-
-    selected: list[int] = []
-    for index, metadata in enumerate(metadatas):
-        meta = self._coerce_metadata(metadata)
-        if version_id is None or str(meta.get("version_id") or "") == str(version_id):
-            selected.append(index)
-
-    issues: list[str] = []
-    selected_ids: list[str] = []
-    seen_chunk_ids: set[str] = set()
-    expected_dimension = int(self._collection_dim() or 0)
-
-    for index in selected:
-        if index >= len(metadatas):
-            issues.append(f"missing metadata for record index {index}")
-            continue
-        metadata = self._coerce_metadata(metadatas[index])
-        selected_ids.append(str(ids[index]) if index < len(ids) else "")
-        chunk_id = str(metadata.get("chunk_id") or metadata.get("id") or "")
-        if not chunk_id:
-            issues.append("missing chunk_id")
-        elif chunk_id in seen_chunk_ids:
-            issues.append(f"duplicate chunk_id: {chunk_id}")
-        seen_chunk_ids.add(chunk_id)
-        if str(metadata.get("index_state") or "").upper() not in {"READY", "BUILDING"}:
-            issues.append(f"unexpected index_state: {metadata.get('index_state')}")
-        if index >= len(embeddings) or not self._valid_vector(embeddings[index], expected_dimension):
-            issues.append("invalid semantic embedding")
-        if index >= len(documents) or not str(documents[index]).strip():
-            issues.append(f"missing document text for record index {index}")
-
-    if version_id is not None:
-        lexical_count = len(self._lexical_version_rows(document_id, version_id))
-    else:
-        with sqlite3.connect(Path(self.lexical_database)) as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
-                (str(document_id),),
-            ).fetchone()
-        lexical_count = int(row[0] if row else 0)
-
-    semantic_count = len(selected_ids)
-    if semantic_count != lexical_count:
-        issues.append(
-            f"semantic/lexical count mismatch: semantic={semantic_count}, lexical={lexical_count}"
-        )
-
-    valid = bool(selected_ids) and not issues and semantic_count == lexical_count
-    return {
-        "document_id": document_id,
-        "count": semantic_count,
-        "semantic_count": semantic_count,
-        "lexical_count": lexical_count,
-        "valid": valid,
-        "issues": issues,
-    }
 
 
 def _lexical_fallback(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -245,7 +173,8 @@ def install() -> None:
     VectorStore._coerce_metadata = _safe_chroma_metadata
     VectorStore.__init__ = hardened_init
     VectorStore._resolve_dimension = hardened_resolve_dimension
-    VectorStore.validate_document_index = _validate_document_index
+    # VectorStore.validate_document_index remains the single source of truth for
+    # semantic/lexical parity, embedding validity, and its public result schema.
     VectorStore.search_lexical = hardened_search_lexical
 
     for method_name in ("_upsert_lexical_records", "add_lexical_documents", "set_document_index_state", "set_version_index_state", "delete_version", "clear_all"):
