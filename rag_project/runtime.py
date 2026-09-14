@@ -14,20 +14,19 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _install_ingestion_compatibility() -> None:
-    """Deprecated compatibility hook; ingestion helpers now belong to state_store."""
+    """Deprecated compatibility hook; ingestion helpers belong to state_store."""
     return None
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return infrastructure installers in one deterministic order.
+    """Return only the remaining infrastructure policies in deterministic order.
 
-    This remains a compatibility composition root for low-level infrastructure.
-    It does not install answer contracts or wrap application/legacy methods.
+    Application behavior, legacy compatibility, and answer contracts are owned
+    by their services/modules and are never installed through runtime wrappers.
     """
     from rag_project.runtime_hardening import install as hardening
     from rag_project.runtime_hardening_extra import install as hardening_extra
     from rag_project.runtime_recovery import install as recovery
-    from rag_project.runtime_quality_gate import install as quality_gate
     from rag_project.runtime_final_gate import install as final_gate
     from rag_project.runtime_stability import install as stability
     from rag_project.runtime_stability_v2 import install as stability_v2
@@ -68,7 +67,6 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_functionality_comparison_template_fix import install as functionality_comparison_template_fix
     from rag_project.runtime_functionality_numeric_range_fix import install as functionality_numeric_range_fix
     from rag_project.runtime_functionality_final_audit_fix import install as functionality_final_audit_fix
-    from rag_project.runtime_production_contract_fix import install as production_contract_fix
     from rag_project.runtime_ready_publication_fix import install as ready_publication_fix
     from rag_project.runtime_transactional_rollback_fix import install as transactional_rollback_fix
     from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle_fix
@@ -82,27 +80,64 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_post_index_publication_contract import install as post_index_publication_contract
     from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication_contract_v2
     from rag_project.runtime_terminal_state_guard import install as terminal_state_guard
-    from rag_project.runtime_cancel_flag_fix import install as cancel_flag_fix
 
     return (
-        vector_store, chroma_distance_fix, hardening, hardening_extra, recovery, quality_gate, final_gate,
-        stability, stability_v2, stability_v3, stability_v4, stability_v5, stability_v6,
-        stability_v7, stability_v8, deep_pdf_contract, structure_cleanup,
-        deep_pdf_finalizer, structure_anchor_runtime, deep_pdf_finalizer_v2,
-        deep_pdf_finalizer_v3, deep_pdf_finalizer_v4, runtime_contract_compat,
-        runtime_final_contracts, runtime_final_contracts_v2, runtime_final_contracts_v3,
-        runtime_final_contracts_v4, runtime_final_contracts_v5, runtime_final_contracts_v7,
-        runtime_final_contracts_v8, chroma_metadata_fix, hierarchy_path_fix,
-        version_rollback_fix, answer_recovery_contract, deep_contract_fix,
-        post_contract_fix, functionality_deep_fix, functionality_state_fix,
-        functionality_safety_fix, functionality_routing_fix, functionality_scope_fix,
-        functionality_comparison_template_fix, functionality_numeric_range_fix,
-        functionality_final_audit_fix, production_contract_fix, ready_publication_fix,
-        transactional_rollback_fix, chroma_lifecycle_fix, page_identity_fix,
-        phase16_contract_fix, ocr_state_fix, phase16_evidence_fix,
-        version_transaction_fix, transaction_numpy_fix, failed_publication_cleanup,
-        post_index_publication_contract, post_index_publication_contract_v2,
-        terminal_state_guard, cancel_flag_fix,
+        vector_store,
+        chroma_distance_fix,
+        hardening,
+        hardening_extra,
+        recovery,
+        final_gate,
+        stability,
+        stability_v2,
+        stability_v3,
+        stability_v4,
+        stability_v5,
+        stability_v6,
+        stability_v7,
+        stability_v8,
+        deep_pdf_contract,
+        structure_cleanup,
+        deep_pdf_finalizer,
+        structure_anchor_runtime,
+        deep_pdf_finalizer_v2,
+        deep_pdf_finalizer_v3,
+        deep_pdf_finalizer_v4,
+        runtime_contract_compat,
+        runtime_final_contracts,
+        runtime_final_contracts_v2,
+        runtime_final_contracts_v3,
+        runtime_final_contracts_v4,
+        runtime_final_contracts_v5,
+        runtime_final_contracts_v7,
+        runtime_final_contracts_v8,
+        chroma_metadata_fix,
+        hierarchy_path_fix,
+        version_rollback_fix,
+        answer_recovery_contract,
+        deep_contract_fix,
+        post_contract_fix,
+        functionality_deep_fix,
+        functionality_state_fix,
+        functionality_safety_fix,
+        functionality_routing_fix,
+        functionality_scope_fix,
+        functionality_comparison_template_fix,
+        functionality_numeric_range_fix,
+        functionality_final_audit_fix,
+        ready_publication_fix,
+        transactional_rollback_fix,
+        chroma_lifecycle_fix,
+        page_identity_fix,
+        phase16_contract_fix,
+        ocr_state_fix,
+        phase16_evidence_fix,
+        version_transaction_fix,
+        transaction_numpy_fix,
+        failed_publication_cleanup,
+        post_index_publication_contract,
+        post_index_publication_contract_v2,
+        terminal_state_guard,
     )
 
 
@@ -148,12 +183,7 @@ def _install_ready_only_lexical_boundary() -> None:
 
 
 def install_application_contracts() -> dict[str, object]:
-    """Install only non-behavioral application contract registration.
-
-    The production contract is applied at the canonical answer boundary in
-    application_answer_service.answer(). This function must never monkey-patch
-    top_level_pipeline, god_mode_100, or the legacy ProductionRAGSystem class.
-    """
+    """Register non-behavioral contracts without monkey-patching application code."""
     from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
     from rag_project.ingestion.ingestion_contract import install as ingestion_contract
     from rag_project.canonical_runtime import install as canonical_runtime
