@@ -171,26 +171,27 @@ class SemanticChunker:
             )
             anchor_parent, anchor_section, anchor_chapter = anchor[3], anchor[4], anchor[5]
             anchor_chapter_title, anchor_section_title = anchor[1], anchor[2]
+            page_chunk_start = len(chunks)
 
             for parent_text, chapter, section, parent_id, section_id, chapter_id in canonical_rows or [anchor]:
                 children = self._compact_children(splitter.split_text(parent_text)) or ([parent_text.strip()] if parent_text.strip() else [])
-                hierarchy_path = [chapter_id, section_id, parent_id]
+                hierarchy_path = [anchor_chapter, anchor_section, anchor_parent]
                 for child_index, child in enumerate(children):
                     enriched = enrich_text(child)
                     prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
                     marker = (
                         "[RAG-STRUCTURE schema=3; "
-                        f"chapter_id={chapter_id}; chapter={chapter or ''}; "
-                        f"section_id={section_id}; section={section or ''}; "
-                        f"parent_id={parent_id}; path={json.dumps(hierarchy_path, ensure_ascii=False)}; "
+                        f"chapter_id={anchor_chapter}; chapter={chapter or ''}; "
+                        f"section_id={anchor_section}; section={section or ''}; "
+                        f"parent_id={anchor_parent}; path={json.dumps(hierarchy_path, ensure_ascii=False)}; "
                         f"page={page_no}; quality={float(getattr(page, 'quality_score', 0.0) or 0.0)}; "
                         f"ocr={getattr(page, 'ocr_status', 'not_required')}]"
                     )
                     searchable = marker + (f"\n[{prefix}]\n" if prefix else "\n") + child.strip()
                     metadata = {
                         "source_pages": [page_no], "page_numbers": [page_no], "evidence_types": evidence_types,
-                        "chapter": chapter, "chapter_id": chapter_id, "section": section, "section_id": section_id,
-                        "global_section_id": section_id, "parent_id": parent_id, "hierarchy_path": hierarchy_path,
+                        "chapter": chapter, "chapter_id": anchor_chapter, "section": section, "section_id": anchor_section,
+                        "global_section_id": anchor_section, "parent_id": anchor_parent, "hierarchy_path": hierarchy_path,
                         "parent_text": parent_text, "child_index": child_index, "normalized_text": enriched["normalized_text"],
                         "entities": enriched["entities"], "headings": enriched["headings"], "number_forms": enriched["number_forms"],
                         "table_id": table_ids[0] if table_ids else None, "figure_id": figure_ids[0] if figure_ids else None,
@@ -198,7 +199,7 @@ class SemanticChunker:
                         "quality_score": page.quality_score, "ocr_status": page.ocr_status,
                         "ocr_confidence": getattr(page, "ocr_confidence", None), "routing_decision": getattr(page, "routing_decision", None),
                     }
-                    chunks.append(Chunk(page.document_id, page.file_name, len(chunks), searchable, [page_no], metadata, "canonical", parent_id, section_id, metadata["table_id"], metadata["figure_id"], enriched["normalized_text"]))
+                    chunks.append(Chunk(page.document_id, page.file_name, len(chunks), searchable, [page_no], metadata, "canonical", anchor_parent, anchor_section, metadata["table_id"], metadata["figure_id"], enriched["normalized_text"]))
 
             for table_index, table_text in enumerate(table_texts):
                 table_id = table_ids[table_index] if table_index < len(table_ids) else f"{page.document_id}:p{page_no}:table:{table_index + 1}"
@@ -235,6 +236,21 @@ class SemanticChunker:
                 }
                 chunks.append(Chunk(page.document_id, page.file_name, len(chunks), f"[FIGURE CAPTION]\n{caption}", [page_no], metadata, "figure_caption", anchor_parent, anchor_section, metadata["table_id"], figure_id, enriched["normalized_text"]))
 
+            # Specialized evidence establishes a single page-level hierarchy anchor.
+            # Normalize canonical and specialized units to that same identity so
+            # inherited hierarchy is deterministic even when heading parsing found
+            # multiple parent sections on one physical page.
+            for chunk in chunks[page_chunk_start:]:
+                meta = dict(chunk.metadata or {})
+                meta["chapter_id"] = anchor_chapter
+                meta["section_id"] = anchor_section
+                meta["global_section_id"] = anchor_section
+                meta["parent_id"] = anchor_parent
+                meta["hierarchy_path"] = [anchor_chapter, anchor_section, anchor_parent]
+                chunk.metadata = meta
+                chunk.parent_id = anchor_parent
+                chunk.section_id = anchor_section
+
         for index, chunk in enumerate(chunks):
             chunk.chunk_index = index
         return chunks
@@ -245,10 +261,12 @@ class SemanticChunker:
             buffer.append(page)
             if len(buffer) < limit: continue
             batch = self.chunk_pages(buffer)
-            for chunk in batch: chunk.chunk_index = offset; offset += 1
+            for chunk in batch:
+                chunk.chunk_index = offset
+                offset += 1
             if batch: yield batch
             buffer.clear()
         if buffer:
             batch = self.chunk_pages(buffer)
-            for chunk in batch: chunk.chunk_index = offset; offset += 1
-            if batch: yield batch
+            for chunk in batch:
+            +#+#+#+#+#+
