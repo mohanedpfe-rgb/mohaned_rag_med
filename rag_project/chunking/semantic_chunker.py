@@ -236,10 +236,6 @@ class SemanticChunker:
                 }
                 chunks.append(Chunk(page.document_id, page.file_name, len(chunks), f"[FIGURE CAPTION]\n{caption}", [page_no], metadata, "figure_caption", anchor_parent, anchor_section, metadata["table_id"], figure_id, enriched["normalized_text"]))
 
-            # Specialized evidence establishes a single page-level hierarchy anchor.
-            # Normalize canonical and specialized units to that same identity so
-            # inherited hierarchy is deterministic even when heading parsing found
-            # multiple parent sections on one physical page.
             for chunk in chunks[page_chunk_start:]:
                 meta = dict(chunk.metadata or {})
                 meta["chapter_id"] = anchor_chapter
@@ -256,17 +252,24 @@ class SemanticChunker:
         return chunks
 
     def chunk_page_batches(self, pages: Iterable[PageExtraction], batch_size: int = 16) -> Iterator[List[Chunk]]:
-        limit = max(1, int(batch_size)); buffer: list[PageExtraction] = []; offset = 0
+        limit = max(1, int(batch_size))
+        buffer: list[PageExtraction] = []
+        offset = 0
         for page in pages:
             buffer.append(page)
-            if len(buffer) < limit: continue
+            if len(buffer) < limit:
+                continue
             batch = self.chunk_pages(buffer)
             for chunk in batch:
                 chunk.chunk_index = offset
                 offset += 1
-            if batch: yield batch
+            if batch:
+                yield batch
             buffer.clear()
         if buffer:
             batch = self.chunk_pages(buffer)
             for chunk in batch:
-            +#+#+#+#+#+
+                chunk.chunk_index = offset
+                offset += 1
+            if batch:
+                yield batch
