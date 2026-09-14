@@ -19,7 +19,11 @@ def _install_ingestion_compatibility() -> None:
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return the infrastructure policy stack in one deterministic order."""
+    """Return infrastructure installers in one deterministic order.
+
+    This remains a compatibility composition root for low-level infrastructure.
+    It does not install answer contracts or wrap application/legacy methods.
+    """
     from rag_project.runtime_hardening import install as hardening
     from rag_project.runtime_hardening_extra import install as hardening_extra
     from rag_project.runtime_recovery import install as recovery
@@ -103,7 +107,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
 
 
 def install() -> None:
-    """Install infrastructure policy once and record exactly what happened."""
+    """Install low-level infrastructure policy once and record provenance."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
@@ -144,16 +148,24 @@ def _install_ready_only_lexical_boundary() -> None:
 
 
 def install_application_contracts() -> dict[str, object]:
-    """Install the authoritative application contracts in their fixed order."""
+    """Install only non-behavioral application contract registration.
+
+    The production contract is applied at the canonical answer boundary in
+    application_answer_service.answer(). This function must never monkey-patch
+    top_level_pipeline, god_mode_100, or the legacy ProductionRAGSystem class.
+    """
     from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
-    from rag_project.intelligence.production_contract_v2 import install as production_contract
     from rag_project.ingestion.ingestion_contract import install as ingestion_contract
     from rag_project.canonical_runtime import install as canonical_runtime
+    from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
 
     with _INSTALL_APPLICATION_CONTRACT_LOCK:
+        pipeline_integrity()
+        ingestion_contract()
+        canonical = canonical_runtime()
         return {
-            "pipeline_integrity": pipeline_integrity(),
-            "production_contract": production_contract(),
-            "ingestion_contract": ingestion_contract(),
-            "canonical_runtime": canonical_runtime(),
+            "pipeline_integrity": True,
+            "production_contract": {"version": CONTRACT_VERSION, "behavioral_patch": False},
+            "ingestion_contract": True,
+            "canonical_runtime": canonical,
         }
