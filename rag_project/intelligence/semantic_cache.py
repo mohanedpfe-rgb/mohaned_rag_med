@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sqlite3
@@ -18,9 +19,19 @@ class SemanticRetrievalCache:
     another module's class binding. Scope is supplied by the caller.
     """
 
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
-    def __init__(self, db_path: str | Path, ttl_seconds: float = 7 * 24 * 60 * 60, *, embed_query: Callable[[str], Sequence[float]] | None = None, similarity_threshold: float = 0.95, max_entries: int = 10_000, expected_dimension: int = 0) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        ttl_seconds: float = 7 * 24 * 60 * 60,
+        *,
+        embed_query: Callable[[str], Sequence[float]] | None = None,
+        similarity_threshold: float = 0.95,
+        max_entries: int = 10_000,
+        expected_dimension: int = 0,
+        cache_namespace: str = "legacy",
+    ) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embed_query = embed_query
@@ -28,11 +39,22 @@ class SemanticRetrievalCache:
         self.similarity_threshold = float(similarity_threshold)
         self.max_entries = max(1, int(max_entries))
         self.expected_dimension = int(expected_dimension)
+        self.cache_namespace = str(cache_namespace or "legacy")
         if not 0.0 < self.similarity_threshold <= 1.0:
             raise ValueError("similarity_threshold must be in (0, 1].")
         with sqlite3.connect(self.db_path) as db:
             db.execute("PRAGMA journal_mode=WAL")
-            db.execute("CREATE TABLE IF NOT EXISTS semantic_retrieval_cache (cache_id INTEGER PRIMARY KEY AUTOINCREMENT, query TEXT NOT NULL, embedding BLOB NOT NULL, dimension INTEGER NOT NULL, payload TEXT NOT NULL, created REAL NOT NULL, accessed REAL NOT NULL, hits INTEGER NOT NULL DEFAULT 0)")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS semantic_retrieval_cache ("
+                "cache_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "query TEXT NOT NULL, embedding BLOB NOT NULL, dimension INTEGER NOT NULL, "
+                "namespace TEXT NOT NULL DEFAULT 'legacy', payload TEXT NOT NULL, "
+                "created REAL NOT NULL, accessed REAL NOT NULL, hits INTEGER NOT NULL DEFAULT 0)"
+            )
+            columns = {str(row[1]) for row in db.execute("PRAGMA table_info(semantic_retrieval_cache)").fetchall()}
+            if "namespace" not in columns:
+                db.execute("ALTER TABLE semantic_retrieval_cache ADD COLUMN namespace TEXT NOT NULL DEFAULT 'legacy'")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_namespace ON semantic_retrieval_cache(namespace, created, cache_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_created ON semantic_retrieval_cache(created, cache_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_accessed ON semantic_retrieval_cache(accessed, cache_id)")
             db.commit()
@@ -81,19 +103,30 @@ class SemanticRetrievalCache:
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
             if self.ttl_seconds <= 0:
-                db.execute("DELETE FROM semantic_retrieval_cache")
+                db.execute("DELETE FROM semantic_retrieval_cache WHERE namespace=?", (self.cache_namespace,))
                 db.commit()
                 return None
             stale_before = now - self.ttl_seconds
-            db.execute("DELETE FROM semantic_retrieval_cache WHERE created < ?", (stale_before,))
-            rows = db.execute("SELECT cache_id, embedding, dimension, payload FROM semantic_retrieval_cache").fetchall()
+            db.execute(
+                "DELETE FROM semantic_retrieval_cache WHERE namespace=? AND created < ?",
+                (self.cache_namespace, stale_before),
+            )
+            rows = db.execute(
+                "SELECT cache_id, embedding, dimension, payload FROM semantic_retrieval_cache "
+                "WHERE namespace=?",
+                (self.cache_namespace,),
+            ).fetchall()
             best: tuple[float, tuple[Any, ...]] | None = None
             for row in rows:
                 if int(row[2]) != len(vector):
                     continue
                 cached_vector = self._unpack(row[1], int(row[2]))
                 similarity = self.cosine(vector, cached_vector)
-                if similarity >= self.similarity_threshold and (best is None or similarity > best[0] or (math.isclose(similarity, best[0]) and int(row[0]) > int(best[1][0]))):
+                if similarity >= self.similarity_threshold and (
+                    best is None
+                    or similarity > best[0]
+                    or (math.isclose(similarity, best[0]) and int(row[0]) > int(best[1][0]))
+                ):
                     best = (similarity, row)
             if best is None:
                 db.commit()
@@ -105,10 +138,19 @@ class SemanticRetrievalCache:
                 db.execute("DELETE FROM semantic_retrieval_cache WHERE cache_id=?", (row[0],))
                 db.commit()
                 return None
-            db.execute("UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 WHERE cache_id=?", (now, row[0]))
+            db.execute(
+                "UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 WHERE cache_id=?",
+                (now, row[0]),
+            )
             db.commit()
         restored = self.restore(payload)
-        return restored, {"similarity": float(similarity), "hits": len(restored), "cache_id": int(row[0]), "query": ""}
+        return restored, {
+            "similarity": float(similarity),
+            "hits": len(restored),
+            "cache_id": int(row[0]),
+            "query": "",
+            "namespace": self.cache_namespace,
+        }
 
     def put(self, query: str, hits: Sequence[RetrievalHit], *, scope_active: bool = False) -> bool:
         if scope_active:
@@ -116,26 +158,80 @@ class SemanticRetrievalCache:
         vector = self._query_embedding(query)
         if vector is None or self.ttl_seconds <= 0:
             return False
-        payload = [{"doc_id": hit.doc_id, "text": hit.text, "metadata": hit.metadata, "score": float(hit.score), "vector_score": float(hit.vector_score), "lexical_score": float(hit.lexical_score)} for hit in list(hits)[:24]]
+        payload = [
+            {
+                "doc_id": hit.doc_id,
+                "text": hit.text,
+                "metadata": hit.metadata,
+                "score": float(hit.score),
+                "vector_score": float(hit.vector_score),
+                "lexical_score": float(hit.lexical_score),
+            }
+            for hit in list(hits)[:24]
+        ]
         now = time.time()
         with sqlite3.connect(self.db_path) as db:
-            db.execute("INSERT INTO semantic_retrieval_cache (query,embedding,dimension,payload,created,accessed,hits) VALUES(?,?,?,?,?,?,0)", (str(query)[:3000], self._pack(vector), len(vector), json.dumps(payload, ensure_ascii=False), now, now))
-            overflow = db.execute("SELECT cache_id FROM semantic_retrieval_cache ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?", (self.max_entries,)).fetchall()
+            db.execute(
+                "DELETE FROM semantic_retrieval_cache WHERE namespace=? AND lower(query)=lower(?)",
+                (self.cache_namespace, str(query)[:3000]),
+            )
+            db.execute(
+                "INSERT INTO semantic_retrieval_cache "
+                "(query,embedding,dimension,namespace,payload,created,accessed,hits) "
+                "VALUES(?,?,?,?,?,?,?,0)",
+                (
+                    str(query)[:3000],
+                    self._pack(vector),
+                    len(vector),
+                    self.cache_namespace,
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            overflow = db.execute(
+                "SELECT cache_id FROM semantic_retrieval_cache "
+                "WHERE namespace=? ORDER BY accessed DESC, cache_id DESC LIMIT -1 OFFSET ?",
+                (self.cache_namespace, self.max_entries),
+            ).fetchall()
             if overflow:
-                db.executemany("DELETE FROM semantic_retrieval_cache WHERE cache_id=?", overflow)
+                db.executemany(
+                    "DELETE FROM semantic_retrieval_cache WHERE cache_id=?",
+                    overflow,
+                )
             db.commit()
         return True
 
     def delete_all(self) -> None:
         with sqlite3.connect(self.db_path) as db:
-            db.execute("DELETE FROM semantic_retrieval_cache")
+            db.execute("DELETE FROM semantic_retrieval_cache WHERE namespace=?", (self.cache_namespace,))
             db.commit()
 
     def stats(self) -> dict[str, Any]:
         with sqlite3.connect(self.db_path) as db:
-            count = int(db.execute("SELECT COUNT(*) FROM semantic_retrieval_cache").fetchone()[0])
-            hits = int(db.execute("SELECT COALESCE(SUM(hits),0) FROM semantic_retrieval_cache").fetchone()[0])
-        return {"schema_version": self.SCHEMA_VERSION, "entries": count, "max_entries": self.max_entries, "ttl_seconds": self.ttl_seconds, "similarity_threshold": self.similarity_threshold, "expected_dimension": self.expected_dimension, "recorded_hits": hits, "semantic": True}
+            count = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM semantic_retrieval_cache WHERE namespace=?",
+                    (self.cache_namespace,),
+                ).fetchone()[0]
+            )
+            hits = int(
+                db.execute(
+                    "SELECT COALESCE(SUM(hits),0) FROM semantic_retrieval_cache WHERE namespace=?",
+                    (self.cache_namespace,),
+                ).fetchone()[0]
+            )
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "entries": count,
+            "max_entries": self.max_entries,
+            "ttl_seconds": self.ttl_seconds,
+            "similarity_threshold": self.similarity_threshold,
+            "expected_dimension": self.expected_dimension,
+            "recorded_hits": hits,
+            "namespace": self.cache_namespace,
+            "semantic": True,
+        }
 
     @staticmethod
     def restore(payload: Any) -> list[RetrievalHit]:
@@ -147,10 +243,38 @@ class SemanticRetrievalCache:
                 restored.append(item)
                 continue
             try:
-                restored.append(RetrievalHit(str(item.get("doc_id", "unknown")), str(item.get("text", "")), dict(item.get("metadata") or {}), float(item.get("score", 0.0)), float(item.get("vector_score", 0.0)), float(item.get("lexical_score", 0.0))))
+                restored.append(
+                    RetrievalHit(
+                        str(item.get("doc_id", "unknown")),
+                        str(item.get("text", "")),
+                        dict(item.get("metadata") or {}),
+                        float(item.get("score", 0.0)),
+                        float(item.get("vector_score", 0.0)),
+                        float(item.get("lexical_score", 0.0)),
+                    )
+                )
             except (AttributeError, TypeError, ValueError):
                 continue
         return restored
+
+
+def _identity_namespace(identity: Any | None, *, dimension: int) -> str:
+    if identity is None:
+        return f"dimension:{dimension or 0}"
+    payload = {
+        "provider": getattr(identity, "provider", "unknown"),
+        "model": getattr(identity, "model", "unknown"),
+        "model_version": getattr(identity, "model_version", "unknown"),
+        "dimension": int(getattr(identity, "dimension", dimension) or dimension or 0),
+        "fingerprint": getattr(
+            identity,
+            "fingerprint",
+            getattr(identity, "configuration_fingerprint", ""),
+        ),
+        "embedding_id": getattr(identity, "embedding_id", ""),
+    }
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def create_for_system(system: Any, *, db_path: str | Path | None = None) -> SemanticRetrievalCache:
@@ -159,7 +283,14 @@ def create_for_system(system: Any, *, db_path: str | Path | None = None) -> Sema
     service = getattr(system, "embedding_service", None)
     embed_query = getattr(service, "embed_query", None)
     expected_dimension = int(getattr(service, "dimension", 0) or 0)
-    return SemanticRetrievalCache(db_path or root / "data" / "med_evidence_cache.sqlite3", embed_query=embed_query, expected_dimension=expected_dimension)
+    identity = getattr(service, "identity", None)
+    namespace = _identity_namespace(identity, dimension=expected_dimension)
+    return SemanticRetrievalCache(
+        db_path or root / "data" / "med_evidence_cache.sqlite3",
+        embed_query=embed_query,
+        expected_dimension=expected_dimension,
+        cache_namespace=namespace,
+    )
 
 
 def install(system: Any) -> SemanticRetrievalCache:
