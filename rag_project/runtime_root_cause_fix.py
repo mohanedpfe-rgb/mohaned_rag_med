@@ -42,6 +42,11 @@ def _document_scope_filter(hits: list[Any], question: str) -> list[Any]:
 def _install_retrieval_contract() -> None:
     from rag_project.intelligence import med_evidence_pro
     current = med_evidence_pro.MultiTierRetriever.retrieve
+    # The final retrieval contract already owns this method. Adding another
+    # wrapper here only increases the monkey-patch stack and can reintroduce
+    # self-recursive closure chains when another installer unwraps methods.
+    if getattr(current, "_final_retrieval_contract_owner", False) or getattr(current, "_final_real_multitier_retrieve", False):
+        return
     if getattr(current, "_root_cause_retrieval_owner", False):
         return
     @wraps(current)
