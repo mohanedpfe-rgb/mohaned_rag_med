@@ -15,7 +15,15 @@ def _unwrap_method(fn: Any, suffix: str) -> Callable[..., Any] | None:
     current = fn
     while callable(current) and id(current) not in seen:
         seen.add(id(current))
-        if getattr(current, "__qualname__", "").endswith(suffix):
+        if getattr(current, "__qualname__", "").endswith(suffix) and not any(
+            getattr(current, marker, False)
+            for marker in (
+                "_final_retrieval_contract_owner",
+                "_final_real_multitier_retrieve",
+                "_final_generation_guard",
+                "_root_cause_retrieval_owner",
+            )
+        ):
             return current
         closure = getattr(current, "__closure__", None) or ()
         candidates = []
@@ -26,10 +34,30 @@ def _unwrap_method(fn: Any, suffix: str) -> Callable[..., Any] | None:
                 continue
             if callable(value) and value is not current:
                 candidates.append(value)
-        current = next((v for v in candidates if getattr(v, "__qualname__", "").endswith(suffix)), candidates[0] if candidates else None)
+        current = next((v for v in candidates if getattr(v, "__qualname__", "").endswith(suffix) and not any(
+            getattr(v, marker, False)
+            for marker in (
+                "_final_retrieval_contract_owner",
+                "_final_real_multitier_retrieve",
+                "_final_generation_guard",
+                "_root_cause_retrieval_owner",
+            )
+        )), candidates[0] if candidates else None)
         if current is None:
             break
-    return current if callable(current) and getattr(current, "__qualname__", "").endswith(suffix) else None
+    return current if (
+        callable(current)
+        and getattr(current, "__qualname__", "").endswith(suffix)
+        and not any(
+            getattr(current, marker, False)
+            for marker in (
+                "_final_retrieval_contract_owner",
+                "_final_real_multitier_retrieve",
+                "_final_generation_guard",
+                "_root_cause_retrieval_owner",
+            )
+        )
+    ) else None
 
 
 def _looks_like_indexed_evidence_query(query: str) -> bool:
@@ -188,9 +216,30 @@ def install() -> None:
 
     try:
         from rag_project.intelligence import med_evidence_pro
-        real_retrieve = _unwrap_method(med_evidence_pro.MultiTierRetriever.retrieve, "MultiTierRetriever.retrieve")
-        if real_retrieve is not None:
+        retriever_cls = med_evidence_pro.MultiTierRetriever
+        canonical_retrieve = getattr(retriever_cls, "_canonical_retrieve", None)
+        current_retrieve = retriever_cls.retrieve
+        if canonical_retrieve is None:
+            canonical_retrieve = _unwrap_method(current_retrieve, "MultiTierRetriever.retrieve")
+            if callable(canonical_retrieve) and canonical_retrieve is not current_retrieve:
+                retriever_cls._canonical_retrieve = canonical_retrieve
+        if callable(canonical_retrieve) and not getattr(current_retrieve, "_final_retrieval_contract_owner", False):
             def retrieve(self: Any, question: str, route: Any, where: Any = None):
+                try:
+                    root = Path(getattr(getattr(self.system, "settings", None), "project_root", Path.cwd()))
+                    state_db = root / "data" / "ingestion.sqlite3"
+                    marker = (int(state_db.stat().st_mtime_ns), int(state_db.stat().st_size)) if state_db.exists() else (0, 0)
+                    previous = getattr(self, "_final_generation_marker", None)
+                    if previous is not None and marker != previous:
+                        cache = getattr(self, "cache", None)
+                        db_path = Path(getattr(cache, "db_path", "")) if cache is not None else None
+                        if db_path:
+                            with sqlite3.connect(db_path) as connection:
+                                connection.execute("DELETE FROM retrieval_cache"); connection.commit()
+                    self._final_generation_marker = marker
+                except Exception:
+                    pass
+
                 retriever = getattr(self.system, "retriever", None)
                 instance_method = retriever.__dict__.get("retrieve") if retriever is not None and isinstance(getattr(retriever, "__dict__", None), dict) else None
                 if callable(instance_method): instance_method(question, 1, where)
@@ -199,11 +248,13 @@ def install() -> None:
                     original_get = getattr(cache, "get", None) if cache is not None else None
                     if callable(original_get):
                         cache.get = lambda _question: None
-                        try: return real_retrieve(self, question, route, where)
+                        try: return canonical_retrieve(self, question, route, where)
                         finally: cache.get = original_get
-                return real_retrieve(self, question, route, where)
+                return canonical_retrieve(self, question, route, where)
+
+            retrieve._final_retrieval_contract_owner = True
             retrieve._final_real_multitier_retrieve = True
-            med_evidence_pro.MultiTierRetriever.retrieve = retrieve
+            retriever_cls.retrieve = retrieve
     except Exception:
         pass
 
@@ -220,30 +271,6 @@ def install() -> None:
                 return out
             return hits
         deep_contract._filter_relevant_hits = final_filter_relevant_hits
-    except Exception:
-        pass
-
-    try:
-        from rag_project.intelligence import med_evidence_pro
-        real_retrieve = med_evidence_pro.MultiTierRetriever.retrieve
-        if not getattr(real_retrieve, "_final_generation_guard", False):
-            def retrieve_with_generation(self: Any, question: str, route: Any, where: Any = None):
-                try:
-                    root = Path(getattr(getattr(self.system, "settings", None), "project_root", Path.cwd()))
-                    state_db = root / "data" / "ingestion.sqlite3"
-                    marker = (int(state_db.stat().st_mtime_ns), int(state_db.stat().st_size)) if state_db.exists() else (0, 0)
-                    previous = getattr(self, "_final_generation_marker", None)
-                    if previous is not None and marker != previous:
-                        cache = getattr(self, "cache", None); db_path = Path(getattr(cache, "db_path", "")) if cache is not None else None
-                        if db_path:
-                            with sqlite3.connect(db_path) as connection:
-                                connection.execute("DELETE FROM retrieval_cache"); connection.commit()
-                    self._final_generation_marker = marker
-                except Exception:
-                    pass
-                return real_retrieve(self, question, route, where)
-            retrieve_with_generation._final_generation_guard = True
-            med_evidence_pro.MultiTierRetriever.retrieve = retrieve_with_generation
     except Exception:
         pass
 
