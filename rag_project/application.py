@@ -96,14 +96,13 @@ def create_default_rag_system():
 
 
 def runtime_contract() -> dict[str, Any]:
-    """Expose one stable contract while the legacy implementation remains adapter-only."""
     return {
         "composition_root": "rag_project.application.create_rag_system",
-        "canonical_service": CANONICAL_SERVICE,
-        "service": "ProductionRAGSystem",
+        "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
+        "service": "MedEvidenceProductionRAGSystem",
         "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
         "legacy_adapter": "rag_project.application_legacy_adapter.LegacyProductionRAGAdapter",
-        "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
+        "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
         "base_ingestion_engine": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
         "versioned_ingestion_publication": True,
         "last_known_good_preservation": True,
@@ -112,10 +111,10 @@ def runtime_contract() -> dict[str, Any]:
         "security_policy": "rag_project.security.harden_system",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "answer_pipeline": "explicit_delegation",
+        "answer_pipeline": "med_evidence_pro",
         "answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY,
-        "active_answer_pipeline": "explicit_delegation",
+        "active_answer_pipeline": "med_evidence_pro",
         "active_answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_monkey_patch": False,
         "canonical_runtime_binding": "rag_project.canonical_runtime.install",
