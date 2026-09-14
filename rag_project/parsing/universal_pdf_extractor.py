@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Iterator
 
@@ -8,10 +7,21 @@ from rag_project.parsing.pdf_extractor import PDFExtractor
 
 
 _CAPTION_RE = re.compile(r"^\s*(?:figure|fig\.?|illustration|plate)\s*\d*\s*[:.\-]?\s*.+$", re.I)
+_TABLE_HINT_RE = re.compile(r"\b(?:table|tableau|row|rows|column|columns|tbl\.?)\b|\||\t", re.I)
 
 
 class UniversalPDFExtractor(PDFExtractor):
     """Production wrapper that upgrades OCR pages with searchable table/figure units."""
+
+    def _extract_tables(self, page) -> str:
+        """Avoid expensive table discovery on ordinary prose pages."""
+        try:
+            probe_text = str(page.get_text("text", sort=True) or "")
+        except Exception:
+            probe_text = ""
+        if not _TABLE_HINT_RE.search(probe_text):
+            return ""
+        return super()._extract_tables(page)
 
     @staticmethod
     def _extract_table_blocks(text: str) -> list[str]:
@@ -52,7 +62,7 @@ class UniversalPDFExtractor(PDFExtractor):
     def extract_iter(self, pdf_path, document_id=None) -> Iterator:
         for page in super().extract_iter(pdf_path, document_id):
             table_texts = self._extract_table_blocks(page.text)
-            if not table_texts and page.page_type == "image_heavy" and page.ocr_status == "success":
+            if not table_texts and page.page_type == "image_heavy" and page.ocr_status in {"success", "completed"}:
                 candidate = self._heuristic_ocr_table(page.text)
                 if candidate:
                     table_texts = [candidate]
@@ -73,15 +83,5 @@ class UniversalPDFExtractor(PDFExtractor):
 
             if page.has_images and captions:
                 page.metadata["figure_searchable"] = True
-            if getattr(self, "state_store", None) is not None:
-                self.state_store.upsert_page(
-                    page.document_id,
-                    int(page.page_number or page.page_index + 1),
-                    extraction_status="COMPLETED" if page.text else "FAILED",
-                    ocr_status=page.ocr_status,
-                    extraction_method=page.extraction_method,
-                    text=page.text,
-                    processing_error=page.metadata.get("ocr_error"),
-                    checksum=hashlib.sha256((page.text or "").encode("utf-8")).hexdigest(),
-                )
+            # PDFExtractor already persisted this page checkpoint before yielding it.
             yield page
