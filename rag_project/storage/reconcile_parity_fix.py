@@ -5,6 +5,29 @@ import sqlite3
 from typing import Any
 
 
+def _safe_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if hasattr(value, "tolist"):
+        try:
+            converted = value.tolist()
+            if isinstance(converted, list):
+                return converted
+            if isinstance(converted, tuple):
+                return list(converted)
+            return [converted]
+        except Exception:
+            pass
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 def install() -> None:
     """Keep lexical storage synchronized after semantic index reconciliation."""
     from rag_project.storage.vector_store import VectorStore
@@ -25,9 +48,9 @@ def install() -> None:
                 include=["documents", "metadatas"],
             )
 
-        ids = list(records.get("ids") or [])
-        documents = list(records.get("documents") or [])
-        metadatas = list(records.get("metadatas") or [])
+        ids = _safe_list(records.get("ids"))
+        documents = _safe_list(records.get("documents"))
+        metadatas = _safe_list(records.get("metadatas"))
 
         rows: dict[str, tuple[str, str, dict[str, Any]]] = {}
         for item_id, document, metadata in zip(ids, documents, metadatas, strict=False):
