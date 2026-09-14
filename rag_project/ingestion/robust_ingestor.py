@@ -317,14 +317,11 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             except Exception:
                 system.logger.exception("Failed to persist ingestion failure state for %s", file_path.name)
 
-        if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
-            try:
-                previous_target_backup.replace(target)
-            except OSError:
-                system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
-
-        quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
         failed_path = _unique_archive_path(system.settings.failed_dir, file_path, content_hash[:12])
+        # Quarantine the newly published/moved file before restoring any previous
+        # processed target. Otherwise the restored good file can be mistaken for
+        # the failed input and moved into failed/.
+        quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
         if quarantine_source is not None and quarantine_source.exists():
             try:
                 failed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -341,6 +338,12 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                     shutil.copy2(quarantine_source, failed_path)
             except OSError:
                 system.logger.exception("Failed to quarantine %s", file_path.name)
+
+        if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
+            try:
+                previous_target_backup.replace(target)
+            except OSError:
+                system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
         return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text}
     finally:
         try:
