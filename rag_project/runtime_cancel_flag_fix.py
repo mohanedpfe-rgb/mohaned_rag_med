@@ -41,14 +41,17 @@ def _extract_pdf_literal_strings(page: Any) -> list[str]:
                     i += 1
                     if i >= len(payload):
                         break
-                    value.append(payload[i]); i += 1
+                    value.append(payload[i])
+                    i += 1
                     continue
                 if byte == 0x28:
-                    depth += 1; value.append(byte)
+                    depth += 1
+                    value.append(byte)
                 elif byte == 0x29:
                     depth -= 1
                     if depth == 0:
-                        i += 1; break
+                        i += 1
+                        break
                     value.append(byte)
                 else:
                     value.append(byte)
@@ -71,46 +74,11 @@ def _repair_pdf_text_layer(page: Any, extracted: str) -> str:
 
 
 def install() -> None:
-    """Install cancellation/PDF helpers without changing retrieval or answer ownership."""
-    from rag_project.app.rag_system import RAGSystem, _INGEST_CANCEL_FLAGS, _INGEST_LOCK, _IngestCancelFlag
+    """Install only neutral PDF recovery helpers.
 
-    if not getattr(RAGSystem, "_cancel_flag_contract_v1", False):
-        def _new_cancel_flag(self: Any, document_id: str) -> _IngestCancelFlag:
-            key = str(document_id)
-            with _INGEST_LOCK:
-                existing = _INGEST_CANCEL_FLAGS.get(key)
-                if existing is None or existing.cancelled:
-                    existing = _IngestCancelFlag(); _INGEST_CANCEL_FLAGS[key] = existing
-                return existing
-        def _remove_cancel_flag(self: Any, document_id: str) -> None:
-            with _INGEST_LOCK:
-                _INGEST_CANCEL_FLAGS.pop(str(document_id), None)
-        def cancel_ingest(self: Any, document_id: str) -> bool:
-            with _INGEST_LOCK:
-                flag = _INGEST_CANCEL_FLAGS.get(str(document_id))
-            if flag is None:
-                return False
-            flag.cancel()
-            return True
-        RAGSystem._new_cancel_flag = _new_cancel_flag
-        RAGSystem._remove_cancel_flag = _remove_cancel_flag
-        RAGSystem.cancel_ingest = cancel_ingest
-        RAGSystem._cancel_flag_contract_v1 = True
-
-    try:
-        from rag_project.storage.vector_store import VectorStore
-        original_coerce = VectorStore._coerce_metadata
-        if not getattr(original_coerce, "_final_empty_metadata_guard", False):
-            def coerce_metadata(self: Any, metadata: Any):
-                value = dict(original_coerce(self, metadata) or {})
-                if value.get("page_numbers") == []:
-                    value.pop("page_numbers", None)
-                return value
-            coerce_metadata._final_empty_metadata_guard = True
-            VectorStore._coerce_metadata = coerce_metadata
-    except Exception:
-        pass
-
+    Cancellation ownership belongs to the ingestion/application service; this
+    module intentionally does not import or mutate the legacy RAG application.
+    """
     try:
         from rag_project.parsing.pdf_extractor import PDFExtractor
         current_extract_text = PDFExtractor._extract_page_text
