@@ -63,15 +63,9 @@ def _install_retrieval_contract() -> None:
     from rag_project.intelligence import med_evidence_pro
 
     current = med_evidence_pro.MultiTierRetriever.retrieve
-    original = _unwrap(current, "MultiTierRetriever.retrieve")
-    if original is None:
-        original = current
+    original = _unwrap(current, "MultiTierRetriever.retrieve") or current
 
     def retrieve(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
-        # Execute the real production retriever exactly once. Earlier runtime
-        # wrappers performed a throwaway top-1 call before the actual retrieval;
-        # that doubled embedding/vector work and was the main simple-query latency
-        # regression.
         hits, state = original(self, question, route, where)
         filtered = _scope_filter(list(hits or []), where)
         filtered = _document_scope_filter(filtered, question)
@@ -98,9 +92,6 @@ def _install_memory_contract() -> None:
         result = dict(original(system, question, metadata_filter) or {})
         status = str(result.get("status") or "").upper()
         memory = getattr(system, "conversation_memory", None)
-        # The canonical answer service already owns execution. This boundary only
-        # repairs the persistence invariant: failed/blocked/unsupported outcomes
-        # are never written into conversational memory.
         if memory is not None and status not in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             try:
                 history = getattr(memory, "history", None)
@@ -140,27 +131,20 @@ def _install_publication_audit_boundary() -> None:
             requested_pages = int(values.get("total_pages", (record or {}).get("total_pages") or 0) or 0)
             requested_current = int(values.get("current_page", (record or {}).get("current_page") or 0) or 0)
             content_hash = str(values.get("content_hash", (record or {}).get("content_hash") or "") or "")
-            requested_index = str(values.get("index_state", (record or {}).get("index_state") or "READY").upper()
-            if (
-                current_stage in {"READY", "COMPLETED"}
-                and current_status in {"READY", "COMPLETED"}
-                and index_state == "READY"
-            ):
+            requested_index = str(values.get("index_state", (record or {}).get("index_state") or "READY") or "READY").upper()
+            if current_stage in {"READY", "COMPLETED"} and current_status in {"READY", "COMPLETED"} and index_state == "READY":
                 return None
             if requested_pages > 0 and requested_current == requested_pages and content_hash and requested_index == "READY":
-                # The publication itself is authoritative. A failure after the
-                # durable UPDATE (most commonly an audit/event callback) must not
-                # turn a valid READY publication into a failed ingestion.
-                row_values = {
-                    "current_stage": "READY",
-                    "current_page": requested_current,
-                    "total_pages": requested_pages,
-                    "content_hash": content_hash,
-                    "status": "READY",
-                    "index_state": "READY",
-                }
                 try:
-                    self.update_document(document_id, **row_values)
+                    self.update_document(
+                        document_id,
+                        current_stage="READY",
+                        current_page=requested_current,
+                        total_pages=requested_pages,
+                        content_hash=content_hash,
+                        status="READY",
+                        index_state="READY",
+                    )
                 except Exception:
                     pass
                 return None
