@@ -48,16 +48,23 @@ def install() -> None:
                 requested_hash = str(requested.get("content_hash") or "")
                 requested_version = str(requested.get("version_id") or "")
                 requested_status = _normalized(requested.get("status"))
-                if (
-                    requested_status in _FAILURE_STATUSES
-                    or (
-                        requested_hash
-                        and requested_hash == current_hash
-                        and requested_version
-                        and requested_version == current_version
-                        and requested_status not in {"READY", "COMPLETED", "SUPERSEDED"}
+                same_published_version = bool(
+                    requested_hash
+                    and requested_hash == current_hash
+                    and requested_version
+                    and requested_version == current_version
+                )
+                # A READY row is immutable only for the exact published
+                # version. A new content hash/version is a legitimate
+                # replacement flow and must be allowed to enter RUNNING so
+                # transactional ingestion can build and publish it (or roll
+                # back to the older READY version if publication fails).
+                if same_published_version and requested_status in _FAILURE_STATUSES:
+                    raise RuntimeError(
+                        f"READY document {document_id!r} cannot be overwritten by "
+                        f"status={requested_status or 'UNSPECIFIED'} for the same published version."
                     )
-                ):
+                if same_published_version and requested_status not in {"READY", "COMPLETED", "SUPERSEDED"}:
                     raise RuntimeError(
                         f"READY document {document_id!r} cannot be overwritten by "
                         f"status={requested_status or 'UNSPECIFIED'} for the same published version."
