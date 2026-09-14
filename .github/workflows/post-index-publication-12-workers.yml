@@ -1,0 +1,41 @@
+name: Post-Index Publication 12-Worker Gate
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  post-index-publication-12-workers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install deterministic dependency set
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install pytest-xdist
+      - name: Validate installed environment
+        run: python -m pip check
+      - name: Compile touched runtime and test modules
+        run: python -m compileall -q rag_project tests/test_post_index_publication_phases.py
+      - name: Run all post-index publication phases with exactly 12 pytest workers
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+        run: |
+          python -m pytest -q -n 12 --dist loadscope tests/test_post_index_publication_phases.py
+      - name: Run the existing post-commit hardening regressions with 12 workers
+        env:
+          DEVICE_MODE: i5_16gb
+          OCR_ENABLED: "false"
+          EMBEDDING_TEST_MODE: "true"
+        run: |
+          python -m pytest -q -n 12 --dist loadscope tests/test_post_commit_ingestion_hardening.py
