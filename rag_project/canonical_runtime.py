@@ -14,6 +14,7 @@ def install() -> dict[str, Any]:
     from rag_project import application
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+    from rag_project.runtime_invariant_repairs import install as install_invariant_repairs
     from rag_project.runtime_pdf_text_normalization import install as install_pdf_unicode_normalization
     from rag_project.runtime_root_cause_fix import install as install_root_cause_repairs
 
@@ -21,6 +22,7 @@ def install() -> dict[str, Any]:
     # compatibility stack so their contracts are the final deterministic boundary.
     install_root_cause_repairs()
     install_pdf_unicode_normalization()
+    install_invariant_repairs()
 
     service_cls = getattr(application, "MedEvidenceProductionRAGSystem", None)
     certified = getattr(service_cls, "_certified_god_answer", None) if service_cls is not None else None
