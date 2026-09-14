@@ -21,9 +21,9 @@ _FAILURE_STATUSES = {
     "EMBEDDING",
     "INDEXING",
     "VALIDATING_INDEX",
-    "INTERRUPTED",
-    "RECOVERING",
 }
+
+_RECOVERY_TARGETS = {"INTERRUPTED", "RECOVERING"}
 
 
 def _normalized(value: Any) -> str:
@@ -31,7 +31,7 @@ def _normalized(value: Any) -> str:
 
 
 def install() -> None:
-    """Make durable READY publication monotonic except for explicit supersession."""
+    """Make durable READY publication monotonic except for explicit recovery/supersession."""
     from rag_project.ingestion.state_store import IngestionStateStore
 
     original_upsert = IngestionStateStore.upsert_document
@@ -54,11 +54,6 @@ def install() -> None:
                     and requested_version
                     and requested_version == current_version
                 )
-                # A READY row is immutable only for the exact published
-                # version. A new content hash/version is a legitimate
-                # replacement flow and must be allowed to enter RUNNING so
-                # transactional ingestion can build and publish it (or roll
-                # back to the older READY version if publication fails).
                 if same_published_version and requested_status in _FAILURE_STATUSES:
                     raise RuntimeError(
                         f"READY document {document_id!r} cannot be overwritten by "
@@ -105,6 +100,24 @@ def install() -> None:
             current = self.get_document(document_id)
             current_status = _normalized((current or {}).get("status"))
             target = _normalized(new_stage)
+            if current_status in {"READY", "COMPLETED"} and target in _RECOVERY_TARGETS:
+                recovery_values = dict(values)
+                recovery_values.setdefault("current_stage", target)
+                recovery_values.setdefault("status", target)
+                recovery_values.setdefault("index_state", "FAILED")
+                original_update(self, document_id, **recovery_values)
+                try:
+                    self.record_event(
+                        document_id,
+                        stage=target,
+                        status=target,
+                        event_type="recovery_transition",
+                        message=f"Explicit terminal recovery transition READY -> {target}.",
+                        details={"transition": f"{current_status}->{target}"},
+                    )
+                except Exception:
+                    pass
+                return None
             if current_status in {"READY", "COMPLETED"} and target in _FAILURE_STATUSES:
                 raise RuntimeError(
                     f"READY document {document_id!r} cannot transition to {target}."
