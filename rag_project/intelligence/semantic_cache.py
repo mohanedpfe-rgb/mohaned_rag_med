@@ -10,13 +10,15 @@ from typing import Any, Callable, Sequence
 
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
 
-_CURRENT_SYSTEM: Any | None = None
-
 
 class SemanticRetrievalCache:
-    """Embedding-aware retrieval cache with a stable tuple return contract."""
+    """Embedding-aware retrieval cache with explicit dependency injection.
 
-    SCHEMA_VERSION = 2
+    The cache never reads process-global application state and never mutates
+    another module's class binding. Scope is supplied by the caller.
+    """
+
+    SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str | Path, ttl_seconds: float = 7 * 24 * 60 * 60, *, embed_query: Callable[[str], Sequence[float]] | None = None, similarity_threshold: float = 0.95, max_entries: int = 10_000, expected_dimension: int = 0) -> None:
         self.db_path = Path(db_path)
@@ -55,27 +57,11 @@ class SemanticRetrievalCache:
         denominator = left_norm * right_norm
         return dot / denominator if denominator > 1e-12 else 0.0
 
-    @staticmethod
-    def _filtered_scope_active() -> bool:
-        if _CURRENT_SYSTEM is None:
-            return False
-        return bool(getattr(_CURRENT_SYSTEM, "_active_metadata_filter", None))
-
-    def _resolve_embedder(self) -> Callable[[str], Sequence[float]] | None:
-        if self.embed_query is not None:
-            return self.embed_query
-        if _CURRENT_SYSTEM is None:
-            return None
-        service = getattr(_CURRENT_SYSTEM, "embedding_service", None)
-        method = getattr(service, "embed_query", None)
-        return method if callable(method) else None
-
     def _query_embedding(self, query: str) -> list[float] | None:
-        embedder = self._resolve_embedder()
-        if embedder is None:
+        if not callable(self.embed_query):
             return None
         try:
-            vector = [float(value) for value in embedder(str(query))]
+            vector = [float(value) for value in self.embed_query(str(query))]
         except Exception:
             return None
         if not vector or any(not math.isfinite(v) for v in vector):
@@ -86,8 +72,8 @@ class SemanticRetrievalCache:
             self.expected_dimension = len(vector)
         return vector
 
-    def get(self, query: str) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
-        if self._filtered_scope_active():
+    def get(self, query: str, *, scope_active: bool = False) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
+        if scope_active:
             return None
         vector = self._query_embedding(query)
         if vector is None:
@@ -100,7 +86,7 @@ class SemanticRetrievalCache:
                 return None
             stale_before = now - self.ttl_seconds
             db.execute("DELETE FROM semantic_retrieval_cache WHERE created < ?", (stale_before,))
-            rows = db.execute("SELECT cache_id, embedding, dimension, payload, created, accessed, hits FROM semantic_retrieval_cache").fetchall()
+            rows = db.execute("SELECT cache_id, embedding, dimension, payload FROM semantic_retrieval_cache").fetchall()
             best: tuple[float, tuple[Any, ...]] | None = None
             for row in rows:
                 if int(row[2]) != len(vector):
@@ -124,8 +110,8 @@ class SemanticRetrievalCache:
         restored = self.restore(payload)
         return restored, {"similarity": float(similarity), "hits": len(restored), "cache_id": int(row[0]), "query": ""}
 
-    def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
-        if self._filtered_scope_active():
+    def put(self, query: str, hits: Sequence[RetrievalHit], *, scope_active: bool = False) -> bool:
+        if scope_active:
             return False
         vector = self._query_embedding(query)
         if vector is None or self.ttl_seconds <= 0:
@@ -167,12 +153,18 @@ class SemanticRetrievalCache:
         return restored
 
 
-def install(system: Any) -> None:
-    """Bind the current system and explicitly select the sole cache implementation."""
-    global _CURRENT_SYSTEM
-    _CURRENT_SYSTEM = system
-    from rag_project.intelligence import med_evidence_pro
-    med_evidence_pro.SemanticCache = SemanticRetrievalCache
+def create_for_system(system: Any, *, db_path: str | Path | None = None) -> SemanticRetrievalCache:
+    settings = getattr(system, "settings", None)
+    root = Path(getattr(settings, "project_root", Path.cwd()))
+    service = getattr(system, "embedding_service", None)
+    embed_query = getattr(service, "embed_query", None)
+    expected_dimension = int(getattr(service, "dimension", 0) or 0)
+    return SemanticRetrievalCache(db_path or root / "data" / "med_evidence_cache.sqlite3", embed_query=embed_query, expected_dimension=expected_dimension)
 
 
-__all__ = ["SemanticRetrievalCache", "install"]
+def install(system: Any) -> SemanticRetrievalCache:
+    """Backward-compatible factory; never mutates another module."""
+    return create_for_system(system)
+
+
+__all__ = ["SemanticRetrievalCache", "create_for_system", "install"]
