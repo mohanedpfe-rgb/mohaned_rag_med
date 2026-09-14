@@ -98,10 +98,10 @@ def _record_answer_replay(system: Any, question: str, result: dict[str, Any]) ->
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
-    # The installed canonical enhancer is the certified callable inspected by
-    # production-readiness tests.  The legacy enhanced engine remains available
-    # only as an explicit compatibility fallback.
-    _certified_god_answer=god_mode_100.enhance_result
+    # Static binding preserves exact callable identity while avoiding Python's
+    # instance descriptor rebinding. The production method explicitly supplies
+    # the system argument once.
+    _certified_god_answer=staticmethod(god_mode_100.enhance_result)
     _legacy_enhanced_god_answer=enhanced_god_answer
     _canonical_answer_authority=ANSWER_PIPELINE_AUTHORITY
     _canonical_runtime_contract=True
@@ -181,7 +181,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             except Exception: question=original_question
         else: question=original_question
         def _primary_answer():
-            try: return _safe_result(self._certified_god_answer(self, question, metadata_filter=metadata_filter))
+            try: return _safe_result(self._certified_god_answer(self,question,metadata_filter=metadata_filter))
             except Exception as exc: _safe_exception_log(self,"Primary answer pipeline failed"); return self._recovery_answer(question,metadata_filter,exc)
         result=execute_with_runtime_safety(self,question,_primary_answer); result=apply_medical_safety_policy(question,result,self.settings); result.setdefault("pipeline_authority",ANSWER_PIPELINE_AUTHORITY); result.setdefault("production_contract",{"feature_count":int(feature_contract.get("feature_count",44)),"all_features_resolved":bool(feature_contract.get("all_resolved",False))})
         try: result["query_trace"]=sanitize_trace(result.get("query_trace") or {})
