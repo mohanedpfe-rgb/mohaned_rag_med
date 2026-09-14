@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 
 _LOCK = threading.RLock()
@@ -27,7 +28,7 @@ def _retrying_delete_version(original):
                 if attempt == 1:
                     raise
 
-        with self._sqlite_connection_for_delete() as connection if hasattr(self, "_sqlite_connection_for_delete") else _lexical_connection(self):
+        with sqlite3.connect(self.lexical_database) as connection:
             connection.execute(
                 "DELETE FROM lexical_documents "
                 "WHERE json_extract(metadata, '$.document_id') = ? "
@@ -39,11 +40,6 @@ def _retrying_delete_version(original):
             raise last_error
 
     return delete_version
-
-
-def _lexical_connection(store):
-    import sqlite3
-    return sqlite3.connect(store.lexical_database)
 
 
 def install() -> None:
