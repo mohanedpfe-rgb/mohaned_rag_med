@@ -4,17 +4,15 @@ from __future__ import annotations
 from typing import Any
 
 ANSWER_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
-CANONICAL_SERVICE = "rag_project.application.MedEvidenceProductionRAGSystem"
+# Public production contract names the historical production service path; the
+# application class delegates to that implementation through the explicit legacy
+# compatibility adapter seam.
+CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 LEGACY_ANSWER_AUTHORITY = ANSWER_AUTHORITY
 
 
 def install() -> dict[str, Any]:
-    """Validate canonical ownership without installing behavioral monkey patches.
-
-    The composition root may validate contracts here, but it must not mutate the
-    legacy implementation or install runtime wrappers.  The legacy service is
-    reachable only through the explicit compatibility adapter.
-    """
+    """Validate canonical ownership without installing behavioral monkey patches."""
     from rag_project import application
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
