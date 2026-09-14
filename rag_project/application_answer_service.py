@@ -15,7 +15,7 @@ from rag_project.intelligence.semantic_cache import install as install_semantic_
 from rag_project.retrieval.query_rewriter import QueryRewriter
 from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 
-ACTIVE_ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
+ACTIVE_ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
 
 
 def detect_answer_language(question: str) -> tuple[str, float]:
@@ -208,7 +208,8 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
     result["route"]["is_follow_up"] = bool(is_followup)
     _apply_execution_visibility(result, clean_question, metadata_filter, verification, retrieval, detected_language, language_confidence)
     memory = getattr(system, "conversation_memory", None)
-    if memory is not None:
+    result_status = str(result.get("status") or "").upper()
+    if memory is not None and result_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
         try:
             memory.add(clean_question, result)
         except Exception:
