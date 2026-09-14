@@ -3,6 +3,7 @@ from __future__ import annotations
 _INSTALLED = False
 _TERMINAL = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL", "SUPERSEDED"}
 
+# Invalid terminal state regression is intentionally rejected below.
 
 def _transition_guard(self, document_id, new_stage, **values):
     record = self.get_document(document_id)
@@ -11,7 +12,7 @@ def _transition_guard(self, document_id, new_stage, **values):
     current = str(record.get("current_stage") or record.get("status") or "").upper()
     target = str(new_stage or "").upper()
     if current in _TERMINAL and target not in _TERMINAL and target not in {"INTERRUPTED", "RECOVERING"}:
-        raise RuntimeError(f"Terminal document cannot transition: {current} -> {target}.")
+        raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
     if current in {"READY", "COMPLETED"} and target in {"INTERRUPTED", "RECOVERING"}:
         with self._connect() as connection:
             from rag_project.ingestion.state_store import utc_now
