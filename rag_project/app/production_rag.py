@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from pathlib import Path
@@ -57,6 +58,21 @@ def _should_store_in_history(result: Any) -> bool:
     return str(result.get("status") or "").strip().upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
 
 
+def _invoke_certified_answer(system: Any, question: str, metadata_filter: dict[str, Any] | None) -> dict[str, Any]:
+    """Invoke the canonical certifier once, while supporting controlled test/runtime overrides."""
+    certifier = getattr(system, "_certified_god_answer")
+    try:
+        signature = inspect.signature(certifier)
+        parameters = [p for p in signature.parameters.values() if p.kind in {p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD}]
+        first_name = parameters[0].name.casefold() if parameters else ""
+        expects_system = first_name in {"self", "system", "rag_system", "service"} and len(parameters) >= 2
+    except (TypeError, ValueError):
+        expects_system = certifier is god_mode_100.enhance_result or certifier is god_mode_100.enhanced_god_answer
+    if expects_system:
+        return _safe_result(certifier(system, question, metadata_filter=metadata_filter))
+    return _safe_result(certifier(question, metadata_filter=metadata_filter))
+
+
 def _norm_provenance_text(value: Any) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
     text = re.sub(r"\[(?:section|table|figure|source)\s*:[^\]]*\]", " ", text, flags=re.I)
@@ -98,9 +114,6 @@ def _record_answer_replay(system: Any, question: str, result: dict[str, Any]) ->
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
-    # Static binding preserves exact callable identity while avoiding Python's
-    # instance descriptor rebinding. The production method explicitly supplies
-    # the system argument once.
     _certified_god_answer=staticmethod(god_mode_100.enhance_result)
     _legacy_enhanced_god_answer=enhanced_god_answer
     _canonical_answer_authority=ANSWER_PIPELINE_AUTHORITY
@@ -169,7 +182,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             from rag_project.intelligence.evidence_guard import verify_claims,grounding_decision; blocks=[str(getattr(h,"text","") or "") for h in hits]; checks=_safe_list(verify_claims(answer,blocks,[f"S{i+1}" for i in range(len(hits))])); ground=grounding_decision(checks,min_supported_ratio=0.60) if checks else {"allow":False,"supported_ratio":0.0}
         except Exception: checks=[]; ground={"allow":False,"supported_ratio":0.0}
         if checks and ground.get("allow",False):
-            ground=dict(ground); ground["method"]="semantic_claim_verification"; return {"status":"SUCCESS_WITH_WARNINGS","answer":answer,"citations":citations,"hits":hits,"confidence":{"level":"medium","evidence_confidence":float(ground.get("supported_ratio",0.0) or 0.0)},"grounding":ground,"claims":[getattr(c,"to_dict",lambda:{"claim":str(getattr(c,"claim",""))})() for c in checks],"recovery":{"attempted":True,"pipeline_error":type(exc).__name__,"grounded_extractive_fallback":True,"verification":"semantic_claim_verification"},"query_trace":_recovery_trace(question,hits,exc,ground,"semantic_claim_verification"),"phase_implementation":{"canonical_pipeline_executed":False,"degraded_to_recovery":True,"phase_1":"preserved_from_primary_failure","phase_2":"retrieval_completed","phase_3":"extractive_fallback","phase_4":"semantic_claim_verification","phase_5":"visibility_preserved"},"pipeline_authority":ANSWER_PIPELINE_AUTHORITY}
+            ground=dict(ground); ground["method"]="semantic_claim_verification"; return {"status":"SUCCESS_WITH_WARNINGS","answer":answer,"citations":citations,"hits":hits,"confidence":{"level":"medium","evidence_confidence":float(ground.get("supported_ratio",0.0) or 0.0)},"grounding":ground,"claims":[getattr(c,"to_dict",lambda:{"claim":str(getattr(c,"claim",""))})() for c in checks],"recovery":{"attempted":True,"pipeline_error":type(exc).__name__,"grounded_extractive_fallback":True,"verification":"semantic_claim_verification"},"query_trace":_recovery_trace(question,hits,exc,ground,"semantic_claim_verification"),"phase_implementation":{"canonical_pipeline_executed":False,"degraded_to_recovery":True,"phase_1":"preserved_from_primary_failure","phase_2":"retrieval_completed","phase_3":"semantic_claim_verification","phase_4":"visibility_preserved"},"pipeline_authority":ANSWER_PIPELINE_AUTHORITY}
         return {"status":"ANSWER_UNAVAILABLE","answer":"The indexed evidence was retrieved, but the answer could not pass the grounding check safely.","citations":[],"hits":hits,"confidence":{"level":"low","evidence_confidence":float(ground.get("supported_ratio",0.0) or 0.0)},"recovery":{"attempted":True,"pipeline_error":type(exc).__name__,"grounding_failed":True,"provenance":provenance},"query_trace":_recovery_trace(question,hits,exc,ground,"semantic_claim_verification"),"phase_implementation":{"canonical_pipeline_executed":False,"degraded_to_recovery":True,"phase_1":"primary_failed","phase_2":"retrieval_completed","phase_3":"extractive_fallback","phase_4":"grounding_failed","phase_5":"visibility_preserved"},"pipeline_authority":ANSWER_PIPELINE_AUTHORITY}
 
     def answer(self,question:str,metadata_filter:Dict[str,Any]|None=None)->dict[str,Any]:
@@ -181,7 +194,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             except Exception: question=original_question
         else: question=original_question
         def _primary_answer():
-            try: return _safe_result(self._certified_god_answer(self,question,metadata_filter=metadata_filter))
+            try: return _invoke_certified_answer(self,question,metadata_filter)
             except Exception as exc: _safe_exception_log(self,"Primary answer pipeline failed"); return self._recovery_answer(question,metadata_filter,exc)
         result=execute_with_runtime_safety(self,question,_primary_answer); result=apply_medical_safety_policy(question,result,self.settings); result.setdefault("pipeline_authority",ANSWER_PIPELINE_AUTHORITY); result.setdefault("production_contract",{"feature_count":int(feature_contract.get("feature_count",44)),"all_features_resolved":bool(feature_contract.get("all_resolved",False))})
         try: result["query_trace"]=sanitize_trace(result.get("query_trace") or {})
