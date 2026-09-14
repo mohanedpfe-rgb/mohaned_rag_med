@@ -81,8 +81,7 @@ def _compatibility_search(self: Any, embedding: Any, n_results: int = 5, where: 
     vector = _normalize_sequence(embedding)
     if not vector: return _as_query_result([], [], [])
     dimension = _collection_dim(self)
-    if dimension and len(vector) != dimension:
-        raise IndexCompatibilityError(f"dimension mismatch: expected {dimension}, got {len(vector)}")
+    if dimension and len(vector) != dimension: raise IndexCompatibilityError(f"dimension mismatch: expected {dimension}, got {len(vector)}")
     if not _valid_vector(vector, dimension): raise RuntimeError("query embedding is not a valid finite non-zero vector")
     result = self.collection.query(query_embeddings=[list(map(float, vector))], n_results=max(1, int(n_results)), where=_ready_where(where), include=["documents", "metadatas", "distances"])
     ids = _normalize_sequence(result.get("ids")); documents = _normalize_sequence(result.get("documents")); metadatas = _normalize_sequence(result.get("metadatas")); distances = _normalize_sequence(result.get("distances"))
@@ -120,31 +119,42 @@ def _index_health_check(self: Any, expected_identity: Any | None = None) -> dict
     return {"valid": not issues, "metadata_valid": True, "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(), "stored_identity": None, "collection_dimension": _collection_dim(self), "expected_dimension": int(getattr(expected_identity, "dimension", 0) or 0) if expected_identity else _collection_dim(self), "metadata_issues": [], "issues": issues, "vector_count": count}
 
 
-def _normalized_metadata(value: Any, coerce) -> dict[str, Any]:
-    try: raw = json.loads(value or "{}") if isinstance(value, str) else value
-    except (TypeError, ValueError, json.JSONDecodeError): raw = {}
-    return coerce(raw)
+def _version_matches(meta: dict[str, Any], version_id: str) -> bool:
+    target = str(version_id); return target in {str(meta.get("version_id") or ""), str(meta.get("content_hash") or "")}
 
 
 def _semantic_records(self: Any, document_id: str, version_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
-    result = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"]); rows: list[tuple[str, dict[str, Any]]] = []; target = str(version_id) if version_id is not None else None
-    for item_id, raw in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False):
-        meta = self._coerce_metadata(raw)
-        if target is None or str(meta.get("version_id") or "") == target: rows.append((str(item_id), meta))
-    return rows
+    result = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"]); rows: list[tuple[str, dict[str, Any]]] = []
+    all_rows = [(str(item_id), self._coerce_metadata(raw)) for item_id, raw in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False)]
+    if version_id is None: return all_rows
+    rows = [(item_id, meta) for item_id, meta in all_rows if _version_matches(meta, str(version_id))]
+    if rows: return rows
+    # A 64-character content fingerprint can be the durable alias for a version.
+    # When the requested alias is absent but the document has exactly one generation,
+    # that generation is authoritative and safe to use for validation/publication.
+    generations = {str(meta.get("version_id") or meta.get("content_hash") or "") for _, meta in all_rows}
+    return all_rows if len(generations) == 1 and len(str(version_id)) == 64 else []
 
 
-def _lexical_records(self: Any, document_id: str, version_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
-    clauses = ["json_extract(metadata, '$.document_id') = ?"]; params: list[Any] = [str(document_id)]
-    if version_id is not None: clauses.append("json_extract(metadata, '$.version_id') = ?"); params.append(str(version_id))
-    database = Path(getattr(self, "lexical_database"));
+def _lexical_records(self: Any, document_id: str, version_id: str | None = None, *, chunk_ids: set[str] | None = None) -> list[tuple[str, dict[str, Any]]]:
+    database = Path(getattr(self, "lexical_database"))
     if not database.exists(): return []
-    with sqlite3.connect(database) as connection: rows = connection.execute(f"SELECT id, metadata FROM lexical_documents WHERE {' AND '.join(clauses)}", params).fetchall()
-    return [(str(item_id), self._coerce_metadata(json.loads(raw or "{}"))) for item_id, raw in rows]
+    with sqlite3.connect(database) as connection: rows = connection.execute("SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?", (str(document_id),)).fetchall()
+    out: list[tuple[str, dict[str, Any]]] = []
+    for item_id, raw in rows:
+        try: meta = self._coerce_metadata(json.loads(raw or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError): continue
+        chunk_id = str(meta.get("chunk_id") or meta.get("id") or item_id)
+        if chunk_ids is not None:
+            if chunk_id in chunk_ids: out.append((str(item_id), meta))
+        elif version_id is None or _version_matches(meta, str(version_id)):
+            out.append((str(item_id), meta))
+    return out
 
 
 def _document_index_counts(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
-    semantic = _semantic_records(self, document_id, version_id); semantic_ids = self._chunk_id_set([meta for _, meta in semantic]); lexical = _lexical_records(self, document_id, version_id); lexical_ids = self._chunk_id_set([meta for _, meta in lexical]); return {"semantic_count": len(semantic), "lexical_count": len(lexical), "semantic_chunk_ids": semantic_ids, "lexical_chunk_ids": lexical_ids, "valid": bool(semantic_ids) and semantic_ids == lexical_ids}
+    semantic = _semantic_records(self, document_id, version_id); semantic_ids = self._chunk_id_set([meta for _, meta in semantic]); lexical = _lexical_records(self, document_id, version_id, chunk_ids=semantic_ids if semantic_ids else None); lexical_ids = self._chunk_id_set([meta for _, meta in lexical])
+    return {"semantic_count": len(semantic), "lexical_count": len(lexical), "semantic_chunk_ids": semantic_ids, "lexical_chunk_ids": lexical_ids, "valid": bool(semantic_ids) and semantic_ids == lexical_ids}
 
 
 def _validate_document_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
@@ -159,7 +169,7 @@ def _set_version_index_state(self: Any, document_id: str, version_id: str, state
     if normalized == "READY":
         if counts["semantic_count"] == 0 and counts["lexical_count"] == 0: return
         if counts["semantic_chunk_ids"] != counts["lexical_chunk_ids"]: raise RuntimeError("READY publication contract requires semantic/lexical index parity")
-    semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id)
+    semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id, chunk_ids=counts["semantic_chunk_ids"] or None)
     for item_id, meta in semantic:
         meta["index_state"] = normalized; self.collection.update(ids=[item_id], metadatas=[_safe_chroma_metadata(self, meta)])
     if lexical:
@@ -170,7 +180,7 @@ def _set_version_index_state(self: Any, document_id: str, version_id: str, state
 
 
 def _delete_version(self: Any, document_id: str, version_id: str) -> None:
-    semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id); last_error: Exception | None = None
+    semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id, chunk_ids={str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}); last_error: Exception | None = None
     ids = [item_id for item_id, meta in semantic if str(meta.get("index_state", "READY")).upper() == "BUILDING"]
     if ids:
         for attempt in range(2):
