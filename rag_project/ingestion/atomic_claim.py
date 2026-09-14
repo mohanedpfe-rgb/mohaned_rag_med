@@ -7,9 +7,9 @@ from typing import Any
 def ensure_and_claim(store: Any, values: dict[str, Any], worker_id: str, lease_seconds: int) -> bool:
     """Atomically materialize a document row and claim its ingestion lease.
 
-    The old pattern performed UPSERT and CLAIM as two independent transactions,
-    which allowed two processes to overwrite the same row before either one won
-    the lease. This helper does both operations in one SQLite transaction.
+    The claim is serialized with ``BEGIN IMMEDIATE`` so concurrent callers cannot
+    all observe the same pre-claim snapshot and subsequently overwrite one another.
+    Exactly one live worker owns a document at a time.
     """
     required = {
         "document_id", "content_hash", "file_path", "file_name", "file_size",
@@ -24,11 +24,13 @@ def ensure_and_claim(store: Any, values: dict[str, Any], worker_id: str, lease_s
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
     with store._connect() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             "SELECT document_id, lease_owner, lease_expires_at FROM documents "
             "WHERE content_hash = ? OR document_id = ? LIMIT 1",
             (values["content_hash"], values["document_id"]),
         ).fetchone()
+
         if row:
             owner = row["lease_owner"]
             expires = row["lease_expires_at"]
@@ -39,10 +41,19 @@ def ensure_and_claim(store: Any, values: dict[str, Any], worker_id: str, lease_s
                     if stamp.tzinfo is None:
                         stamp = stamp.replace(tzinfo=timezone.utc)
                     live = stamp.astimezone(timezone.utc) > now
-                except ValueError:
+                except (TypeError, ValueError):
                     live = False
-            if live and str(owner) != str(worker_id):
-                return False
+            if live:
+                if str(owner) != str(worker_id):
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "UPDATE documents SET lease_expires_at = ?, heartbeat_at = ?, modified_at = ? "
+                    "WHERE document_id = ? AND lease_owner = ?",
+                    (expires_at.isoformat(), now.isoformat(), now.isoformat(), row["document_id"], str(worker_id)),
+                )
+                connection.commit()
+                return True
             values = dict(values)
             values["document_id"] = row["document_id"]
 
@@ -72,4 +83,5 @@ def ensure_and_claim(store: Any, values: dict[str, Any], worker_id: str, lease_s
             f"ON CONFLICT(document_id) DO UPDATE SET {assignments}",
             tuple(row_values.values()),
         )
+        connection.commit()
         return True
