@@ -267,6 +267,9 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
     return result
 
 
+answer._final_followup_guard = True
+
+
 def install_runtime_adapters(system: Any) -> Any:
     """Apply optional runtime adapters after the canonical service is constructed."""
     retriever = getattr(system, "retriever", None)
