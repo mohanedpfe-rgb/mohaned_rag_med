@@ -25,6 +25,12 @@ _ACTIONABLE_PATTERNS = (
     r"\b(urgence|emergency)\b.{0,60}\b(what|should|do|take|stop)\b",
 )
 
+_HARMFUL_PATTERNS = (
+    r"\b(?:how|ways?|instructions?|steps?)\b.*\b(?:synthesi[sz]e|manufacture|produce|cook|make|extract)\b.*\b(?:illegal\s+drug|opioid|amphetamine|methamphetamine|meth|heroin|cocaine|fentanyl)\b",
+    r"\b(?:synthesi[sz]e|manufacture|produce|cook|make|extract)\b.*\b(?:illegal\s+drug|opioid|amphetamine|methamphetamine|meth|heroin|cocaine|fentanyl)\b",
+    r"\b(?:make|manufacture|produce|synthesi[sz]e)\b.*\b(?:poison|toxin|bioweapon|chemical weapon)\b",
+)
+
 
 def is_actionable_medical_query(question: str) -> bool:
     value = str(question or "").casefold()
@@ -35,6 +41,11 @@ def is_high_risk_medical_query(question: str) -> bool:
     """Classify clinically sensitive queries without making every educational mention maximally restrictive."""
     value = str(question or "").casefold()
     return any(re.search(pattern, value) for pattern in _HIGH_RISK_PATTERNS)
+
+
+def is_harmful_request(question: str) -> bool:
+    value = str(question or "").casefold()
+    return any(re.search(pattern, value) for pattern in _HARMFUL_PATTERNS)
 
 
 def _effective_threshold(question: str, settings: Any) -> float:
@@ -48,15 +59,25 @@ def apply_medical_safety_policy(question: str, result: dict[str, Any], settings:
     """Keep clinical-action safeguards strict without blocking grounded study retrieval."""
     result = dict(result or {})
     status = str(result.get("status") or "").upper()
+    harmful = is_harmful_request(question)
     high_risk = is_high_risk_medical_query(question)
     actionable = is_actionable_medical_query(question)
     result.setdefault("medical_safety", {})
     result["medical_safety"].update({
         "high_risk_query": high_risk,
         "actionable_query": actionable,
-        "policy_version": "2.2",
+        "harmful_request": harmful,
+        "policy_version": "2.3",
         "clinical_validation_claim": False,
     })
+
+    if harmful:
+        result["medical_safety"].update({"decision": "BLOCK_HARMFUL_REQUEST", "reason": "harmful_or_illicit_request"})
+        result["status"] = "BLOCK"
+        result["answer"] = "I cannot help with instructions for producing illegal drugs, poisons, weapons, or other harmful substances."
+        result["citations"] = []
+        result["hits"] = []
+        return result
 
     # Do not rewrite already-decisive safety/grounding outcomes. BLOCK, NOT_SUPPORTED,
     # GENERATION_ABSTAIN and ANSWER_UNAVAILABLE have their own public contracts.
@@ -76,10 +97,6 @@ def apply_medical_safety_policy(question: str, result: dict[str, Any], settings:
     citations = result.get("citations") or []
     threshold = _effective_threshold(question, settings)
 
-    # Educational questions must still be grounded and cited, but their success
-    # should not depend on the stricter clinical-action confidence threshold. A
-    # verified canonical answer is sufficient. Patient-specific/actionable questions
-    # retain the configured high-risk confidence gate.
     if actionable:
         allowed = confidence >= threshold and grounding_ok and contradiction_free and bool(citations)
     else:
@@ -100,4 +117,4 @@ def apply_medical_safety_policy(question: str, result: dict[str, Any], settings:
     return result
 
 
-__all__ = ["is_high_risk_medical_query", "is_actionable_medical_query", "apply_medical_safety_policy"]
+__all__ = ["is_high_risk_medical_query", "is_actionable_medical_query", "is_harmful_request", "apply_medical_safety_policy"]
