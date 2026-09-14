@@ -92,6 +92,20 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     source = Path(pdf_path)
     resolved = source.resolve()
     previous = system.state_store.get_by_path(str(resolved))
+    if not previous:
+        try:
+            candidates = [
+                row
+                for row in system.state_store.get_all_documents()
+                if str(row.get("file_name") or "") == source.name
+                and system.state_store.is_ready_status(row.get("status"))
+            ]
+            if candidates:
+                candidates.sort(key=lambda row: str(row.get("modified_at") or ""), reverse=True)
+                previous = candidates[0]
+        except Exception:
+            previous = None
+
     if not previous or not source.is_file():
         return _public_result(robust_ingestor.robust_ingest_file(system, source))
 
@@ -112,6 +126,10 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         result["versioned_replacement"] = True
         result["previous_document_id"] = previous.get("document_id")
         result["previous_version_preserved"] = True
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
         return _public_result(result)
 
     new_document_id = str(result.get("document_id") or "")
