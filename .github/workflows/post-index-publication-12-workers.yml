@@ -30,7 +30,8 @@ jobs:
             tests/test_post_commit_ingestion_hardening.py \
             tests/test_semantic_ready_retrieval_boundary.py \
             tests/test_terminal_ready_monotonicity.py \
-            tests/test_post_index_12_worker_concurrency.py
+            tests/test_post_index_12_worker_concurrency.py \
+            tests/test_post_index_rollback_preservation.py
       - name: Run all post-index publication phases with exactly 12 pytest workers
         env:
           DEVICE_MODE: i5_16gb
@@ -42,4 +43,5 @@ jobs:
             tests/test_post_commit_ingestion_hardening.py \
             tests/test_semantic_ready_retrieval_boundary.py \
             tests/test_terminal_ready_monotonicity.py \
-            tests/test_post_index_12_worker_concurrency.py
+            tests/test_post_index_12_worker_concurrency.py \
+            tests/test_post_index_rollback_preservation.py
