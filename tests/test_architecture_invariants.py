@@ -3,6 +3,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from rag_project.intelligence.semantic_cache import SemanticRetrievalCache
+from rag_project.retrieval.hybrid_retriever import RetrievalHit
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,6 +42,19 @@ def test_semantic_cache_has_no_process_global_system_binding() -> None:
         for node in ast.walk(tree)
     )
     assert "med_evidence_pro.SemanticCache" not in source
+    assert "cache_namespace" in source
+    assert "_identity_namespace" in source
+
+
+def test_semantic_cache_isolated_by_embedding_identity(tmp_path: Path) -> None:
+    embed = lambda _query: [1.0, 0.0, 0.0]
+    hit = RetrievalHit("doc-1", "evidence", {"document_id": "doc-1"}, 0.9, 0.9, 0.0)
+    cache_a = SemanticRetrievalCache(tmp_path / "cache.sqlite3", embed_query=embed, expected_dimension=3, cache_namespace="model-a")
+    cache_b = SemanticRetrievalCache(tmp_path / "cache.sqlite3", embed_query=embed, expected_dimension=3, cache_namespace="model-b")
+
+    assert cache_a.put("same question", [hit]) is True
+    assert cache_a.get("same question") is not None
+    assert cache_b.get("same question") is None
 
 
 def test_request_context_is_created_at_the_application_answer_boundary() -> None:
