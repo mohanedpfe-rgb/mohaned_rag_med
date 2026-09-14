@@ -79,6 +79,14 @@ def install() -> None:
                 return result
 
             validation = self.validate_document_index(document_id, version_id)
+            expected = int(validation.get("count", 0) or 0)
+
+            # A missing document/version is a legitimate no-op for the low-level
+            # vector-store state transition API. Only a populated version can be
+            # subjected to the READY publication parity contract.
+            if expected == 0 and int(validation.get("lexical_count", 0) or 0) == 0:
+                return result
+
             if not validation.get("valid"):
                 issues = "; ".join(validation.get("issues", [])) or "unknown publication inconsistency"
                 raise RuntimeError(
@@ -105,8 +113,7 @@ def install() -> None:
                     (str(document_id), str(version_id)),
                 ).fetchone()[0]
 
-            expected = int(validation.get("count", 0) or 0)
-            if expected <= 0 or semantic_ready != expected or lexical_ready != expected:
+            if semantic_ready != expected or lexical_ready != expected:
                 raise RuntimeError(
                     "READY publication contract produced an incomplete publication: "
                     f"expected={expected}, semantic_ready={semantic_ready}, lexical_ready={lexical_ready}"
