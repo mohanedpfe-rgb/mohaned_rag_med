@@ -115,13 +115,10 @@ def apply_medical_safety_policy(question: str, result: dict[str, Any], settings:
     return result
 
 
-# Backward-compatible public name required by the runtime contract installer.
-# Keep it as an alias so the exact same safety implementation remains authoritative.
 apply_policy = apply_medical_safety_policy
 
 
 def _install_runtime_wrapper_contract() -> None:
-    """Repair nested-runtime unwrapping before runtime_cancel_flag_fix installs."""
     try:
         from rag_project import runtime_cancel_flag_fix as cancel_fix
     except Exception:
@@ -153,11 +150,15 @@ def _install_runtime_wrapper_contract() -> None:
         return None
 
     cancel_fix._unwrap_method = stable_unwrap
-
     original_install = getattr(cancel_fix, "install", None)
     if callable(original_install) and not getattr(original_install, "_safety_runtime_contract_bridge", False):
         def wrapped_install(*args: Any, **kwargs: Any):
             result = original_install(*args, **kwargs)
+            try:
+                from rag_project import runtime_invariant_repairs
+                runtime_invariant_repairs.install()
+            except Exception:
+                pass
             try:
                 from rag_project import application
                 original_contract = application.runtime_contract
