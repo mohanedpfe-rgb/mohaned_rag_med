@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import shutil
 import uuid
 from pathlib import Path
@@ -33,9 +35,13 @@ def _is_success(result: dict[str, Any]) -> bool:
 
 
 def _retire_previous_version(system: Any, previous: dict[str, Any], new_document_id: str) -> list[str]:
-    """Retire an old version without ever invalidating a newly published READY version."""
+    """Retire an old version without invalidating a newly published READY version."""
     previous_document_id = str(previous.get("document_id") or "")
-    previous_version = str(previous.get("content_hash") or "")
+    previous_version = str(
+        previous.get("version_id")
+        or previous.get("content_hash")
+        or ""
+    )
     if not previous_document_id or not previous_version:
         return []
 
@@ -160,12 +166,12 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         try:
             system.vector_store.set_version_index_state(
                 new_document_id,
-                str(new_record.get("content_hash") or content_hash),
+                str(new_record.get("version_id") or new_record.get("content_hash") or content_hash),
                 "FAILED",
             )
             system.vector_store.delete_version(
                 new_document_id,
-                str(new_record.get("content_hash") or content_hash),
+                str(new_record.get("version_id") or new_record.get("content_hash") or content_hash),
             )
             system.state_store.delete_pages(new_document_id)
             system.state_store.update_document(
