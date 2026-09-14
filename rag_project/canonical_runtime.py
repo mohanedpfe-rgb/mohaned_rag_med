@@ -30,7 +30,7 @@ def install() -> dict[str, Any]:
         "runtime_contract_bound": binding_installed and authority == ANSWER_AUTHORITY,
         "health_contract_bound": callable(getattr(service_cls, "health_report", None)),
         "owner_level_repairs": True,
-        "monkey_patch": True,
+        "monkey_patch": False,
         "production_contract_version": CONTRACT_VERSION,
         "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
     }
