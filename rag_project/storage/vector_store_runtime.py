@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+_LOCK = threading.RLock()
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _INSTALLED = False
@@ -68,7 +69,7 @@ def _as_query_result(ids: list[str], documents: list[str], metadatas: list[dict[
 def _valid_vector(vector: Any, expected_dimension: int = 0) -> bool:
     try: values = [float(item) for item in _normalize_sequence(vector)]
     except (TypeError, ValueError): return False
-    return bool(values and (not expected_dimension or len(values) == expected_dimension) and all(math.isfinite(item) for item in values) and math.sqrt(sum(item * item for item in values)) > 1e-12)
+    return bool(values and (not expected_dimension or len(values) == expected_dimension) and all(math.isfinite(item) for item in values) and math.sqrt(sum(value * value for value in values)) > 1e-12)
 
 
 def _collection_dim(self: Any) -> int:
@@ -110,7 +111,7 @@ def _lexical_search_base(self: Any, query: str, n_results: int = 5, where: dict[
             if frequency:
                 idf = math.log(1.0 + (count - frequencies[token] + 0.5) / (frequencies[token] + 0.5)); score += idf * (frequency * 2.2) / (frequency + 1.2 * (0.75 + 0.25 * length / average))
         if score > 0.0: ranked.append((score, {"id": str(row[0]), "document": str(row[1]), "metadata": metadata}))
-    ranked.sort(key=lambda item: item[0], reverse=True); selected = ranked[:max(1, int(n_results))]
+    ranked.sort(key=lambda item: (-item[0], item[1]["id"])); selected = ranked[:max(1, int(n_results))]
     return _as_query_result([row["id"] for _, row in selected], [row["document"] for _, row in selected], [row["metadata"] for _, row in selected], [1.0 / (1.0 + score) for score, _ in selected])
 
 
