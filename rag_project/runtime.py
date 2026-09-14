@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import os
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 
 _INSTALL_LOCK = threading.RLock()
 _INSTALL_APPLICATION_CONTRACT_LOCK = threading.RLock()
 _INSTALLED = False
+_INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _install_ingestion_compatibility() -> None:
@@ -52,7 +56,7 @@ def _install_ingestion_compatibility() -> None:
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return the single ordered infrastructure policy stack used by the application."""
+    """Return the current infrastructure policy stack in one authoritative order."""
     from rag_project.runtime_hardening import install as hardening
     from rag_project.runtime_hardening_extra import install as hardening_extra
     from rag_project.runtime_recovery import install as recovery
@@ -136,16 +140,41 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
 
 
 def install() -> None:
-    """Install the complete infrastructure policy exactly once in a fixed order."""
+    """Install the infrastructure policy once and record exactly what happened."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
+        _INSTALL_PROVENANCE.clear()
         _install_ingestion_compatibility()
         for installer in _load_installers():
-            installer()
+            name = getattr(installer, "__module__", "unknown") + "." + getattr(installer, "__name__", "install")
+            started = time.perf_counter()
+            entry: dict[str, Any] = {"installer": name, "status": "RUNNING"}
+            try:
+                installer()
+            except Exception as exc:
+                entry.update({"status": "FAILED", "error_type": type(exc).__name__, "error": str(exc)})
+                entry["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+                _INSTALL_PROVENANCE.append(entry)
+                raise
+            entry["status"] = "OK"
+            entry["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            _INSTALL_PROVENANCE.append(entry)
+            if os.getenv("RAG_RUNTIME_TRACE", "").strip().lower() in {"1", "true", "yes"}:
+                print(f"[runtime] {name}: OK ({entry['elapsed_ms']} ms)")
         _install_ready_only_lexical_boundary()
         _INSTALLED = True
+
+
+def installation_report() -> dict[str, Any]:
+    """Return an immutable-style diagnostic snapshot of runtime installation provenance."""
+    return {
+        "installed": bool(_INSTALLED),
+        "installer_count": len(_INSTALL_PROVENANCE),
+        "failed": [dict(item) for item in _INSTALL_PROVENANCE if item.get("status") == "FAILED"],
+        "installers": [dict(item) for item in _INSTALL_PROVENANCE],
+    }
 
 
 def _install_ready_only_lexical_boundary() -> None:
