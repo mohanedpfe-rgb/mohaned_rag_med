@@ -12,9 +12,10 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _load_installers():
+    from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle
     from rag_project.storage.vector_store_runtime import install as vector_store
     from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication
-    return (vector_store, post_index_publication)
+    return (chroma_lifecycle, vector_store, post_index_publication)
 
 
 def install() -> None:
