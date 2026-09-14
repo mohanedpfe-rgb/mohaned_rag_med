@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-
 _INSTALLED = False
 _TERMINAL = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL"}
 
@@ -12,11 +10,12 @@ def _transition_guard(self, document_id, new_stage, **values):
         raise ValueError(f"Document {document_id!r} does not exist.")
     current = str(record.get("current_stage") or record.get("status") or "").upper()
     target = str(new_stage or "").upper()
-    if current in _TERMINAL and target not in _TERMINAL and target not in {"INTERRUPTED", "RECOVERING"}:
-        raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
+    if current in _TERMINAL and target not in _TERMINAL and target not in {"INTERRUPTED", "RECOVERING", "SUPERSEDED"}:
+        raise RuntimeError(f"Terminal document cannot transition: {current} -> {target}.")
     if current in {"READY", "COMPLETED"} and target in {"INTERRUPTED", "RECOVERING"}:
+        from rag_project.ingestion.state_store import utc_now
         with self._connect() as connection:
-            connection.execute("UPDATE documents SET current_stage=?, status=?, index_state='FAILED', modified_at=? WHERE document_id=?", (target, target, __import__("rag_project.ingestion.state_store", fromlist=["utc_now"]).utc_now(), str(document_id)))
+            connection.execute("UPDATE documents SET current_stage=?, status=?, index_state='FAILED', modified_at=? WHERE document_id=?", (target, target, utc_now(), str(document_id)))
         return
     return self._runtime_v5_original_transition(document_id, new_stage, **values)
 
