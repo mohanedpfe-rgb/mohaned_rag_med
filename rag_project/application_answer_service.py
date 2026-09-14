@@ -9,6 +9,7 @@ from rag_project.canonical_runtime import ANSWER_AUTHORITY
 from rag_project.intelligence.cloud_hybrid import CloudConfig, create_hybrid_router
 from rag_project.intelligence.entity_coverage import score_entity_coverage
 from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answer
+from rag_project.intelligence.production_contract_v2 import apply_contract, build_request_context
 from rag_project.intelligence.production_ops_strict import OperationsStore
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.intelligence.semantic_cache import install as install_semantic_cache
@@ -101,12 +102,12 @@ def _seed_answer_contract(result: dict[str, Any], question: str, metadata_filter
     return result, verification, retrieval, route, evidence, detected_language, language_confidence
 
 
-def _apply_execution_visibility(result: dict[str, Any], question: str, metadata_filter: dict[str, Any] | None, verification: dict[str, Any], retrieval: dict[str, Any], detected_language: str, language_confidence: float) -> None:
+def _apply_execution_visibility(result: dict[str, Any], metadata_filter: dict[str, Any] | None, verification: dict[str, Any], retrieval: dict[str, Any], detected_language: str, language_confidence: float) -> None:
     recovery = result.get("recovery") if isinstance(result.get("recovery"), dict) else {}
     result["canonical_pipeline_executed"] = bool(result.get("canonical_pipeline_executed", not bool(recovery.get("attempted"))))
     result["evidence_first"] = bool(result.get("evidence_first", bool(result.get("hits"))))
     result["document_aware"] = bool(result.get("document_aware", bool(metadata_filter) or bool((result.get("retrieval") or {}).get("document_aware"))))
-    result["god_mode_100"] = bool(result.get("god_mode_100", False))
+    result["god_mode_100"] = False
     result["pipeline_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
     result["implementation_authority"] = ACTIVE_ANSWER_PIPELINE_AUTHORITY
     phases = result.get("phases") if isinstance(result.get("phases"), dict) else {}
@@ -116,7 +117,7 @@ def _apply_execution_visibility(result: dict[str, Any], question: str, metadata_
         "phase_2_retrieval_precision": {"status": phases.get("phase_2a_multi_tier_retrieval", retrieval.get("tier", "complete")), "hits": len(result.get("hits") or []), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_3_two_stage_generation": {"status": phases.get("phase_4_answer_cascade", result.get("generation_path", "complete")), "generation_path": result.get("generation_path"), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
         "phase_4_verification": {"status": phases.get("phase_5_active_verification", "complete"), "checked": verification.get("checked", False), "final_answer_checked": bool(result.get("final_verification", {}).get("checked", verification.get("checked", False))), "claim_count": verification.get("claim_count", 0), "blocked_claims": verification.get("blocked_claims", 0), "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY},
-        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
+        "phase_5_intelligence_visibility": {"status": "complete", "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "canonical_answer_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "implementation": "rag_project.intelligence.med_evidence_pro.enhanced_med_evidence_answer", "signals_present": bool(result.get("canonical_pipeline_executed") and result.get("pipeline_authority")), "canonical_executed": bool(result.get("canonical_pipeline_executed"))},
         "degraded_to_recovery": bool(recovery.get("grounded_extractive_fallback")),
     }
     trace = result.get("query_trace") if isinstance(result.get("query_trace"), dict) else {}
@@ -195,18 +196,33 @@ def _invalidate_cache_on_corpus_change(system: Any) -> None:
 def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     clean_question = str(question or "").strip()
-    rewritten_question, is_followup = _rewrite_followup(system, clean_question)
+    memory = getattr(system, "conversation_memory", None)
+    context = build_request_context(
+        clean_question,
+        history=_history_pairs(memory),
+        metadata_filter=metadata_filter,
+    )
+    canonical_question = context.canonical_question or clean_question
     _set_active_scope(system, metadata_filter)
     try:
         _invalidate_cache_on_corpus_change(system)
-        result = execute_with_runtime_safety(system, rewritten_question, lambda: enhanced_med_evidence_answer(system, rewritten_question, metadata_filter))
+        result = execute_with_runtime_safety(
+            system,
+            canonical_question,
+            lambda: enhanced_med_evidence_answer(system, canonical_question, metadata_filter),
+        )
     finally:
         _clear_active_scope(system)
     result = normalize_public_answer_path(result)
-    result, verification, retrieval, _route, _evidence, detected_language, language_confidence = _seed_answer_contract(result, clean_question, metadata_filter)
-    result["rewritten_question"] = rewritten_question
-    result["route"]["is_follow_up"] = bool(is_followup)
-    _apply_execution_visibility(result, clean_question, metadata_filter, verification, retrieval, detected_language, language_confidence)
+    result, verification, retrieval, _route, _evidence, detected_language, language_confidence = _seed_answer_contract(
+        result, clean_question, metadata_filter
+    )
+    result["rewritten_question"] = canonical_question
+    result["route"]["is_follow_up"] = bool(context.is_followup)
+    _apply_execution_visibility(result, metadata_filter, verification, retrieval, detected_language, language_confidence)
+    # This is the only place where the request/evidence/answer contract is applied.
+    # No runtime installer is allowed to wrap the production answer path.
+    result = apply_contract(result, context)
     memory = getattr(system, "conversation_memory", None)
     result_status = str(result.get("status") or "").upper()
     if memory is not None and result_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
