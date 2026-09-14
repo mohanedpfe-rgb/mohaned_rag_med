@@ -58,7 +58,6 @@ def _safe_add_lexical(self: Any, documents: Sequence[str], metadatas: Sequence[d
         meta["build_id"] = build_id
         stamped.append(_stamp_metadata(meta, physical, str(documents[index] or "")))
     result = self._god_atomic_original_add_lexical_documents(documents, stamped, physical_ids)
-    import sqlite3
     with sqlite3.connect(self.lexical_database) as connection:
         for meta, logical_id in zip(metadatas, ids, strict=True):
             if str((meta or {}).get("index_state", "BUILDING")).upper() != "READY":
@@ -127,7 +126,7 @@ def _safe_set_version_state(self: Any, document_id: str, version_id: str, state:
 
 
 def _safe_delete_version(self: Any, document_id: str, version_id: str) -> None:
-    """Roll back uncommitted data only. Last-known-good READY generations survive."""
+    """Roll back uncommitted data only; tolerate one transient semantic delete failure."""
     records = self.collection.get(where={"document_id": document_id}, include=["metadatas"])
     deleting: list[str] = []
     builds: set[str] = set()
@@ -138,7 +137,18 @@ def _safe_delete_version(self: Any, document_id: str, version_id: str) -> None:
             builds.add(str(meta.get("build_id", "")))
     if not deleting:
         return
-    self.collection.delete(ids=deleting)
+
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            self.collection.delete(ids=deleting)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt == 1:
+                raise
+
     with sqlite3.connect(self.lexical_database) as connection:
         rows = connection.execute("SELECT id, metadata FROM lexical_documents").fetchall()
         ids = []
@@ -151,6 +161,8 @@ def _safe_delete_version(self: Any, document_id: str, version_id: str) -> None:
                 ids.append(str(item_id))
         if ids:
             connection.executemany("DELETE FROM lexical_documents WHERE id=?", [(item_id,) for item_id in ids])
+    if last_error is not None:
+        raise last_error
 
 
 def install() -> None:
