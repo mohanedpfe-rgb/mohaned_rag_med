@@ -12,6 +12,7 @@ from rag_project.intelligence.med_evidence_pro import enhanced_med_evidence_answ
 from rag_project.intelligence.production_ops_strict import OperationsStore
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.intelligence.semantic_cache import install as install_semantic_cache
+from rag_project.retrieval.query_rewriter import QueryRewriter
 from rag_project.retrieval.ready_only_retriever import ReadyOnlyRetriever
 
 ACTIVE_ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
@@ -184,28 +185,73 @@ def _apply_execution_visibility(
     result["runtime_safety"] = {**dict(result.get("runtime_safety") or {}), "ready_evidence_enforced": True}
 
 
+def _history_pairs(memory: Any) -> list[tuple[str, str]]:
+    history = list(getattr(memory, "history", []) or []) if memory is not None else []
+    pairs: list[tuple[str, str]] = []
+    for item in history:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            pairs.append((str(item[0] or ""), str(item[1] or "")))
+            continue
+        if isinstance(item, dict):
+            question = str(item.get("question") or item.get("user") or item.get("query") or "").strip()
+            answer = str(item.get("answer") or item.get("assistant") or item.get("response") or "").strip()
+            if question:
+                pairs.append((question, answer))
+    return pairs
+
+
+def _rewrite_followup(system: Any, question: str) -> tuple[str, bool]:
+    memory = getattr(system, "conversation_memory", None)
+    clean = str(question or "").strip()
+    if memory is None or not clean:
+        return clean, False
+    if not re.match(
+        r"^(?:what about|how about|and|also|then|it|this|that|these|those|they|them|its|their|et|puis|et puis|ou|و|ثم)\b",
+        clean,
+        flags=re.I | re.UNICODE,
+    ):
+        return clean, False
+    history = _history_pairs(memory)
+    if not history:
+        return clean, False
+    try:
+        rewritten = QueryRewriter.rewrite(clean, history=history, llm=None).strip()
+    except Exception:
+        rewritten = clean
+    return rewritten or clean, rewritten.casefold() != clean.casefold()
+
+
 def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
     """Execute the canonical evidence-first answer path and expose its diagnostics."""
     started = time.perf_counter()
     clean_question = str(question or "").strip()
+    rewritten_question, is_followup = _rewrite_followup(system, clean_question)
     result = execute_with_runtime_safety(
         system,
-        clean_question,
-        lambda: enhanced_med_evidence_answer(system, question, metadata_filter),
+        rewritten_question,
+        lambda: enhanced_med_evidence_answer(system, rewritten_question, metadata_filter),
     )
     result = normalize_public_answer_path(result)
     result, verification, retrieval, _route, _evidence, detected_language, language_confidence = _seed_answer_contract(
-        result, question, metadata_filter
+        result, clean_question, metadata_filter
     )
+    result["rewritten_question"] = rewritten_question
+    result["route"]["is_follow_up"] = bool(is_followup)
     _apply_execution_visibility(
         result,
-        question,
+        clean_question,
         metadata_filter,
         verification,
         retrieval,
         detected_language,
         language_confidence,
     )
+    memory = getattr(system, "conversation_memory", None)
+    if memory is not None:
+        try:
+            memory.add(clean_question, result)
+        except Exception:
+            pass
     try:
         settings = getattr(system, "settings", None)
         root = getattr(settings, "project_root", None)
