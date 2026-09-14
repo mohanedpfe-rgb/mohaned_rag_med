@@ -6,7 +6,6 @@ that compatibility dependency is allowed to cross the application boundary.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from rag_project.app.production_rag import ProductionRAGSystem
@@ -14,7 +13,7 @@ from rag_project.ingestion import versioned_ingestor
 
 
 class LegacyProductionRAGAdapter:
-    """Delegate infrastructure to legacy storage while keeping production boundaries canonical."""
+    """Delegate infrastructure to legacy storage/ingestion while keeping the answer path canonical."""
 
     __slots__ = ("_delegate",)
 
@@ -41,17 +40,20 @@ class LegacyProductionRAGAdapter:
         setattr(self.delegate, name, value)
 
     def answer(self, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Route every production answer through the canonical MedEvidence service."""
+        """Route every production answer through the canonical MedEvidence service.
+
+        The legacy delegate remains available for storage and compatibility, but it
+        must never become an implicit second answer authority through __getattr__.
+        """
         from rag_project.application_answer_service import answer as canonical_answer
+
         return canonical_answer(self, question, metadata_filter)
 
     def ingest_file(self, pdf_path: Any) -> Any:
         return versioned_ingestor.ingest_version_safely(self.delegate, pdf_path)
 
-    def ingest_directory(self, directory: Any = None) -> list[dict[str, Any]]:
-        source = Path(directory) if directory is not None else Path(self.delegate.settings.incoming_dir)
-        source.mkdir(parents=True, exist_ok=True)
-        return [dict(self.ingest_file(path) or {}) for path in sorted(source.glob("*.pdf"))]
+    def ingest_directory(self, directory: Any = None) -> Any:
+        return self.delegate.ingest_directory(directory)
 
     def health_report(self) -> dict[str, Any]:
         return dict(self.delegate.health_report() or {})
