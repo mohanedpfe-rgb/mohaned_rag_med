@@ -117,4 +117,15 @@ def apply_medical_safety_policy(question: str, result: dict[str, Any], settings:
     return result
 
 
-__all__ = ["is_high_risk_medical_query", "is_actionable_medical_query", "is_harmful_request", "apply_medical_safety_policy"]
+# Backward-compatible public name required by the runtime contract installer.
+# Keep it as an alias so the exact same safety implementation remains authoritative.
+apply_policy = apply_medical_safety_policy
+
+
+__all__ = [
+    "is_high_risk_medical_query",
+    "is_actionable_medical_query",
+    "is_harmful_request",
+    "apply_medical_safety_policy",
+    "apply_policy",
+]
