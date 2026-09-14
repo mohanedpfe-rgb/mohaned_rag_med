@@ -28,11 +28,7 @@ def _normalize_sequence(value: Any) -> list[Any]:
     if hasattr(value, "tolist"):
         try:
             converted = value.tolist()
-            if isinstance(converted, list):
-                return converted
-            if isinstance(converted, tuple):
-                return list(converted)
-            return [converted]
+            return converted if isinstance(converted, list) else [converted]
         except Exception:
             pass
     try:
@@ -62,7 +58,7 @@ def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
         base["chunk_id"] = base["id"]
     base.setdefault("version_id", base.get("document_id", "legacy"))
     normalized: dict[str, Any] = {}
-    for key, value in dict(base).items():
+    for key, value in base.items():
         scalar = _chroma_scalarize(value)
         if scalar is not None:
             normalized[str(key)] = scalar
@@ -130,7 +126,7 @@ def _lexical_search_base(self: Any, query: str, n_results: int = 5, where: dict[
     if not database.exists():
         return _as_query_result([], [], [])
     with sqlite3.connect(database) as connection:
-        rows = connection.execute("SELECT id, document, metadata, tokens FROM lexical_documents WHERE index_state = 'READY'").fetchall()
+        rows = connection.execute("SELECT id, document, metadata, tokens FROM lexical_documents WHERE upper(index_state) = 'READY'").fetchall()
     corpus = []
     for row in rows:
         try:
@@ -146,7 +142,7 @@ def _lexical_search_base(self: Any, query: str, n_results: int = 5, where: dict[
             metadata = self._coerce_metadata(json.loads(row[2] or "{}"))
         except (TypeError, ValueError, json.JSONDecodeError):
             metadata = self._coerce_metadata({})
-        if str(metadata.get("index_state", "READY")).upper() != "READY" or not _metadata_matches(metadata, where):
+        if not _metadata_matches(metadata, where):
             continue
         length = max(1, len(values)); score = 0.0
         for token in tokens:
@@ -168,6 +164,138 @@ def _index_health_check(self: Any, expected_identity: Any | None = None) -> dict
     return {"valid": not issues, "metadata_valid": True, "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(), "stored_identity": None, "collection_dimension": _collection_dim(self), "expected_dimension": int(getattr(expected_identity, "dimension", 0) or 0) if expected_identity else _collection_dim(self), "metadata_issues": [], "issues": issues, "vector_count": count}
 
 
+def _normalized_metadata(value: Any, coerce) -> dict[str, Any]:
+    try:
+        raw = json.loads(value or "{}") if isinstance(value, str) else value
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw = {}
+    return coerce(raw)
+
+
+def _semantic_records(self: Any, document_id: str, version_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
+    result = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"])
+    rows: list[tuple[str, dict[str, Any]]] = []
+    target = str(version_id) if version_id is not None else None
+    for item_id, raw in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False):
+        meta = self._coerce_metadata(raw)
+        if target is None or target in {str(meta.get("version_id") or ""), str(meta.get("content_hash") or "")}:
+            rows.append((str(item_id), meta))
+    if target is not None and not rows and len(str(target)) >= 32:
+        # A version fingerprint can differ from both stored aliases. Prefer the
+        # exact document generation only when every semantic row shares one value.
+        all_rows = [(str(i), self._coerce_metadata(m)) for i, m in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False)]
+        generations = {str(m.get("version_id") or m.get("content_hash") or "") for _, m in all_rows}
+        if len(generations) == 1:
+            return all_rows
+    return rows
+
+
+def _lexical_records(self: Any, document_id: str, *, chunk_ids: set[str] | None = None, version_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
+    with sqlite3.connect(self.lexical_database) as connection:
+        rows = connection.execute("SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?", (str(document_id),)).fetchall()
+    target = str(version_id) if version_id is not None else None
+    out: list[tuple[str, dict[str, Any]]] = []
+    for item_id, raw in rows:
+        meta = _normalized_metadata(raw, self._coerce_metadata)
+        chunk_id = str(meta.get("chunk_id") or meta.get("id") or item_id)
+        if chunk_ids is not None:
+            if chunk_id in chunk_ids:
+                out.append((str(item_id), meta))
+            continue
+        if target is None or target in {str(meta.get("version_id") or ""), str(meta.get("content_hash") or "")}:
+            out.append((str(item_id), meta))
+    return out
+
+
+def _validate_document_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
+    semantic = _semantic_records(self, document_id, version_id)
+    semantic_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}
+    issues: list[str] = []
+    seen: set[str] = set()
+    for _, meta in semantic:
+        chunk_id = str(meta.get("chunk_id") or meta.get("id") or "")
+        if not chunk_id:
+            issues.append("missing chunk_id")
+        elif chunk_id in seen:
+            issues.append(f"duplicate chunk_id: {chunk_id}")
+        seen.add(chunk_id)
+        state = str(meta.get("index_state") or "").upper()
+        if state not in {"BUILDING", "READY"}:
+            issues.append(f"unexpected index_state: {state}")
+    semantic_count = len(semantic)
+    lexical = _lexical_records(self, document_id, chunk_ids=semantic_ids if semantic_ids else None)
+    if not semantic_ids and version_id is not None:
+        lexical = _lexical_records(self, document_id, version_id=version_id)
+    lexical_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in lexical}
+    lexical_count = len(lexical)
+    if semantic_count != lexical_count:
+        issues.append(f"semantic/lexical count mismatch: semantic={semantic_count}, lexical={lexical_count}")
+    if semantic_ids != lexical_ids:
+        issues.append(f"semantic/lexical chunk mismatch: missing_lexical={sorted(semantic_ids - lexical_ids)[:8]}, missing_semantic={sorted(lexical_ids - semantic_ids)[:8]}")
+    try:
+        expected_dimension = self._collection_dim()
+        records = self.collection.get(where={"document_id": str(document_id)}, include=["embeddings", "metadatas"])
+        vectors = _normalize_sequence(records.get("embeddings"))
+        if version_id is not None:
+            selected = [idx for idx, raw in enumerate(_normalize_sequence(records.get("metadatas"))) if version_id in {str(self._coerce_metadata(raw).get("version_id") or ""), str(self._coerce_metadata(raw).get("content_hash") or "")}]
+            if selected:
+                vectors = [vectors[idx] for idx in selected if idx < len(vectors)]
+        if expected_dimension:
+            for vector in vectors:
+                if not _valid_vector(vector, expected_dimension):
+                    issues.append("invalid semantic embedding")
+    except Exception:
+        issues.append("semantic embedding inspection failed")
+    valid = bool(semantic_count) and not issues
+    return {"document_id": str(document_id), "count": semantic_count, "semantic_count": semantic_count, "lexical_count": lexical_count, "valid": valid, "issues": issues}
+
+
+def _set_version_index_state(self: Any, document_id: str, version_id: str, state: str) -> None:
+    normalized_state = str(state).upper()
+    semantic = _semantic_records(self, document_id, version_id)
+    semantic_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}
+    lexical = _lexical_records(self, document_id, chunk_ids=semantic_ids if semantic_ids else None)
+    if normalized_state == "READY":
+        validation = _validate_document_index(self, document_id, version_id)
+        if not validation["valid"]:
+            raise RuntimeError("READY publication contract requires semantic/lexical index parity: " + "; ".join(validation["issues"]))
+    for item_id, meta in semantic:
+        meta["index_state"] = normalized_state
+        self.collection.update(ids=[item_id], metadatas=[meta])
+    if lexical:
+        with sqlite3.connect(self.lexical_database) as connection:
+            connection.executemany("UPDATE lexical_documents SET index_state=?, metadata=json_set(metadata,'$.index_state',?) WHERE id=?", [(normalized_state, normalized_state, item_id) for item_id, _ in lexical])
+            connection.commit()
+
+
+def _delete_version(self: Any, document_id: str, version_id: str) -> None:
+    matches = self._semantic_records_for_delete(document_id, version_id) if hasattr(self, "_semantic_records_for_delete") else None
+    if matches is None:
+        raw = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"])
+        matches = []
+        for item_id, metadata in zip(_normalize_sequence(raw.get("ids")), _normalize_sequence(raw.get("metadatas")), strict=False):
+            meta = self._coerce_metadata(metadata)
+            if str(meta.get("version_id") or "") in {str(version_id), str(meta.get("content_hash") or "")}:
+                matches.append(str(item_id))
+    removable = [str(item) for item in matches]
+    last_error: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            if removable:
+                self.collection.delete(ids=removable)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            if attempt == 2:
+                raise
+    with sqlite3.connect(self.lexical_database) as connection:
+        connection.execute("DELETE FROM lexical_documents WHERE json_extract(metadata,'$.document_id')=? AND (json_extract(metadata,'$.version_id')=? OR json_extract(metadata,'$.content_hash')=?)", (str(document_id), str(version_id), str(version_id)))
+        connection.commit()
+    if last_error is not None:
+        raise last_error
+
+
 def install() -> None:
     global _INSTALLED
     from rag_project.storage.vector_store import VectorStore
@@ -175,12 +303,12 @@ def install() -> None:
         VectorStore._as_query_result = staticmethod(_as_query_result)
     if not hasattr(VectorStore, "_metadata_matches"):
         VectorStore._metadata_matches = staticmethod(_metadata_matches)
-    if not hasattr(VectorStore, "search"):
-        VectorStore.search = _compatibility_search
-    if not hasattr(VectorStore, "search_lexical"):
-        VectorStore.search_lexical = _lexical_search_base
-    if not hasattr(VectorStore, "index_health_check"):
-        VectorStore.index_health_check = _index_health_check
+    VectorStore.search = _compatibility_search
+    VectorStore.search_lexical = _lexical_search_base
+    VectorStore.index_health_check = _index_health_check
+    VectorStore.validate_document_index = _validate_document_index
+    VectorStore.set_version_index_state = _set_version_index_state
+    VectorStore.delete_version = _delete_version
     if not hasattr(VectorStore, "verify_index"):
         VectorStore.verify_index = lambda self, document_id=None: self.validate_document_index(document_id) if document_id else {"valid": self.count() == self.lexical_count(), "semantic_count": self.count(), "lexical_count": self.lexical_count(), "count": self.count()}
     if not hasattr(VectorStore, "rebuild_index"):
@@ -189,23 +317,18 @@ def install() -> None:
     original_resolve = VectorStore._resolve_dimension
     if not getattr(original_resolve, "_runtime_unknown_dimension_guard", False):
         def resolve_dimension(self: Any, embeddings: Any = None) -> int:
-            if embeddings is None:
-                try:
-                    if int(_collection_dim(self) or 0) <= 0:
-                        return 0
-                except Exception:
-                    return 0
+            if embeddings is None and _collection_dim(self) <= 0:
+                return 0
             return original_resolve(self, embeddings)
         resolve_dimension._runtime_unknown_dimension_guard = True
         VectorStore._resolve_dimension = resolve_dimension
 
-    original_coerce = VectorStore._coerce_metadata
-    if not getattr(original_coerce, "_runtime_storage_metadata_owner", False):
-        def coerce_metadata(self: Any, metadata: Any) -> dict[str, Any]:
-            return _safe_chroma_metadata(self, metadata)
-        coerce_metadata._runtime_storage_metadata_owner = True
-        VectorStore._original_coerce_metadata = original_coerce
-        VectorStore._coerce_metadata = coerce_metadata
+    original_coerce = getattr(VectorStore, "_original_coerce_metadata", VectorStore._coerce_metadata)
+    def coerce_metadata(self: Any, metadata: Any) -> dict[str, Any]:
+        return _safe_chroma_metadata(self, metadata)
+    coerce_metadata._runtime_storage_metadata_owner = True
+    VectorStore._original_coerce_metadata = original_coerce
+    VectorStore._coerce_metadata = coerce_metadata
 
     original_init = VectorStore.__init__
     if not getattr(original_init, "_runtime_storage_lifecycle_owner", False):
@@ -216,28 +339,12 @@ def install() -> None:
         hardened_init._runtime_storage_lifecycle_owner = True
         VectorStore.__init__ = hardened_init
 
-    if not getattr(getattr(VectorStore, "close", None), "_runtime_storage_close_owner", False):
-        original_close = getattr(VectorStore, "close", None)
-        if callable(original_close):
-            def close(self: Any) -> None:
-                if getattr(self, "_runtime_closed", False):
-                    return
-                self._runtime_closed = True
-                try:
-                    original_close(self)
-                finally:
-                    self.collection = None
-                    self.client = None
-            close._runtime_storage_close_owner = True
-            VectorStore.close = close
-        else:
-            def close(self: Any) -> None:
-                self._runtime_closed = True
-                self.collection = None
-                self.client = None
-            close._runtime_storage_close_owner = True
-            VectorStore.close = close
-
+    if not hasattr(VectorStore, "close"):
+        def close(self: Any) -> None:
+            self._runtime_closed = True
+            self.collection = None
+            self.client = None
+        VectorStore.close = close
     if not hasattr(VectorStore, "__enter__"):
         VectorStore.__enter__ = lambda self: self if not getattr(self, "_runtime_closed", False) else (_ for _ in ()).throw(RuntimeError("VectorStore is closed."))
     if not hasattr(VectorStore, "__exit__"):
