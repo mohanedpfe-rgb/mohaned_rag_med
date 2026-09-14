@@ -52,8 +52,6 @@ class IngestionStateStore:
                 if path.exists():
                     path.chmod(0o600)
             except OSError:
-                # Permission hardening is defense-in-depth; do not make a usable
-                # database unavailable on filesystems that ignore chmod.
                 pass
 
     @staticmethod
@@ -258,38 +256,23 @@ class IngestionStateStore:
         columns = ["document_id", "page_number", *_ALLOWED_PAGE_UPDATE_KEYS]
         selected = {key: values[key] for key in columns if key in values}
         placeholders = ", ".join("?" for _ in selected)
-        assignments = ", ".join(
-            f"{key}=excluded.{key}" for key in selected if key not in {"document_id", "page_number"}
-        )
+        assignments = ", ".join(f"{key}=excluded.{key}" for key in selected if key not in {"document_id", "page_number"})
         with self._connect() as connection:
-            connection.execute(
-                f"INSERT INTO pages ({', '.join(selected)}) VALUES ({placeholders}) "
-                f"ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}",
-                tuple(selected.values()),
-            )
+            connection.execute(f"INSERT INTO pages ({', '.join(selected)}) VALUES ({placeholders}) ON CONFLICT(document_id, page_number) DO UPDATE SET {assignments}", tuple(selected.values()))
 
     def record_page(self, extraction: Any, *, cache_reference: str | None = None) -> None:
-        """Persist a PageExtraction through the durable page checkpoint API.
-
-        The PDF extractor still uses the historical record_page(extraction) call,
-        while the state store's canonical storage primitive is upsert_page().
-        This adapter keeps that boundary compatible without leaking SQL details
-        into the parser.
-        """
+        """Persist a PageExtraction through the durable page checkpoint API."""
         if extraction is None:
             raise ValueError("extraction must be a PageExtraction-like object")
-
         document_id = str(getattr(extraction, "document_id", "") or "")
         if not document_id:
             raise ValueError("extraction.document_id must be non-empty")
-
         page_number = getattr(extraction, "page_number", None)
         if page_number is None:
             page_number = int(getattr(extraction, "page_index", 0) or 0) + 1
         page_number = int(page_number)
         if page_number < 1:
             raise ValueError("extraction page number must be >= 1")
-
         text = str(getattr(extraction, "text", "") or "")
         metadata = getattr(extraction, "metadata", {}) or {}
         if not isinstance(metadata, dict):
@@ -297,48 +280,30 @@ class IngestionStateStore:
                 metadata = dict(metadata)
             except (TypeError, ValueError):
                 metadata = {}
-
         processing_error = metadata.get("processing_error") or metadata.get("error") or metadata.get("ocr_error")
         if processing_error:
             processing_error = str(processing_error)
-
-        extraction_method = str(
-            getattr(extraction, "extraction_method", None)
-            or metadata.get("extraction_method")
-            or "native"
-        )
-        ocr_status = str(
-            getattr(extraction, "ocr_status", None)
-            or metadata.get("ocr_status")
-            or "not_required"
-        )
+        extraction_method = str(getattr(extraction, "extraction_method", None) or metadata.get("extraction_method") or "native")
+        ocr_status = str(getattr(extraction, "ocr_status", None) or metadata.get("ocr_status") or "not_required")
         checksum = metadata.get("checksum") or metadata.get("text_checksum")
         if not checksum:
             checksum = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
-
-        self.upsert_page(
-            document_id,
-            page_number,
-            extraction_status="FAILED" if processing_error else "COMPLETED",
-            ocr_status=ocr_status,
-            extraction_method=extraction_method,
-            text=text,
-            cache_reference=cache_reference or metadata.get("cache_reference"),
-            processing_error=processing_error,
-            checksum=str(checksum),
-            updated_at=utc_now(),
-        )
+        self.upsert_page(document_id, page_number, extraction_status="FAILED" if processing_error else "COMPLETED", ocr_status=ocr_status, extraction_method=extraction_method, text=text, cache_reference=cache_reference or metadata.get("cache_reference"), processing_error=processing_error, checksum=str(checksum), updated_at=utc_now())
 
     def get_pages(self, document_id: str) -> list[dict[str, Any]]:
-        """Return all persisted page checkpoints for a document in page order."""
         if not document_id:
             return []
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM pages WHERE document_id = ? ORDER BY page_number ASC",
-                (document_id,),
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM pages WHERE document_id = ? ORDER BY page_number ASC", (document_id,)).fetchall()
         return [dict(row) for row in rows]
+
+    def delete_pages(self, document_id: str) -> int:
+        """Delete all page checkpoints for one document atomically."""
+        if not document_id:
+            return 0
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM pages WHERE document_id = ?", (str(document_id),))
+        return max(0, int(cursor.rowcount))
 
     def record_event(self, document_id: str, *, stage: str | None = None, status: str | None = None, event_type: str = "stage", message: str = "", details: dict[str, Any] | None = None, current_page: int | None = None, total_pages: int | None = None, file_name: str | None = None) -> dict[str, Any]:
         if not document_id:
@@ -358,10 +323,7 @@ class IngestionStateStore:
         normalized_status = self.normalize_status(status) if status else None
         payload = json.dumps(details or {}, default=str, sort_keys=True)
         with self._connect() as connection:
-            cursor = connection.execute(
-                "INSERT INTO process_events (document_id, file_name, created_at, stage, status, event_type, message, details, current_page, total_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (document_id, file_name, utc_now(), effective_stage, normalized_status, event_type, message, payload, int(current_page or 0), int(total_pages or 0)),
-            )
+            cursor = connection.execute("INSERT INTO process_events (document_id, file_name, created_at, stage, status, event_type, message, details, current_page, total_pages) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (document_id, file_name, utc_now(), effective_stage, normalized_status, event_type, message, payload, int(current_page or 0), int(total_pages or 0)))
         self._harden_filesystem_permissions()
         return {"id": cursor.lastrowid, "document_id": document_id, "file_name": file_name, "stage": effective_stage, "status": normalized_status, "event_type": event_type, "message": message, "details": details or {}}
 
