@@ -57,6 +57,14 @@ def _install_retrieval_contract() -> None:
     med_evidence_pro.MultiTierRetriever.retrieve = retrieve
 
 
+def _history_item_question(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("question") or item.get("user") or item.get("query") or "").strip()
+    if isinstance(item, (list, tuple)) and item:
+        return str(item[0] or "").strip()
+    return ""
+
+
 def _install_memory_contract() -> None:
     from rag_project import application, application_answer_service
     current = application_answer_service.answer
@@ -70,10 +78,8 @@ def _install_memory_contract() -> None:
         if memory is not None and status not in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             try:
                 history = getattr(memory, "history", None)
-                if isinstance(history, list) and history:
-                    last = history[-1]
-                    if isinstance(last, dict) and str(last.get("question") or last.get("user") or "") == str(question or ""):
-                        history.pop()
+                if isinstance(history, list) and history and _history_item_question(history[-1]) == str(question or "").strip():
+                    history.pop()
             except Exception:
                 pass
         return result
@@ -99,8 +105,6 @@ def _install_publication_audit_boundary() -> None:
             current_stage = str((record or {}).get("current_stage") or "").upper()
             current_status = str((record or {}).get("status") or "").upper()
             index_state = str((record or {}).get("index_state") or "").upper()
-            # The only recoverable exception is post-commit work (typically
-            # audit-event recording) after the durable READY row already exists.
             if current_stage in {"READY", "COMPLETED"} and current_status in {"READY", "COMPLETED"} and index_state == "READY":
                 return None
             raise
