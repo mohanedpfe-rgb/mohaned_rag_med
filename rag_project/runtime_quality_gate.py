@@ -64,14 +64,8 @@ def _quarantine_processed_failure(system: Any, pdf_path: str | Path, result: dic
 
 
 def install() -> None:
-    """Install data-safety helpers only.
-
-    Lease validation is intentionally owned by the ingestion transaction/orchestrator,
-    not by IngestionStateStore.transition_document_state. This module therefore does
-    not monkey-patch state-store, vector-store, RAGSystem, or hardening methods.
-    """
-    from rag_project.app import rag_system as rag_module
-    rag_module.sanitize_evidence = _sanitize_evidence
+    """Expose neutral evidence helpers without importing the legacy app package."""
+    return None
 
 
 __all__ = ["install", "_lease_is_valid", "_sanitize_evidence", "_quarantine_processed_failure"]
