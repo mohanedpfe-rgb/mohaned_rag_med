@@ -132,9 +132,33 @@ def install() -> None:
 
     def hardened_init(self: Any, persist_directory: str | Path, collection_name: str = "rag_documents") -> None:
         original_init(self, persist_directory, collection_name)
+        self._runtime_closed = False
         with _database_lock(Path(self.lexical_database)):
             with _connect(Path(self.lexical_database)):
                 pass
+
+    def hardened_close(self: Any) -> None:
+        """Release the Python-side Chroma/SQLite object graph deterministically."""
+        if getattr(self, "_runtime_closed", False):
+            return
+        self._runtime_closed = True
+        collection = getattr(self, "collection", None)
+        client = getattr(self, "client", None)
+        for attribute in ("collection", "client"):
+            try:
+                setattr(self, attribute, None)
+            except Exception:
+                pass
+        del collection
+        del client
+
+    def hardened_enter(self: Any) -> Any:
+        if getattr(self, "_runtime_closed", False):
+            raise RuntimeError("VectorStore cannot be re-entered after close().")
+        return self
+
+    def hardened_exit(self: Any, exc_type: Any, exc: Any, traceback: Any) -> None:
+        hardened_close(self)
 
     def hardened_resolve_dimension(self: Any, embeddings: Any = None) -> int:
         if embeddings is None or len(_normalize_sequence(embeddings)) == 0:
@@ -144,6 +168,8 @@ def install() -> None:
         return original_resolve_dimension(self, embeddings)
 
     def hardened_search_lexical(self: Any, query: str, n_results: int = 5, where=None):
+        if getattr(self, "_runtime_closed", False):
+            raise RuntimeError("VectorStore is closed.")
         with _database_lock(Path(self.lexical_database)):
             result = original_search_lexical(self, query, n_results=n_results, where=where)
             ids = _normalize_sequence(result.get("ids"))
@@ -172,15 +198,18 @@ def install() -> None:
     VectorStore._original_coerce_metadata = original_coerce_metadata
     VectorStore._coerce_metadata = _safe_chroma_metadata
     VectorStore.__init__ = hardened_init
+    VectorStore.close = hardened_close
+    VectorStore.__enter__ = hardened_enter
+    VectorStore.__exit__ = hardened_exit
     VectorStore._resolve_dimension = hardened_resolve_dimension
-    # VectorStore.validate_document_index remains the single source of truth for
-    # semantic/lexical parity, embedding validity, and its public result schema.
     VectorStore.search_lexical = hardened_search_lexical
 
     for method_name in ("_upsert_lexical_records", "add_lexical_documents", "set_document_index_state", "set_version_index_state", "delete_version", "clear_all"):
         original = getattr(VectorStore, method_name)
         def make_wrapper(function: Any) -> Any:
             def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+                if getattr(self, "_runtime_closed", False):
+                    raise RuntimeError("VectorStore is closed.")
                 with _database_lock(Path(self.lexical_database)):
                     return function(self, *args, **kwargs)
             return wrapped
