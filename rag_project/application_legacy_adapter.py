@@ -1,9 +1,4 @@
-"""Explicit compatibility adapter for the legacy RAG implementation.
-
-The canonical application layer uses this adapter instead of inheriting from the
-legacy Streamlit-era service. The adapter is intentionally the only place where
-that compatibility dependency is allowed to cross the application boundary.
-"""
+"""Explicit, finite compatibility adapter for the legacy RAG implementation."""
 from __future__ import annotations
 
 from typing import Any
@@ -13,40 +8,55 @@ from rag_project.ingestion import versioned_ingestor
 
 
 class LegacyProductionRAGAdapter:
-    """Delegate infrastructure to legacy storage/ingestion while keeping the answer path canonical."""
+    """Expose only the infrastructure interface needed by the canonical service.
 
-    __slots__ = ("_delegate",)
+    The legacy object remains behind this boundary. Unknown attributes are not
+    forwarded automatically, preventing accidental authority leakage back into
+    the legacy application package.
+    """
+
+    __slots__ = ("_delegate", "_local")
+
+    _DELEGATED_ATTRIBUTES = frozenset({
+        "settings", "state_store", "vector_store", "retriever", "conversation_memory",
+        "logger", "embedding_identity", "embedder", "parser", "cloud_hybrid",
+        "startup_quality", "_active_metadata_filter", "_answer_service_corpus_generation",
+        "_hash_file", "health_report", "ingest_directory", "cancel_all_ingests",
+        "cancel_ingest", "_new_cancel_flag", "_remove_cancel_flag",
+    })
 
     def __init__(self, settings: Any) -> None:
-        candidate = __import__(
-            "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
-        ).ProductionRAGSystem
-        service = ProductionRAGSystem
-        if candidate is not ProductionRAGSystem and getattr(candidate, "__module__", "") != "rag_project.application":
-            service = candidate
-        object.__setattr__(self, "_delegate", service(settings))
+        object.__setattr__(
+            self,
+            "_delegate",
+            ProductionRAGSystem(settings),
+        )
+        object.__setattr__(self, "_local", {})
 
     @property
     def delegate(self) -> ProductionRAGSystem:
         return object.__getattribute__(self, "_delegate")
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self.delegate, name)
+        if name in self._DELEGATED_ATTRIBUTES:
+            return getattr(self.delegate, name)
+        local = object.__getattribute__(self, "_local")
+        if name in local:
+            return local[name]
+        raise AttributeError(f"LegacyProductionRAGAdapter exposes no attribute {name!r}")
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name == "_delegate":
+        if name in {"_delegate", "_local"}:
             object.__setattr__(self, name, value)
             return
-        setattr(self.delegate, name, value)
+        if name in self._DELEGATED_ATTRIBUTES:
+            setattr(self.delegate, name, value)
+            return
+        object.__getattribute__(self, "_local")[name] = value
 
     def answer(self, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Route every production answer through the canonical MedEvidence service.
-
-        The legacy delegate remains available for storage and compatibility, but it
-        must never become an implicit second answer authority through __getattr__.
-        """
+        """Route every production answer through the canonical answer service."""
         from rag_project.application_answer_service import answer as canonical_answer
-
         return canonical_answer(self, question, metadata_filter)
 
     def ingest_file(self, pdf_path: Any) -> Any:
@@ -61,6 +71,14 @@ class LegacyProductionRAGAdapter:
     def cancel_all_ingests(self) -> Any:
         method = getattr(self.delegate, "cancel_all_ingests", None)
         return method() if callable(method) else 0
+
+    def cancel_ingest(self, document_id: str) -> bool:
+        method = getattr(self.delegate, "cancel_ingest", None)
+        return bool(method(document_id)) if callable(method) else False
+
+    def __dir__(self) -> list[str]:
+        local = object.__getattribute__(self, "_local")
+        return sorted(set(super().__dir__()) | self._DELEGATED_ATTRIBUTES | set(local))
 
 
 __all__ = ["LegacyProductionRAGAdapter"]
