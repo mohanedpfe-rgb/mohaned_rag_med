@@ -109,6 +109,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_transaction_numpy_fix import install as transaction_numpy_fix
     from rag_project.runtime_failed_publication_cleanup import install as failed_publication_cleanup
     from rag_project.runtime_post_index_publication_contract import install as post_index_publication_contract
+    from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication_contract_v2
 
     return (
         vector_store, chroma_distance_fix, hardening, hardening_extra, recovery, quality_gate, final_gate,
@@ -127,7 +128,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         transactional_rollback_fix, chroma_lifecycle_fix, page_identity_fix,
         phase16_contract_fix, ocr_state_fix, phase16_evidence_fix,
         version_transaction_fix, transaction_numpy_fix, failed_publication_cleanup,
-        post_index_publication_contract,
+        post_index_publication_contract, post_index_publication_contract_v2,
     )
 
 
