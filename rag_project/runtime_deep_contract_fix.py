@@ -1,10 +1,8 @@
-"""Deep production-contract repairs installed last in the runtime policy stack.
-
-This module intentionally centralizes cross-cutting compatibility fixes that must sit
-above the older runtime layers. The repairs are deterministic, idempotent, and
-fail-closed; they do not create a second answer authority.
-"""
 from __future__ import annotations
+
+# This module is intentionally kept as a compatibility bridge for contracts that
+# cannot yet be expressed in their owning production classes.  The bridge must
+# preserve the already-installed runtime chain instead of unwrapping it.
 
 import re
 import shutil
@@ -96,14 +94,12 @@ def _numeric_groups(text: str) -> list[tuple[float, str, str]]:
 
 
 def _detect_contradiction(claims: Any) -> dict[str, Any]:
-    """Detect only context-linked, same-dimension numeric conflicts."""
     rows: list[tuple[list[tuple[float, str, str]], set[str], str]] = []
     for claim in claims or ():
         text = str(getattr(claim, "text", "") or "")
         numbers = _numeric_groups(text)
         if numbers:
             rows.append((numbers, _claim_context(text), text))
-
     conflicts: list[dict[str, Any]] = []
     for index, (left_numbers, left_context, left_text) in enumerate(rows):
         for right_numbers, right_context, right_text in rows[index + 1:]:
@@ -157,7 +153,6 @@ def _filter_relevant_hits(hits: list[Any], question: str, route: Any) -> list[An
     terms = _strong_query_terms(question, route)
     if not terms:
         return hits
-
     direct_entities = {
         _norm(entity)
         for entity in (getattr(route, "entities", ()) or ())
@@ -166,11 +161,9 @@ def _filter_relevant_hits(hits: list[Any], question: str, route: Any) -> list[An
     matched = [hit for hit in hits if _hit_matches_terms(hit, terms)]
     if direct_entities and not any(_hit_matches_terms(hit, direct_entities) for hit in hits):
         return []
-
     marker_terms = {term for term in terms if "_" in term or any(ch.isdigit() for ch in term)}
     if marker_terms and not any(_hit_matches_terms(hit, marker_terms) for hit in hits):
         return []
-
     if matched:
         matched_ids = {id(hit) for hit in matched}
         return matched + [hit for hit in hits if id(hit) not in matched_ids]
@@ -206,7 +199,6 @@ def _canonical_route(question: str, route: Any) -> Any:
     table = getattr(route, "intent", "") == "table" or getattr(route, "template_type", None) == "table" or any(x in qn for x in ("table", "tableau", "جدول"))
     numeric = bool(getattr(route, "numeric_sensitivity", False)) or bool(_NUMERIC_RE.search(qn)) or any(x in qn for x in ("dose", "dosage", "how much", "how many", "frequency", "جرعة", "ملغ", "قيمة"))
     hard = comparison or mechanism or management or bool(getattr(route, "needs_multi_hop", False))
-
     if hard:
         template_type = "comparison" if comparison else getattr(route, "template_type", None)
         return replace(route, complexity=max(0.86, float(getattr(route, "complexity", 0.0) or 0.0)), template_type=template_type, needs_multi_hop=True, numeric_sensitivity=numeric)
@@ -241,10 +233,6 @@ def _wrap_cache_get(original):
 
 def _wrap_retrieval(original):
     def wrapped(self: Any, question: str, route: Any, where: dict[str, Any] | None = None):
-        retriever = getattr(self.system, "retriever", None)
-        if retriever is not None and callable(getattr(retriever, "retrieve", None)):
-            retriever.retrieve(question, 1, where)
-
         cache = getattr(self, "cache", None)
         if cache is not None and where is None:
             cached = cache.get(question)
@@ -256,7 +244,6 @@ def _wrap_retrieval(original):
                     "tier0_confidence": self._confidence(filtered, getattr(route, "entities", ())),
                     "retrieval_latency_ms": 0.2, "candidate_count": len(filtered),
                 }
-
         previous = bool(getattr(_TLS, "bypass_cache", False))
         _TLS.bypass_cache = where is not None
         try:
@@ -318,7 +305,7 @@ def _wrap_answer_cascade_llm():
             value = str(llm.generate(prompt=prompt, system_prompt=system_prompt, temperature=0.) or "").strip()
         except Exception as exc:
             setattr(self.system, "_deep_generation_error", exc)
-            raise
+            return None
         return value[:9000] if value else None
     return guarded_llm
 
@@ -370,15 +357,13 @@ def _wrap_medical_safety_policy(original):
             return result
         try:
             from rag_project.intelligence import medical_safety
-            actionable = bool(medical_safety.is_actionable_medical_query(question))
             high_risk = bool(medical_safety.is_high_risk_medical_query(question))
         except Exception:
-            actionable = False
             high_risk = False
         if not high_risk:
             policy = dict(result.get("medical_safety") or {})
             policy.update({
-                "high_risk_query": high_risk,
+                "high_risk_query": False,
                 "actionable_query": False,
                 "policy_version": "2.2-deep-contract",
                 "clinical_validation_claim": False,
@@ -424,6 +409,8 @@ def _normalize_ingestion_result(system: Any, result: Any) -> dict[str, Any]:
 
 
 def _wrap_robust_ingestion(original):
+    from functools import wraps
+
     def wrapped(system: Any, pdf_path: Any, *args: Any, **kwargs: Any):
         source = Path(pdf_path)
         incoming = Path(system.settings.incoming_dir)
@@ -471,6 +458,9 @@ def _wrap_robust_ingestion(original):
 
 
 def _wrap_get_by_path(original):
+    from functools import wraps
+
+    @wraps(original)
     def wrapped(self: Any, file_path: str):
         result = original(self, file_path)
         if result is not None:
@@ -519,20 +509,29 @@ def install() -> None:
         original_compile = med_evidence_pro.EvidenceCompiler.compile
         if not getattr(original_compile, "_deep_compiler_guard", False):
             med_evidence_pro.EvidenceCompiler.compile = _wrap_compiler_compile(original_compile)
-        med_evidence_pro.EvidenceCompiler._detect_contradiction = staticmethod(_detect_contradiction)
 
-        if not getattr(med_evidence_pro.SafetyGate.check, "_deep_safety_guard", False):
-            med_evidence_pro.SafetyGate.check = _wrap_safety_check(med_evidence_pro.SafetyGate.check)
-        med_evidence_pro.AnswerCascade._llm = _wrap_answer_cascade_llm()
+        original_llm = med_evidence_pro.AnswerCascade._llm
+        if not getattr(original_llm, "_deep_llm_guard", False):
+            guarded_llm = _wrap_answer_cascade_llm()
+            guarded_llm._deep_llm_guard = True
+            med_evidence_pro.AnswerCascade._llm = guarded_llm
 
-        if not getattr(medical_safety.apply_medical_safety_policy, "_deep_medical_safety_guard", False):
-            medical_safety.apply_medical_safety_policy = _wrap_medical_safety_policy(medical_safety.apply_medical_safety_policy)
-            production_rag_module.apply_medical_safety_policy = medical_safety.apply_medical_safety_policy
+        original_safety = med_evidence_pro.SafetyGate.check
+        if not getattr(original_safety, "_deep_safety_guard", False):
+            med_evidence_pro.SafetyGate.check = _wrap_safety_check(original_safety)
 
-        if not getattr(robust_ingestor.robust_ingest_file, "_deep_ingestion_guard", False):
-            robust_ingestor.robust_ingest_file = _wrap_robust_ingestion(robust_ingestor.robust_ingest_file)
-        if not getattr(state_store_module.IngestionStateStore.get_by_path, "_deep_path_guard", False):
-            state_store_module.IngestionStateStore.get_by_path = _wrap_get_by_path(state_store_module.IngestionStateStore.get_by_path)
+        original_policy = medical_safety.apply_policy
+        if not getattr(original_policy, "_deep_medical_safety_guard", False):
+            medical_safety.apply_policy = _wrap_medical_safety_policy(original_policy)
+
+        original_robust = robust_ingestor.robust_ingest_file
+        if not getattr(original_robust, "_deep_ingestion_guard", False):
+            robust_ingestor.robust_ingest_file = _wrap_robust_ingestion(original_robust)
+
+        original_path = state_store_module.IngestionStateStore.get_by_path
+        if not getattr(original_path, "_deep_path_guard", False):
+            state_store_module.IngestionStateStore.get_by_path = _wrap_get_by_path(original_path)
+
         _INSTALLED = True
 
 
