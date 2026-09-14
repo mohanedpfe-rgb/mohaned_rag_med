@@ -1,7 +1,8 @@
 """Functionality correction for phrase-based medical scope detection."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -16,7 +17,11 @@ def _wrap_safety_scope(original: Any):
             return decision
         text = str(query or "").casefold()
         if any(term.casefold() in text for term in phrase_terms):
-            return replace(decision, action="PROCEED", reason="in_scope", scope_confidence=1.0)
+            if is_dataclass(decision):
+                return replace(decision, action="PROCEED", reason="in_scope", scope_confidence=1.0)
+            values = vars(decision).copy() if hasattr(decision, "__dict__") else {}
+            values.update(action="PROCEED", reason="in_scope", scope_confidence=1.0)
+            return SimpleNamespace(**values)
         return decision
 
     wrapped._functionality_scope_phrase_fix = True

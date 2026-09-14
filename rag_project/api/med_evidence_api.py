@@ -28,6 +28,10 @@ def _public_query_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def create_app(engine: Any, store: Any | None = None):
+    from rag_project.api.security import APISettings
+    settings = APISettings.from_env()
+    if settings.environment == "production" and not settings.auth_enabled:
+        raise RuntimeError("Production MedEvidence API cannot start with authentication disabled.")
     try:
         from fastapi import Depends, FastAPI, HTTPException
         from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -35,12 +39,9 @@ def create_app(engine: Any, store: Any | None = None):
     except ImportError as exc:
         raise RuntimeError("FastAPI is optional; install it to use the HTTP API") from exc
 
-    from rag_project.api.security import APISettings, APISecurityError, bind_security, scoped_dependency
+    from rag_project.api.security import APISecurityError, bind_security, scoped_dependency
     from rag_project.security import validate_query
 
-    settings = APISettings.from_env()
-    if settings.environment == "production" and not settings.auth_enabled:
-        raise RuntimeError("Production MedEvidence API cannot start with authentication disabled.")
     if settings.environment == "production" and any(not origin.startswith("https://") for origin in settings.allowed_origins):
         raise RuntimeError("Production MedEvidence API requires HTTPS CORS origins.")
 

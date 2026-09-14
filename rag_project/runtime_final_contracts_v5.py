@@ -66,7 +66,7 @@ def _patch_ocr_status_compat() -> None:
     def extract_iter(self, *args, **kwargs):
         for page in current(self, *args, **kwargs):
             if (
-                not bool(getattr(self, "ocr_enabled", True))
+                not bool(getattr(self, "_runtime_requested_ocr_enabled", getattr(self, "ocr_enabled", True)))
                 and bool(getattr(page, "ocr_required", False))
                 and getattr(page, "ocr_status", None) == "failed"
             ):
@@ -203,7 +203,9 @@ def _patch_god_mode_legacy_entrypoint() -> None:
 
 
 def _patch_production_history() -> None:
-    from rag_project.app.production_rag import ProductionRAGSystem
+    ProductionRAGSystem = __import__(
+        "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+    ).ProductionRAGSystem
 
     current = getattr(ProductionRAGSystem, "answer", None)
     if not callable(current) or getattr(current, "_runtime_v5", False):
@@ -364,6 +366,25 @@ def _patch_building_lexical_ids() -> None:
         result = current(self, query, n_results=n_results, where=where)
         ids = list((result.get("ids") or [[]])[0] or [])
         metas = list((result.get("metadatas") or [[]])[0] or [])
+        blocked = set(getattr(self, "_nonready_lexical_ids", set()))
+        if blocked and ids:
+            keep = [i for i, item_id in enumerate(ids) if str(item_id) not in blocked]
+            for key in ("ids", "documents", "metadatas", "distances"):
+                values = list((result.get(key) or [[]])[0] or [])
+                result[key] = [[values[i] for i in keep]]
+            ids = [ids[i] for i in keep]
+            metas = [metas[i] for i in keep]
+        if ids:
+            import sqlite3
+            with sqlite3.connect(self.lexical_database) as db:
+                states = {str(row[0]): str(row[1]).upper() for row in db.execute("SELECT id, index_state FROM lexical_documents")}
+            keep = [i for i, item_id in enumerate(ids) if states.get(str(item_id), "READY") == "READY"]
+            if len(keep) != len(ids):
+                for key in ("ids", "documents", "metadatas", "distances"):
+                    values = list((result.get(key) or [[]])[0] or [])
+                    result[key] = [[values[i] for i in keep]]
+                ids = [ids[i] for i in keep]
+                metas = [metas[i] for i in keep]
         if ids and metas:
             resolved = []
             for item_id, meta in zip(ids, metas, strict=False):

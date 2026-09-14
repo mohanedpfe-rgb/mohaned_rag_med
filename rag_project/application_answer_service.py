@@ -223,8 +223,9 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
 
 def install_runtime_adapters(system: Any) -> Any:
     """Apply optional runtime adapters after the canonical service is constructed."""
-    if not isinstance(getattr(system, "retriever", None), ReadyOnlyRetriever):
-        system.retriever = ReadyOnlyRetriever(system.retriever)
+    retriever = getattr(system, "retriever", None)
+    if retriever is not None and not isinstance(retriever, ReadyOnlyRetriever):
+        system.retriever = ReadyOnlyRetriever(retriever)
     install_semantic_cache(system)
     try:
         system.cloud_hybrid = create_hybrid_router(

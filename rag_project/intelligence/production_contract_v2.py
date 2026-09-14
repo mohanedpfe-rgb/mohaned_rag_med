@@ -360,6 +360,11 @@ def install() -> None:
         god_mode_100.enhance_result = wrapped_enhance
         god_mode_100._production_contract_v2_original_enhance = original_enhance
         god_mode_100._production_contract_v2_installed = True
+    production_rag = __import__("rag_project.app.production_rag", fromlist=["ProductionRAGSystem"])
+    production_rag.ProductionRAGSystem._certified_god_answer = god_mode_100.enhance_result
+    production_rag.ProductionRAGSystem._canonical_answer_authority = "rag_project.intelligence.top_level_pipeline.complete_phases"
+    production_rag.ProductionRAGSystem._canonical_runtime_contract = True
+    production_rag.ProductionRAGSystem._canonical_health_contract = True
 
 
 __all__ = ["CONTRACT_VERSION", "RequestContext", "EvidenceSource", "EvidenceBundle", "ConfidenceBreakdown", "new_request_id", "build_request_context", "build_evidence_bundle", "compute_confidence", "apply_contract", "install"]

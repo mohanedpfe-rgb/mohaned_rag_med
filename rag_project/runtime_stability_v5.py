@@ -20,7 +20,7 @@ def _transition_guard(self, document_id, new_stage, **values):
     # Terminal records are immutable through transition_document_state. A new
     # ingestion must first atomically claim/update the document to a non-terminal
     # state; this prevents stale/foreign leases from bypassing the state fence.
-    if current in _TERMINAL and target not in _TERMINAL:
+    if current in _TERMINAL and target not in _TERMINAL and target not in {"INTERRUPTED", "RECOVERING"}:
         raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
     return self._runtime_v5_original_transition(document_id, new_stage, **values)
 

@@ -239,6 +239,8 @@ class VectorStore:
                     "metadata = json_set(metadata, '$.index_state', ?)",
                     (str(state).upper(), str(state).upper()),
                 )
+            if str(state).upper() == "READY":
+                self._nonready_lexical_ids = set()
             return
         matches = self.collection.get(
             where={"document_id": document_id}, include=["metadatas"]
@@ -258,6 +260,8 @@ class VectorStore:
                 "WHERE json_extract(metadata, '$.document_id') = ?",
                 (str(state).upper(), str(state).upper(), document_id),
             )
+        if str(state).upper() == "READY":
+            self._nonready_lexical_ids = set()
 
     def set_version_index_state(
         self, document_id: str, version_id: str, state: str
@@ -502,6 +506,7 @@ class VectorStore:
         if len(documents_list) != len(metadata_list) or len(documents_list) != len(ids_list):
             raise ValueError("documents, metadatas, and ids must have the same length")
         normalized = []
+        nonready_ids = set()
         for index, item in enumerate(documents_list):
             metadata = self._coerce_metadata(metadata_list[index])
             metadata.setdefault("document_id", "unknown")
@@ -509,8 +514,12 @@ class VectorStore:
             metadata.setdefault("index_state", "BUILDING")
             metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
             metadata.setdefault("page_numbers", [])
+            if str(metadata.get("index_state", "BUILDING")).upper() != "READY":
+                nonready_ids.add(str(ids_list[index]))
+                nonready_ids.add(str(metadata.get("chunk_id") or ids_list[index]))
             normalized.append(metadata)
         self._upsert_lexical_records(documents_list, normalized, ids_list)
+        self._nonready_lexical_ids = nonready_ids
 
     def compatibility_report(self, expected_identity: Any | None) -> Dict[str, Any]:
         stored = self._read_collection_identity()

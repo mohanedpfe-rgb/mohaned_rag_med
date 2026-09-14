@@ -55,7 +55,19 @@ def _chroma_scalarize(value: Any) -> Any:
 
 
 def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
-    base = self._original_coerce_metadata(metadata)
+    original = getattr(self, "_original_coerce_metadata", None)
+    if not callable(original):
+        raw = dict(metadata or {}) if isinstance(metadata, dict) else {}
+        base = dict(raw)
+        base.setdefault("index_state", "READY")
+        if "document_id" not in base and "doc_id" in base:
+            base["document_id"] = base["doc_id"]
+        if "chunk_id" not in base and "id" in base:
+            base["chunk_id"] = base["id"]
+        base.setdefault("page_numbers", [])
+        base.setdefault("version_id", base.get("document_id", "legacy"))
+    else:
+        base = original(metadata)
     return {str(key): _chroma_scalarize(value) for key, value in dict(base).items()}
 
 
@@ -112,7 +124,7 @@ def _lexical_fallback(self: Any, query: str, n_results: int = 5, where: dict[str
     rows.sort(key=lambda item: (-item[0], item[1]))
     selected = rows[: max(1, int(n_results))]
     return {
-        "ids": [[item[1] for item in selected]],
+        "ids": [[str(item[3].get("chunk_id") or item[1]) for item in selected]],
         "documents": [[item[2] for item in selected]],
         "metadatas": [[item[3] for item in selected]],
         "distances": [[1.0 / (1.0 + item[0]) for item in selected]],
@@ -147,6 +159,22 @@ def install() -> None:
             result = original_search_lexical(self, query, n_results=n_results, where=where)
             ids = _normalize_sequence(result.get("ids"))
             flat_ids = _normalize_sequence(ids[0]) if ids and isinstance(ids[0], (list, tuple)) else ids
+            blocked = set(getattr(self, "_nonready_lexical_ids", set()))
+            blocked.update(getattr(type(self), "_nonready_lexical_ids_by_db", {}).get(str(self.lexical_database), set()))
+            with sqlite3.connect(Path(self.lexical_database)) as connection:
+                blocked.update(
+                    str(row[0]) for row in connection.execute(
+                        "SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(index_state) <> 'READY'"
+                    ).fetchall() if row[0]
+                )
+            if blocked and flat_ids:
+                keep = [i for i, item_id in enumerate(flat_ids) if str(item_id) not in blocked]
+                for key in ("ids", "documents", "metadatas", "distances"):
+                    values = list((result.get(key) or [[]])[0] or [])
+                    result[key] = [[values[i] for i in keep]]
+                flat_ids = [flat_ids[i] for i in keep]
+                if not flat_ids:
+                    return result
             if flat_ids:
                 return result
             return _lexical_fallback(self, query, n_results=n_results, where=where)

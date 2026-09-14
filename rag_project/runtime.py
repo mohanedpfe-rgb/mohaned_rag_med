@@ -137,7 +137,68 @@ def install() -> None:
         _install_ingestion_compatibility()
         for installer in _load_installers():
             installer()
+        _install_ready_only_lexical_boundary()
         _INSTALLED = True
+
+
+def _install_ready_only_lexical_boundary() -> None:
+    """Apply the publication boundary after every runtime adapter is installed."""
+    import sqlite3
+    from rag_project.storage.vector_store import VectorStore
+    current = VectorStore.search_lexical
+    add_current = VectorStore.add_lexical_documents
+    if not getattr(add_current, "_final_ready_boundary_add", False):
+        def add_wrapped(self, documents, metadatas, ids):
+            blocked = {str(item_id) for item_id, meta in zip(ids, metadatas, strict=True) if str((meta or {}).get("index_state", "BUILDING")).upper() != "READY"}
+            blocked.update(str((meta or {}).get("chunk_id") or item_id) for item_id, meta in zip(ids, metadatas, strict=True) if str((meta or {}).get("index_state", "BUILDING")).upper() != "READY")
+            result = add_current(self, documents, metadatas, ids)
+            self._final_nonready_lexical_ids = blocked
+            return result
+        add_wrapped._final_ready_boundary_add = True
+        VectorStore.add_lexical_documents = add_wrapped
+    if getattr(current, "_final_ready_only_boundary", False):
+        return
+    def wrapped(self, query, n_results=5, where=None):
+        result = current(self, query, n_results=n_results, where=where)
+        ids = list((result.get("ids") or [[]])[0] or [])
+        if not ids:
+            return result
+        with sqlite3.connect(self.lexical_database) as db:
+            blocked = set(getattr(self, "_final_nonready_lexical_ids", set()))
+            blocked.update(str(row[0]) for row in db.execute("SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(index_state) <> 'READY'") if row[0])
+        keep = [i for i, value in enumerate(ids) if str(value) not in blocked]
+        for key in ("ids", "documents", "metadatas", "distances"):
+            values = list((result.get(key) or [[]])[0] or [])
+            result[key] = [[values[i] for i in keep]]
+        metas = list((result.get("metadatas") or [[]])[0] or [])
+        result["ids"] = [[str(meta.get("chunk_id") or value) if "-build-" in str(value) else str(value) for value, meta in zip((result.get("ids") or [[]])[0], metas, strict=False)]]
+        return result
+    wrapped._final_ready_only_boundary = True
+    VectorStore.search_lexical = wrapped
+    # Keep the publication boundary active even if a later compatibility
+    # installer replaces the class method.
+    original_getattribute = VectorStore.__getattribute__
+    if not getattr(VectorStore, "_final_dynamic_boundary", False):
+        def dynamic_getattribute(self, name):
+            value = original_getattribute(self, name)
+            if name != "search_lexical" or getattr(value, "_final_dynamic_wrapped", False):
+                return value
+            def dynamic_search(query, n_results=5, where=None):
+                result = value(query, n_results=n_results, where=where)
+                ids = list((result.get("ids") or [[]])[0] or [])
+                with sqlite3.connect(self.lexical_database) as db:
+                    blocked = {str(row[0]) for row in db.execute("SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(index_state) <> 'READY'") if row[0]}
+                keep = [i for i, item in enumerate(ids) if str(item) not in blocked]
+                for key in ("ids", "documents", "metadatas", "distances"):
+                    values = list((result.get(key) or [[]])[0] or [])
+                    result[key] = [[values[i] for i in keep]]
+                metas = list((result.get("metadatas") or [[]])[0] or [])
+                result["ids"] = [[str(meta.get("chunk_id") or value) if "-build-" in str(value) else str(value) for value, meta in zip((result.get("ids") or [[]])[0], metas, strict=False)]]
+                return result
+            dynamic_search._final_dynamic_wrapped = True
+            return dynamic_search
+        VectorStore.__getattribute__ = dynamic_getattribute
+        VectorStore._final_dynamic_boundary = True
 
 
 def install_application_contracts() -> dict[str, object]:

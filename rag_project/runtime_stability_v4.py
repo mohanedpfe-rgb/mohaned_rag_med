@@ -109,7 +109,9 @@ def install():
     with _LOCK:
         if _INSTALLED:
             return
-        from rag_project.app.production_rag import ProductionRAGSystem
+        ProductionRAGSystem = __import__(
+            "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+        ).ProductionRAGSystem
         from rag_project.ingestion.state_store import IngestionStateStore
         if not hasattr(IngestionStateStore, "_runtime_v4_original_claim"):
             IngestionStateStore._runtime_v4_original_claim = IngestionStateStore.claim_document

@@ -220,6 +220,14 @@ def _patch_lexical_ids() -> None:
         ids = list((result.get("ids") or [[]])[0] or [])
         docs = list((result.get("documents") or [[]])[0] or [])
         metas = list((result.get("metadatas") or [[]])[0] or [])
+        ready = [
+            (item_id, doc, meta)
+            for item_id, doc, meta in zip(ids, docs, metas, strict=False)
+            if str(meta.get("index_state", "READY")).upper() == "READY"
+        ]
+        if len(ready) != len(ids):
+            ids, docs, metas = ([item[0] for item in ready], [item[1] for item in ready], [item[2] for item in ready])
+            result["ids"], result["documents"], result["metadatas"] = [ids], [docs], [metas]
         if not ids:
             return result
         resolved: list[str] = []

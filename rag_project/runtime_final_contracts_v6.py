@@ -119,7 +119,7 @@ def _patch_ocr_contract() -> None:
                 if enabled and status == "skipped_disabled":
                     page.ocr_status = "failed"
                 elif not enabled and status == "failed":
-                    page.ocr_status = "skipped_disabled"
+                    page.ocr_status = "failed"
             yield page
     extract_iter._runtime_v6 = True
     PDFExtractor.extract_iter = extract_iter

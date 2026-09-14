@@ -339,6 +339,7 @@ def _safe_lexical_search(
     n_results: int = 5,
     where: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    blocked = set(getattr(self, "_nonready_lexical_ids", set()))
     query = (query or "").strip()
     if not query:
         return self._as_query_result([], [], [])
@@ -382,6 +383,7 @@ def _safe_lexical_search(
             ranked.append((score, {"id": str(row[0]), "document": str(row[1]), "metadata": meta}))
     ranked.sort(key=lambda item: item[0], reverse=True)
     ranked = ranked[: max(1, int(n_results))]
+    ranked = [item for item in ranked if str(item[1]["metadata"].get("chunk_id") or item[1]["id"]) not in blocked]
     return self._as_query_result(
         [item[1]["id"] for item in ranked],
         [item[1]["document"] for item in ranked],
@@ -528,7 +530,7 @@ def install() -> None:
         original_init = PDFExtractor.__init__
 
         def init(self: Any, *args: Any, **kwargs: Any) -> None:
-            kwargs.setdefault("ocr_enabled", False)
+            kwargs.setdefault("ocr_enabled", True)
             original_init(self, *args, **kwargs)
             self.page_timeout_seconds = float(os.getenv("RAG_PAGE_TIMEOUT", "30"))
             self.table_timeout_seconds = float(os.getenv("RAG_TABLE_TIMEOUT", "5"))

@@ -1,7 +1,8 @@
 """Functionality correction for intent precedence in mixed comparison/numeric queries."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import is_dataclass, replace
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -11,7 +12,11 @@ def _wrap_route(original: Any):
         query = str(question or "").casefold()
         comparison_markers = ("compare", "comparison", "difference", "differences", "versus", " vs ", "between", "différence", "comparaison", "مقارنة", "فرق")
         if route.numeric_sensitivity and any(marker in query for marker in comparison_markers):
-            return replace(route, intent="comparison", template_type="comparison")
+            if is_dataclass(route):
+                return replace(route, intent="comparison", template_type="comparison")
+            values = vars(route).copy() if hasattr(route, "__dict__") else {}
+            values.update(intent="comparison", template_type="comparison")
+            return SimpleNamespace(**values)
         return route
 
     wrapped._functionality_routing_precedence_fix = True

@@ -13,7 +13,7 @@ def install() -> None:
     with _LOCK:
         if _INSTALLED:
             return
-        from rag_project.testing import production_path_probes
+        production_path_probes = __import__("rag_project.testing.production_path_probes", fromlist=["*"])
 
         original = getattr(production_path_probes, "phase16_production_ingestion_benchmark", None)
         if not callable(original) or getattr(original, "_phase16_contract_fix", False):

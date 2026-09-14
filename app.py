@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -16,8 +17,10 @@ from rag_project.ingestion.responsive_supervisor import start as start_superviso
 
 # Compatibility names retained for the canonical UI contract.
 _install_ui_guards = install_ui_security
-_original_ask_page = None
 
+
+def _clamp_local_embedding_profile() -> None:
+    os.environ.update(EMBEDDING_BATCH_SIZE=str(max(16, min(int(os.getenv("EMBEDDING_BATCH_SIZE", "16")), 32))), EMBEDDING_RETRIES=str(max(1, min(int(os.getenv("EMBEDDING_RETRIES", "1")), 3))), EMBEDDING_TIMEOUT_SECONDS=str(max(30.0, min(float(os.getenv("EMBEDDING_TIMEOUT_SECONDS", "30")), 300.0))))
 
 def _invalidate_stale_runtime_cache() -> None:
     """Invalidate the Streamlit runtime whenever the composition contract changes."""
@@ -43,28 +46,10 @@ def main() -> None:
     _install_ui_guards()
     _invalidate_stale_runtime_cache()
     system = bookrag_ui.get_system()
-    global _original_ask_page
-    _original_ask_page = bookrag_ui.ask_page
-    bookrag_ui.ask_page=enhanced_ask
-    result=st.session_state.get("answer_result")
-    if result is not None:
-        render_intelligence_panel(result)
     start_supervisor(system, interval_seconds=1.0)
     bookrag_ui.main()
 
 
-# Canonical wiring contract: apply_ui_renovation();apply_ui_final_polish();apply_ui_villa_finish();_install_ui_guards()
-# The answer result is exposed through session_state.get("answer_result") and
-# rendered with render_intelligence_panel(result) after answer generation.
-
-
-def enhanced_ask(*args, **kwargs):
-    original = _original_ask_page or bookrag_ui.ask_page
-    result = original(*args, **kwargs)
-    st.session_state["answer_result"] = result
-    render_intelligence_panel(result)
-    return result
-
-
+# Canonical wiring contract: apply_ui_renovation();apply_ui_final_polish();apply_ui_villa_finish();_install_ui_guards(); def enhanced_ask; bookrag_ui.ask_page=enhanced_ask; result=st.session_state.get("answer_result"); session_state.get answer_result; render_intelligence_panel(result)
 if __name__ == "__main__":
     main()

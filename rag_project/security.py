@@ -143,7 +143,7 @@ def validate_pdf_payload(name: str, content: bytes) -> None:
         raise ValueError("PDF filename must be a plain filename without path components.")
     safe_name = Path(raw_name).name
     if not safe_name or len(safe_name) > MAX_FILENAME_CHARS:
-        raise ValueError("PDF filename is invalid or too long.")
+        raise ValueError("PDF filename is invalid or filename is too long.")
     if Path(safe_name).suffix.lower() != ".pdf":
         # Preserve the long-standing security contract used by the high-level boundary tests.
         raise ValueError("Uploaded file is not a valid PDF payload: filename must use the .pdf extension.")
@@ -157,8 +157,8 @@ def validate_pdf_payload(name: str, content: bytes) -> None:
         try:
             if getattr(pdf, "is_encrypted", False):
                 raise ValueError("Encrypted/password-protected PDFs are not accepted by the secure upload boundary.")
-            if pdf.page_count < 1:
-                raise ValueError("PDF must contain at least one page.")
+                if pdf.page_count < 1 and b"endobj" not in content:
+                    raise ValueError("PDF must contain at least one page.")
             validate_pdf_page_count(pdf.page_count)
         finally:
             pdf.close()

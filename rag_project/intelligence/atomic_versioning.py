@@ -33,6 +33,8 @@ def _stamp_metadata(metadata: dict[str, Any], physical_id: str, source_text: str
 
 
 def _safe_add(self: Any, documents: Sequence[str], metadatas: Sequence[dict[str, Any]], embeddings: Sequence[Sequence[float]], ids: Sequence[str]):
+    if metadatas and all(str((item or {}).get("index_state", "READY")).upper() == "READY" for item in metadatas):
+        return self._god_atomic_original_add_documents(documents, metadatas, embeddings, ids)
     build_id = uuid.uuid4().hex
     physical_ids: list[str] = []
     stamped: list[dict[str, Any]] = []
@@ -55,7 +57,24 @@ def _safe_add_lexical(self: Any, documents: Sequence[str], metadatas: Sequence[d
         meta = dict(metadatas[index] or {})
         meta["build_id"] = build_id
         stamped.append(_stamp_metadata(meta, physical, str(documents[index] or "")))
-    return self._god_atomic_original_add_lexical_documents(documents, stamped, physical_ids)
+    result = self._god_atomic_original_add_lexical_documents(documents, stamped, physical_ids)
+    import sqlite3
+    with sqlite3.connect(self.lexical_database) as connection:
+        for meta, logical_id in zip(metadatas, ids, strict=True):
+            if str((meta or {}).get("index_state", "BUILDING")).upper() != "READY":
+                chunk_id = str((meta or {}).get("chunk_id") or logical_id)
+                connection.execute("UPDATE lexical_documents SET index_state='BUILDING', metadata=json_set(metadata, '$.index_state', 'BUILDING') WHERE json_extract(metadata, '$.chunk_id') = ?", (chunk_id,))
+        connection.commit()
+    blocked = set(getattr(self, "_nonready_lexical_ids", set()))
+    for meta, logical_id in zip(metadatas, ids, strict=True):
+        if str((meta or {}).get("index_state", "BUILDING")).upper() != "READY":
+            blocked.add(str(logical_id))
+            blocked.add(str((meta or {}).get("chunk_id") or logical_id))
+    self._nonready_lexical_ids = blocked
+    registry = getattr(type(self), "_nonready_lexical_ids_by_db", {})
+    registry[str(self.lexical_database)] = blocked
+    type(self)._nonready_lexical_ids_by_db = registry
+    return result
 
 
 def _safe_set_version_state(self: Any, document_id: str, version_id: str, state: str) -> None:

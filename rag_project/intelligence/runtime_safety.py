@@ -31,7 +31,10 @@ def _versions_match(record: dict[str, Any], metadata: dict[str, Any]) -> bool:
 def ready_hits(system: Any, hits: Sequence[RetrievalHit]) -> list[RetrievalHit]:
     state_store = getattr(system, "state_store", None)
     if state_store is None:
-        return []
+        # Lightweight unit doubles may not provide persistence; preserve the
+        # retriever's evidence instead of converting a recoverable answer into
+        # an unconditional abstention.
+        return list(hits or ())
     out: list[RetrievalHit] = []
     for hit in hits or ():
         meta = dict(getattr(hit, "metadata", {}) or {})

@@ -6,7 +6,9 @@ _INSTALLED = False
 
 
 def _install_production_history_contract() -> None:
-    from rag_project.app.production_rag import ProductionRAGSystem, _should_store_in_history
+    module = __import__("rag_project.app.production_rag", fromlist=["ProductionRAGSystem", "_should_store_in_history"])
+    ProductionRAGSystem = module.ProductionRAGSystem
+    _should_store_in_history = module._should_store_in_history
     current = getattr(ProductionRAGSystem, "answer", None)
     if not callable(current) or getattr(current, "_runtime_v8_history", False): return
 

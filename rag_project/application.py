@@ -8,7 +8,7 @@ from rag_project.application_answer_service import answer as _med_evidence_answe
 from rag_project.application_answer_service import install_runtime_adapters
 from rag_project.application_legacy_adapter import LegacyProductionRAGAdapter
 from rag_project.configuration.settings import Settings
-from rag_project.canonical_runtime import ANSWER_AUTHORITY
+from rag_project.canonical_runtime import ANSWER_AUTHORITY, CANONICAL_SERVICE
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
 from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
@@ -131,11 +131,11 @@ def create_default_rag_system():
 def runtime_contract() -> dict[str, Any]:
     return {
         "composition_root": "rag_project.application.create_rag_system",
-        "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
-        "service": "MedEvidenceProductionRAGSystem",
+        "canonical_service": CANONICAL_SERVICE,
+        "service": "ProductionRAGSystem",
         "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
         "legacy_adapter": "rag_project.application_legacy_adapter.LegacyProductionRAGAdapter",
-        "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
+        "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
         "base_ingestion_engine": "rag_project.ingestion.robust_ingestor.robust_ingest_file",
         "versioned_ingestion_publication": True,
         "last_known_good_preservation": True,

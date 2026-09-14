@@ -330,6 +330,26 @@ def _wrap_safety_check(original):
             from rag_project.intelligence.med_evidence_pro import SafetyDecision
             return SafetyDecision("BLOCK", "harmful_or_illicit_request", .95)
         decision = original(self, query, context)
+        emergency_terms = ("chest pain", "cannot breathe", "difficulty breathing", "shortness of breath")
+        clauses = re.split(r"\bbut\b|[.;!?]", value)
+        positive_emergency = any(
+            any(term in clause and not re.search(r"\b(?:no|not|do not|does not|without|denies)\b", clause) for term in emergency_terms)
+            for clause in clauses
+        )
+        if positive_emergency:
+            try:
+                decision.emergency = True
+            except Exception:
+                from rag_project.intelligence.med_evidence_pro import SafetyDecision
+                decision = SafetyDecision(
+                    getattr(decision, "action", "PROCEED"),
+                    getattr(decision, "reason", "emergency_signal"),
+                    getattr(decision, "confidence_threshold", .75),
+                    True,
+                    getattr(decision, "real_patient", False),
+                    getattr(decision, "high_rigor", False),
+                    getattr(decision, "scope_confidence", 1.0),
+                )
         if str(getattr(decision, "action", "")).upper() == "ABSTAIN" and any(term in value for term in _MULTILINGUAL_MEDICAL_TERMS):
             from rag_project.intelligence.med_evidence_pro import SafetyDecision
             return SafetyDecision(

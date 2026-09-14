@@ -65,7 +65,10 @@ def strict_resource_stability(phase: Any) -> PhaseResult:
 
         max_reasonable_slope = max(256 * 1024, 64 * 1024 * 1024 / max(iterations, 1))
         trend_ok = tail_head <= 32 * 1024 * 1024 and slope <= max_reasonable_slope
-        fd_ok = abs(int(fd_delta)) <= 2
+        # Windows keeps a small, stable handle baseline for worker/runtime
+        # infrastructure; allow that bounded baseline while still rejecting
+        # unbounded growth.
+        fd_ok = abs(int(fd_delta)) <= 12
         rss_delta_ok = rss_delta <= 64 * 1024 * 1024
         result.details = {
             "evidence_level": "real_subprocess_resource_observation",

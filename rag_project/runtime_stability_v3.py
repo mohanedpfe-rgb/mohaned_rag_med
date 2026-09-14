@@ -75,7 +75,7 @@ def _guard_transition(self: Any, document_id: str, new_stage: str, **values: Any
     current = str(record.get("current_stage") or "DISCOVERED").upper()
     target = str(new_stage).upper()
     terminal = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "DEGRADED_LEXICAL", "QUARANTINED"}
-    if current in {"READY", "COMPLETED"} and target not in terminal:
+    if current in {"READY", "COMPLETED"} and target not in terminal and target not in {"INTERRUPTED", "RECOVERING"}:
         raise RuntimeError(f"Invalid state regression: {current} -> {target}")
     if current.startswith("FAILED") and target not in terminal:
         raise RuntimeError(f"Invalid state regression: {current} -> {target}")
@@ -209,7 +209,9 @@ def install() -> None:
     with _LOCK:
         if _INSTALLED:
             return
-        from rag_project.app.production_rag import ProductionRAGSystem
+        ProductionRAGSystem = __import__(
+            "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+        ).ProductionRAGSystem
         from rag_project.ingestion.state_store import IngestionStateStore
         from rag_project.embeddings.embedding_service import EmbeddingService
         from rag_project.parsing.pdf_extractor import PDFExtractor

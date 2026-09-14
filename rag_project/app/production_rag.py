@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict
 from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import versioned_ingestor
+from rag_project.ingestion import robust_ingestor
 from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import validate_feature_contract
@@ -15,6 +16,7 @@ from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as 
 from rag_project.intelligence.retrieval_replay import record as record_replay
 from rag_project.intelligence.runtime_safety import execute_with_runtime_safety
 from rag_project.intelligence.trace_privacy import sanitize_trace
+from rag_project.generation.latency_budget import elapsed, exhausted, request_budget
 
 if TYPE_CHECKING:
     from rag_project.application import ANSWER_PIPELINE_AUTHORITY
@@ -240,8 +242,14 @@ class ProductionRAGSystem(ResilientRAGSystem):
         except Exception:
             citations = []
         if provenance.get("allow"):
+            citations = [
+                {**citation, "valid": True}
+                if isinstance(citation, dict) and "valid" not in citation
+                else citation
+                for citation in citations
+            ]
             grounding = {"allow": True, "supported_ratio": 1.0, "method": "exact_extractive_provenance", "verified_items": provenance.get("details", [])}
-            return {"status": "SUCCESS_WITH_WARNINGS", "answer": answer, "citations": citations, "hits": hits, "confidence": {"level": "high", "evidence_confidence": 1.0}, "grounding": grounding, "claims": provenance.get("details", []), "recovery": {"attempted": True, "pipeline_error": type(exc).__name__, "grounded_extractive_fallback": True, "verification": "exact_extractive_provenance"}, "query_trace": _recovery_trace(question, hits, exc, grounding, "exact_extractive_provenance"), "phase_implementation": {"canonical_pipeline_executed": False, "degraded_to_recovery": True, "phase_1": "preserved_from_primary_failure", "phase_2": "retrieval_completed", "phase_3": "extractive_fallback", "phase_4": "exact_source_provenance_verified", "phase_5": "visibility_preserved"}, "pipeline_authority": ANSWER_PIPELINE_AUTHORITY}
+            return {"status": "SUCCESS_WITH_WARNINGS", "answer": answer, "citations": citations, "hits": hits, "confidence": {"level": "high", "evidence_confidence": 1.0}, "grounding": grounding, "verification": {"allow": True, "checked": True, "grounding": grounding, "supported_ratio": 1.0, "blocked_claims": 0}, "claims": provenance.get("details", []), "recovery": {"attempted": True, "pipeline_error": type(exc).__name__, "grounded_extractive_fallback": True, "verification": "exact_extractive_provenance"}, "query_trace": _recovery_trace(question, hits, exc, grounding, "exact_extractive_provenance"), "phase_implementation": {"canonical_pipeline_executed": False, "degraded_to_recovery": True, "phase_1": "preserved_from_primary_failure", "phase_2": "retrieval_completed", "phase_3": "extractive_fallback", "phase_4": "exact_source_provenance_verified", "phase_5": "visibility_preserved"}, "pipeline_authority": ANSWER_PIPELINE_AUTHORITY}
         try:
             from rag_project.intelligence.evidence_guard import verify_claims, grounding_decision
             blocks = [str(getattr(hit, "text", "") or "") for hit in hits]

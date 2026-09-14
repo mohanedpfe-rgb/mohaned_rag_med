@@ -286,7 +286,9 @@ def _finish_job(system: Any, path: Path, result: dict[str, Any] | None = None, e
             _STATE["last_action"] = f"error on {path.name}"
             _schedule_retry(key)
         _STATE["last_action_at"] = _now()
-    _persist(system)
+    # Persisting JSON state is housekeeping and must not delay dispatch of a
+    # newly discovered document.
+    threading.Thread(target=_persist, args=(system,), daemon=True, name="supervisor-state-persist").start()
 
 
 def _run_ingestion(system: Any, path: Path) -> None:
@@ -310,7 +312,6 @@ def _dispatch(system: Any, path: Path) -> None:
         _STATE["last_action_at"] = _now()
         _STATE["auto_started"] += 1
         _STATE["last_error"] = None
-    _persist(system)
     thread = threading.Thread(target=_run_ingestion, args=(system, path), name=f"bookrag-ingest-{uuid.uuid4().hex[:8]}", daemon=True)
     thread.start()
 
@@ -322,14 +323,17 @@ def _scan_once(system: Any) -> None:
         _STATE["last_scan_at"] = _now()
         _STATE["scans"] += 1
 
-    try:
-        recovered = int(system.state_store.recover_stale_documents() or 0)
-    except Exception:
-        recovered = 0
-    try:
-        orphaned = recover_orphaned_documents(system, set(_WORKING), stale_seconds=90.0)
-    except Exception:
-        orphaned = 0
+    if _WORKING:
+        try:
+            recovered = int(system.state_store.recover_stale_documents() or 0)
+        except Exception:
+            recovered = 0
+        try:
+            orphaned = recover_orphaned_documents(system, set(_WORKING), stale_seconds=90.0)
+        except Exception:
+            orphaned = 0
+    else:
+        recovered = orphaned = 0
     total_recovered = recovered + orphaned
     if total_recovered:
         with _LOCK:
@@ -346,12 +350,15 @@ def _scan_once(system: Any) -> None:
 
     with _LOCK:
         has_worker = bool(_WORKING)
+    dispatched = False
     if candidates and not has_worker:
         for path in candidates:
             if _candidate(system, path):
                 _dispatch(system, path)
+                dispatched = True
                 break
-    _persist(system)
+    if not dispatched:
+        threading.Thread(target=_persist, args=(system,), daemon=True, name="supervisor-state-persist").start()
 
 
 class _PDFEventHandler(FileSystemEventHandler):

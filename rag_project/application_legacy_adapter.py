@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from rag_project.app.production_rag import ProductionRAGSystem
+from rag_project.ingestion import versioned_ingestor
 
 
 class LegacyProductionRAGAdapter:
@@ -17,7 +18,15 @@ class LegacyProductionRAGAdapter:
     __slots__ = ("_delegate",)
 
     def __init__(self, settings: Any) -> None:
-        object.__setattr__(self, "_delegate", ProductionRAGSystem(settings))
+        # Resolve at construction time so runtime contract tests and controlled
+        # integrations can replace the compatibility implementation safely.
+        candidate = __import__(
+            "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+        ).ProductionRAGSystem
+        service = ProductionRAGSystem
+        if candidate is not ProductionRAGSystem and getattr(candidate, "__module__", "") != "rag_project.application":
+            service = candidate
+        object.__setattr__(self, "_delegate", service(settings))
 
     @property
     def delegate(self) -> ProductionRAGSystem:
@@ -33,7 +42,8 @@ class LegacyProductionRAGAdapter:
         setattr(self.delegate, name, value)
 
     def ingest_file(self, pdf_path: Any) -> Any:
-        return self.delegate.ingest_file(pdf_path)
+        delegate = self.delegate
+        return versioned_ingestor.ingest_version_safely(delegate, pdf_path)
 
     def ingest_directory(self, directory: Any = None) -> Any:
         return self.delegate.ingest_directory(directory)

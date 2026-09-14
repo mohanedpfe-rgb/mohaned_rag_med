@@ -422,7 +422,7 @@ def _patch_ocr_metadata() -> None:
                 settings = getattr(self, "settings", None)
                 explicit_disabled = settings is not None and getattr(settings, "ocr_enabled", None) is False
                 if explicit_disabled or not str(getattr(page, "ocr_status", "") or "").strip():
-                    page.ocr_status = "skipped_disabled"
+                    page.ocr_status = "failed"
             yield page
 
     extract_iter._runtime_contract_compat = True

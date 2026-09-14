@@ -29,6 +29,7 @@ class PDFExtractor:
 
     def __init__(self, state_store: IngestionStateStore | None = None, *, ocr_enabled: bool = True, ocr_confidence_threshold: float = 0.55, ocr_min_char_density: float = 0.001, ocr_image_coverage_threshold: float = 0.55, ocr_service: OCRService | None = None):
         self.ocr_enabled = bool(ocr_enabled)
+        self._runtime_requested_ocr_enabled = bool(ocr_enabled)
         self.ocr_confidence_threshold = max(0.0, float(ocr_confidence_threshold))
         self.ocr_min_char_density = max(0.0, float(ocr_min_char_density))
         self.ocr_image_coverage_threshold = max(0.0, float(ocr_image_coverage_threshold))

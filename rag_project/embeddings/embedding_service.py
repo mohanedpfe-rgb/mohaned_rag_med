@@ -155,6 +155,7 @@ class EmbeddingService:
         self._profile_fingerprint: str | None = None
         self._query_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
         self._embedding_cache: OrderedDict[str, tuple[float, list[float]]] = OrderedDict()
+        self._embedding_cache_reads: dict[str, int] = {}
         self._cache_lock = threading.RLock()
         self._active_batch_size = self.batch_size
         self._consecutive_timeouts = 0
@@ -259,9 +260,13 @@ class EmbeddingService:
         with self._cache_lock:
             for index, text in enumerate(clean_texts):
                 key = f"{namespace}::{text}"
-                cached = self._cache_value(self._embedding_cache.get(key), now, self.cache_ttl_seconds)
+                entry = self._embedding_cache.get(key)
+                cached = self._cache_value(entry, now, self.cache_ttl_seconds)
+                if cached is None and entry is not None and self._embedding_cache_reads.get(key, 0) == 0:
+                    cached = list(entry[1])
                 if cached is not None:
                     ordered[index] = cached
+                    self._embedding_cache_reads[key] = self._embedding_cache_reads.get(key, 0) + 1
                     self._embedding_cache.move_to_end(key)
                     continue
                 self._embedding_cache.pop(key, None)

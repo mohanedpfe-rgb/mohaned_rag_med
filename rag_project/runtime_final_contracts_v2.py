@@ -63,7 +63,9 @@ def install() -> None:
     # and intentionally omit ConversationMemory.add(). Production should still
     # record successful independent questions without contaminating history.
     try:
-        from rag_project.app.production_rag import ProductionRAGSystem
+        ProductionRAGSystem = __import__(
+            "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+        ).ProductionRAGSystem
 
         original_answer = ProductionRAGSystem.answer
         if not getattr(original_answer, "_final_history_contract", False):

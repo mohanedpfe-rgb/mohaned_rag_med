@@ -15,14 +15,16 @@ def _emergency_term_is_negated(query: str, term: str) -> bool:
         if index < 0:
             return False
         prefix = text[max(0, index - 48):index]
+        prefix = re.split(r"\b(?:but|however)\b|[.;!?]", prefix)[-1]
+        if re.search(r"\b(?:no|not|do not|does not|without|denies|denied)\b", prefix, flags=re.I):
+            return True
         if re.search(
             r"(?:\b(?:no|not|without|denies|denied|negative for|free of)\b|\b(?:لا|لم|ليس|ليست|بدون|دون)\b)"
             r"(?:[\s,:;()/-]+\w+){0,4}[\s,:;()/-]*$",
             prefix,
             flags=re.I | re.UNICODE,
         ):
-            start = index + len(needle)
-            continue
+            return True
         return False
 
 

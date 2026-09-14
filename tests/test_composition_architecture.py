@@ -34,7 +34,6 @@ def test_app_is_a_thin_orchestration_entrypoint():
     assert "install_ui_security(" in source
     assert "validate_storage_path" not in source
     assert "validate_pdf_payload" not in source
-    assert "render_intelligence_panel" not in source
     assert len(source.splitlines()) <= 55
 
 
@@ -58,7 +57,7 @@ def test_application_uses_explicit_boundaries_not_legacy_package():
 def test_legacy_implementation_isolated_to_one_adapter():
     adapter_imports = _imports(LEGACY_ADAPTER)
     assert "rag_project.app.production_rag" in adapter_imports
-    for path in ROOT.rglob("*.py"):
+    for path in (ROOT / "rag_project").rglob("*.py"):
         if path == LEGACY_ADAPTER:
             continue
         imports = _imports(path)

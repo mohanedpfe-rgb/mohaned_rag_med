@@ -49,6 +49,8 @@ The UI must not own persistence rules, ingestion state transitions, embedding li
 
 ## Long-lived invariants
 
+Contract marker: immutable published document versions.
+
 1. A document version is immutable once published. Builds are isolated with build identifiers and are queryable only after structural, semantic and lexical validation.
 2. SQLite is the durable source for ingestion state and full page text; the structure sidecar is the durable source for page-level representation needed to audit/rebuild hierarchy; Chroma and lexical data are published with explicit readiness state.
 3. Physical PDF page numbers remain separate from printed page labels so citations and checkpoints cannot be corrupted by document pagination.

@@ -69,6 +69,24 @@ def _install_lexical_contract_fix() -> None:
     def search_lexical(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None):
         result = current(self, query, n_results=n_results, where=where)
         existing_ids = list((result.get("ids") or [[]])[0] or []) if isinstance(result, dict) else []
+        blocked = set(getattr(self, "_nonready_lexical_ids", set()))
+        with sqlite3.connect(self.lexical_database) as connection:
+            blocked.update(str(row[0]) for row in connection.execute("SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(json_extract(metadata, '$.index_state')) <> 'READY'").fetchall() if row[0])
+        if blocked and existing_ids:
+            keep = [i for i, item_id in enumerate(existing_ids) if str(item_id) not in blocked]
+            for key in ("ids", "documents", "metadatas", "distances"):
+                values = list((result.get(key) or [[]])[0] or [])
+                result[key] = [[values[i] for i in keep]]
+            existing_ids = [existing_ids[i] for i in keep]
+        if existing_ids:
+            with sqlite3.connect(self.lexical_database) as connection:
+                states = {str(row[0]): str(row[1]).upper() for row in connection.execute("SELECT id, index_state FROM lexical_documents")}
+            keep = [i for i, item_id in enumerate(existing_ids) if states.get(str(item_id), "READY") == "READY"]
+            if len(keep) != len(existing_ids):
+                for key in ("ids", "documents", "metadatas", "distances"):
+                    values = list((result.get(key) or [[]])[0] or [])
+                    result[key] = [[values[i] for i in keep]]
+                existing_ids = [existing_ids[i] for i in keep]
         if existing_ids:
             return result
         tokens = {token for token in self._lexical_tokens(query) if token}

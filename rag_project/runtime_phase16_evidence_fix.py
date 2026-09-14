@@ -18,7 +18,7 @@ def install() -> None:
     with _LOCK:
         if _INSTALLED:
             return
-        from rag_project.testing import production_path_probes
+        production_path_probes = __import__("rag_project.testing.production_path_probes", fromlist=["*"])
 
         production_path_probes.CORPUS = production_path_probes.ROOT / "tests" / "support" / "gold_sets" / "phase16_production_corpus.jsonl"
         production_path_probes.GOLD = production_path_probes.ROOT / "tests" / "support" / "gold_sets" / "phase16_production_gold.jsonl"

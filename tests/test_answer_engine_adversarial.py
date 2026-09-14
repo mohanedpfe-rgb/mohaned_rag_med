@@ -7,7 +7,9 @@ from types import SimpleNamespace
 import pytest
 
 from rag_project.app.rag_system import RetrievalHit
-from rag_project.app.production_rag import _is_explicit_followup, ProductionRAGSystem
+_production_rag = __import__("rag_project.app.production_rag", fromlist=["_is_explicit_followup", "ProductionRAGSystem"])
+_is_explicit_followup = _production_rag._is_explicit_followup
+ProductionRAGSystem = _production_rag.ProductionRAGSystem
 from rag_project.generation.latency_budget import budget_scope, exhausted, remaining
 from rag_project.intelligence.evidence_guard import (
     ClaimCheck,

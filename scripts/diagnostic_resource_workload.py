@@ -168,8 +168,16 @@ def main() -> int:
             current_fd = fd_count(os.getpid())
             if current_rss is not None:
                 samples.append(current_rss)
+            elif not samples:
+                samples.append(0)
+            else:
+                samples.append(samples[-1])
             if current_fd is not None:
                 fds.append(current_fd)
+            elif not fds:
+                fds.append(0)
+            else:
+                fds.append(fds[-1])
             iterations += 1
             gc.collect()
             if successes >= minimum_iterations and iterations >= minimum_iterations and time.monotonic() >= started + duration:

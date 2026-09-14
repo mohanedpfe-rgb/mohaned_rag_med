@@ -416,7 +416,7 @@ class IngestionStateStore:
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
         terminal_states = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL"}
-        if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states:
+        if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states and new_stage_value not in {"INTERRUPTED", "RECOVERING"}:
             raise RuntimeError(f"Invalid terminal state regression: {current_stage} -> {new_stage_value}.")
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:

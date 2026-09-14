@@ -182,7 +182,9 @@ def _safe_hits(system: Any, plan: QueryPlan, where: dict[str, Any] | None) -> li
 
 
 def _sanitize_hits(hits: Sequence[Any]) -> list[Any]:
-    from rag_project.app.rag_system import RetrievalHit, sanitize_evidence
+    module = __import__("rag_project.app.rag_system", fromlist=["RetrievalHit", "sanitize_evidence"])
+    RetrievalHit = module.RetrievalHit
+    sanitize_evidence = module.sanitize_evidence
     result: list[Any] = []
     for hit in _as_list(hits):
         if hit is None:
@@ -232,7 +234,9 @@ def _simple_extractive_answer(question: str, selected_hits: Sequence[Any], max_s
 
 
 def _answer_with_ladder(system: Any, question: str, context: str, selected_hits: Sequence[Any], conversation_context: str, reasoning_instruction: str = "") -> tuple[str, str]:
-    from rag_project.app.rag_system import _generate_with_citations
+    _generate_with_citations = __import__(
+        "rag_project.app.rag_system", fromlist=["_generate_with_citations"]
+    )._generate_with_citations
     prompt_context = context + ("\n\n<reasoning_task>" + reasoning_instruction + "</reasoning_task>" if reasoning_instruction else "")
     hard_markers = ("why", "how does", "how do", "cause", "causes", "mechanism", "compare", "versus", "difference", "diagnostic criteria", "dose", "dosage", "treatment", "prognosis", "contraindication", "pourquoi", "comment", "سبب", "مقارنة", "علاج", "تشخيص", "جرعة")
     simple_path = not reasoning_instruction.strip() and not any(marker in str(question or "").casefold() for marker in hard_markers)

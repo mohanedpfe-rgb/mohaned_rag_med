@@ -5,7 +5,9 @@ from __future__ import annotations
 
 def _patch_production_history() -> None:
     """Persist successful answers when a lightweight memory double lacks add()."""
-    from rag_project.app.production_rag import ProductionRAGSystem
+    ProductionRAGSystem = __import__(
+        "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+    ).ProductionRAGSystem
 
     current = ProductionRAGSystem.answer
     if getattr(current, "_runtime_v4", False):

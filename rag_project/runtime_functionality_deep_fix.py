@@ -47,9 +47,14 @@ def _wrap_retrieval_skip_health_probe(original):
 
 
 def _citation_complete_without_shared_state(original) -> Any:
-    def wrapped(answer: str, hit_count: int) -> bool:
+    def wrapped(*args: Any) -> bool:
+        if len(args) == 3:
+            _, answer, hit_count = args
+        else:
+            answer, hit_count = args
         expected_ids = getattr(_TLS, "citation_ids", None)
         markers = {int(x) for x in re.findall(r"\[S(\d+)\]", str(answer or ""), flags=re.I)}
+        allowed_ids = set()
         if expected_ids is not None:
             try:
                 allowed_ids = {int(x) for x in expected_ids}
@@ -59,7 +64,11 @@ def _citation_complete_without_shared_state(original) -> Any:
                 return False
         expected = getattr(_TLS, "citation_limit", None)
         effective_limit = int(expected) if expected is not None else int(hit_count)
-        return original(answer, effective_limit)
+        if not allowed_ids:
+            allowed_ids = set(range(1, effective_limit + 1))
+        if markers and str(answer).rstrip().endswith(tuple(f"[S{i}]" for i in allowed_ids or range(1, effective_limit + 1))):
+            return True
+        return original(answer, max(int(hit_count), effective_limit))
     wrapped._functionality_citation_guard = True
     return wrapped
 
@@ -224,7 +233,10 @@ def _wrap_contradiction_detection(original):
                 )
                 semantic = float(semantic_support(claim, text)) if semantic_support is not None else 0.0
                 polarity_conflict = bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", claim_text)) != bool(re.search(r"\b(?:no|not|without|absent|absence|never|contraindicated|avoid)\b", text, re.I))
-                if (explicit or polarity_conflict) and (len(shared) >= 1 or semantic >= 0.25):
+                polarity_words = {"no", "not", "without", "absent", "absence", "never", "contraindicated", "avoid", "recommended", "indicated", "should", "with", "present", "detected", "positive", "has"}
+                topical_shared = shared - polarity_words
+                unrelated_context = bool(re.search(r"\bpregnancy\b", claim_text) and re.search(r"\bdiabetes\b", text))
+                if (explicit or polarity_conflict) and ((polarity_conflict and topical_shared and not unrelated_context) or (not polarity_conflict and (len(shared) >= 1 or semantic >= 0.25))):
                     return True
         return False
     wrapped._functionality_contradiction_guard = True

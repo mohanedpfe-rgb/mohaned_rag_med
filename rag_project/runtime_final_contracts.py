@@ -309,7 +309,9 @@ def _patch_pdf_ocr_status() -> None:
 
 
 def _patch_duplicate_archival() -> None:
-    from rag_project.app.production_rag import ProductionRAGSystem
+    ProductionRAGSystem = __import__(
+        "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
+    ).ProductionRAGSystem
     original = getattr(ProductionRAGSystem, "ingest_file", None)
     if not callable(original) or getattr(original, "_final_duplicate_wrapper", False):
         return
