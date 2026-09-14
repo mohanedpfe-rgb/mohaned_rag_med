@@ -32,35 +32,59 @@ def _is_success(result: dict[str, Any]) -> bool:
     return str(result.get("status") or "").upper() in {"SUCCESS", "READY", "COMPLETED"}
 
 
-def _retire_previous_version(system: Any, previous: dict[str, Any], new_document_id: str) -> None:
+def _retire_previous_version(system: Any, previous: dict[str, Any], new_document_id: str) -> list[str]:
+    """Retire an old version without ever invalidating a newly published READY version."""
     previous_document_id = str(previous.get("document_id") or "")
     previous_version = str(previous.get("content_hash") or "")
     if not previous_document_id or not previous_version:
-        return
+        return []
 
-    system.vector_store.set_version_index_state(previous_document_id, previous_version, "FAILED")
-    system.vector_store.delete_version(previous_document_id, previous_version)
-    system.state_store.delete_pages(previous_document_id)
+    errors: list[str] = []
+
+    try:
+        system.vector_store.set_version_index_state(previous_document_id, previous_version, "FAILED")
+    except Exception as exc:
+        errors.append(f"set_old_version_failed:{type(exc).__name__}")
+    try:
+        system.vector_store.delete_version(previous_document_id, previous_version)
+    except Exception as exc:
+        errors.append(f"delete_old_version:{type(exc).__name__}")
+    try:
+        system.state_store.delete_pages(previous_document_id)
+    except Exception as exc:
+        errors.append(f"delete_old_pages:{type(exc).__name__}")
+
     try:
         system.state_store.update_document(
             previous_document_id,
             status="SUPERSEDED",
             current_stage="SUPERSEDED",
             index_state="FAILED",
-            error=f"Superseded by document version {new_document_id}.",
+            error=f"Superseded by document version {new_document_id}." if not errors else (
+                f"Superseded by document version {new_document_id}; retirement had recoverable errors: "
+                + ", ".join(errors)
+            ),
         )
-    finally:
-        try:
-            system.state_store.record_event(
-                previous_document_id,
-                stage="SUPERSEDED",
-                status="SUPERSEDED",
-                event_type="version_retired",
-                message=f"Previous document version retired in favor of {new_document_id}.",
-                details={"superseded_by": new_document_id, "previous_version": previous_version},
-            )
-        except Exception:
-            pass
+    except Exception as exc:
+        errors.append(f"mark_old_superseded:{type(exc).__name__}")
+
+    try:
+        system.state_store.record_event(
+            previous_document_id,
+            stage="SUPERSEDED",
+            status="SUPERSEDED",
+            event_type="version_retired",
+            message=f"Previous document version retired in favor of {new_document_id}.",
+            details={
+                "superseded_by": new_document_id,
+                "previous_version": previous_version,
+                "retirement_warnings": errors,
+            },
+        )
+    except Exception as exc:
+        errors.append(f"record_retirement_event:{type(exc).__name__}")
+
+    return errors
 
 
 def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
@@ -99,7 +123,6 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     desired_path = Path(system.settings.processed_dir) / source.name
     archived_old_path: Path | None = None
     new_published_path = False
-    old_retirement_started = False
     try:
         if generated_path.resolve() != desired_path.resolve():
             if desired_path.exists():
@@ -113,8 +136,8 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             file_path=str(desired_path.resolve()),
             file_name=source.name,
         )
-        old_retirement_started = True
-        _retire_previous_version(system, previous, new_document_id)
+
+        retirement_warnings = _retire_previous_version(system, previous, new_document_id)
     except Exception as exc:
         try:
             system.vector_store.set_version_index_state(
@@ -132,7 +155,7 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 status="FAILED_INDEXING",
                 current_stage="FAILED_INDEXING",
                 index_state="FAILED",
-                error=f"Version retirement failed: {type(exc).__name__}",
+                error=f"Versioned publication failed: {type(exc).__name__}: {exc}",
             )
         except Exception:
             pass
@@ -156,8 +179,8 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             "document_id": new_document_id,
             "previous_document_id": previous.get("document_id"),
             "versioned_replacement": True,
-            "previous_version_preserved": not old_retirement_started or str((system.state_store.get_document(str(previous.get("document_id") or "")) or {}).get("status") or "").upper() == "READY",
-            "error": f"Versioned replacement could not be published safely: {type(exc).__name__}",
+            "previous_version_preserved": str((system.state_store.get_document(str(previous.get("document_id") or "")) or {}).get("status") or "").upper() == "READY",
+            "error": f"Versioned replacement could not be published safely: {type(exc).__name__}: {exc}",
         }
 
     out = dict(result)
@@ -166,9 +189,12 @@ def ingest_version_safely(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             "status": "READY",
             "versioned_replacement": True,
             "previous_document_id": previous.get("document_id"),
-            "previous_version_retired": True,
+            "previous_version_retired": not retirement_warnings,
+            "previous_version_retirement_warnings": retirement_warnings,
             "document_id": new_document_id,
             "file_name": source.name,
         }
     )
+    if retirement_warnings:
+        out["warning"] = "New version is READY; previous-version retirement completed with recoverable warnings."
     return out
