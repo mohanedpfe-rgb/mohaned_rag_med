@@ -3,9 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from collections.abc import Callable
 from typing import Any
-
 
 _INSTALL_LOCK = threading.RLock()
 _INSTALL_APPLICATION_CONTRACT_LOCK = threading.RLock()
@@ -13,142 +11,23 @@ _INSTALLED = False
 _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
-def _install_ingestion_compatibility() -> None:
-    """Deprecated compatibility hook; ingestion helpers belong to state_store."""
-    return None
+def _load_installers():
+    """Return only the isolated storage compatibility boundary.
 
-
-def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return only the remaining infrastructure policies in deterministic order.
-
-    Application behavior, legacy compatibility, and answer contracts are owned
-    by their services/modules and are never installed through runtime wrappers.
+    Application/UI/answer/legacy behavior is never monkey-patched from the
+    runtime composition root. Owner modules are responsible for their behavior.
     """
-    from rag_project.runtime_hardening import install as hardening
-    from rag_project.runtime_hardening_extra import install as hardening_extra
-    from rag_project.runtime_recovery import install as recovery
-    from rag_project.runtime_final_gate import install as final_gate
-    from rag_project.runtime_stability import install as stability
-    from rag_project.runtime_stability_v2 import install as stability_v2
-    from rag_project.runtime_stability_v3 import install as stability_v3
-    from rag_project.runtime_stability_v4 import install as stability_v4
-    from rag_project.runtime_stability_v5 import install as stability_v5
-    from rag_project.runtime_stability_v6 import install as stability_v6
-    from rag_project.runtime_stability_v7 import install as stability_v7
-    from rag_project.runtime_stability_v8 import install as stability_v8
     from rag_project.storage.vector_store_runtime import install as vector_store
-    from rag_project.runtime_chroma_distance_fix import install as chroma_distance_fix
-    from rag_project.intelligence.deep_pdf_contract import install as deep_pdf_contract
-    from rag_project.intelligence.structure_cleanup_contract import install as structure_cleanup
-    from rag_project.intelligence.deep_pdf_finalizer import install as deep_pdf_finalizer
-    from rag_project.intelligence.structure_anchor_runtime import install as structure_anchor_runtime
-    from rag_project.intelligence.deep_pdf_finalizer_v2 import install as deep_pdf_finalizer_v2
-    from rag_project.intelligence.deep_pdf_finalizer_v3 import install as deep_pdf_finalizer_v3
-    from rag_project.intelligence.deep_pdf_finalizer_v4 import install as deep_pdf_finalizer_v4
-    from rag_project.runtime_contract_compat import install as runtime_contract_compat
-    from rag_project.runtime_final_contracts import install as runtime_final_contracts
-    from rag_project.runtime_final_contracts_v2 import install as runtime_final_contracts_v2
-    from rag_project.runtime_final_contracts_v3 import install as runtime_final_contracts_v3
-    from rag_project.runtime_final_contracts_v4 import install as runtime_final_contracts_v4
-    from rag_project.runtime_final_contracts_v5 import install as runtime_final_contracts_v5
-    from rag_project.runtime_final_contracts_v7 import install as runtime_final_contracts_v7
-    from rag_project.runtime_final_contracts_v8 import install as runtime_final_contracts_v8
-    from rag_project.runtime_chroma_metadata_fix import install as chroma_metadata_fix
-    from rag_project.runtime_hierarchy_path_fix import install as hierarchy_path_fix
-    from rag_project.runtime_version_rollback_fix import install as version_rollback_fix
-    from rag_project.runtime_answer_recovery_contract import install as answer_recovery_contract
-    from rag_project.runtime_deep_contract_fix import install as deep_contract_fix
-    from rag_project.runtime_post_contract_fix import install as post_contract_fix
-    from rag_project.runtime_functionality_deep_fix import install as functionality_deep_fix
-    from rag_project.runtime_functionality_state_fix import install as functionality_state_fix
-    from rag_project.runtime_functionality_safety_fix import install as functionality_safety_fix
-    from rag_project.runtime_functionality_routing_fix import install as functionality_routing_fix
-    from rag_project.runtime_functionality_scope_fix import install as functionality_scope_fix
-    from rag_project.runtime_functionality_comparison_template_fix import install as functionality_comparison_template_fix
-    from rag_project.runtime_functionality_numeric_range_fix import install as functionality_numeric_range_fix
-    from rag_project.runtime_functionality_final_audit_fix import install as functionality_final_audit_fix
-    from rag_project.runtime_ready_publication_fix import install as ready_publication_fix
-    from rag_project.runtime_transactional_rollback_fix import install as transactional_rollback_fix
-    from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle_fix
-    from rag_project.runtime_page_identity_fix import install as page_identity_fix
-    from rag_project.runtime_phase16_contract_fix import install as phase16_contract_fix
-    from rag_project.runtime_ocr_state_fix import install as ocr_state_fix
-    from rag_project.runtime_phase16_evidence_fix import install as phase16_evidence_fix
-    from rag_project.runtime_version_transaction_fix import install as version_transaction_fix
-    from rag_project.runtime_transaction_numpy_fix import install as transaction_numpy_fix
-    from rag_project.runtime_failed_publication_cleanup import install as failed_publication_cleanup
-    from rag_project.runtime_post_index_publication_contract import install as post_index_publication_contract
-    from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication_contract_v2
-    from rag_project.runtime_terminal_state_guard import install as terminal_state_guard
-
-    return (
-        vector_store,
-        chroma_distance_fix,
-        hardening,
-        hardening_extra,
-        recovery,
-        final_gate,
-        stability,
-        stability_v2,
-        stability_v3,
-        stability_v4,
-        stability_v5,
-        stability_v6,
-        stability_v7,
-        stability_v8,
-        deep_pdf_contract,
-        structure_cleanup,
-        deep_pdf_finalizer,
-        structure_anchor_runtime,
-        deep_pdf_finalizer_v2,
-        deep_pdf_finalizer_v3,
-        deep_pdf_finalizer_v4,
-        runtime_contract_compat,
-        runtime_final_contracts,
-        runtime_final_contracts_v2,
-        runtime_final_contracts_v3,
-        runtime_final_contracts_v4,
-        runtime_final_contracts_v5,
-        runtime_final_contracts_v7,
-        runtime_final_contracts_v8,
-        chroma_metadata_fix,
-        hierarchy_path_fix,
-        version_rollback_fix,
-        answer_recovery_contract,
-        deep_contract_fix,
-        post_contract_fix,
-        functionality_deep_fix,
-        functionality_state_fix,
-        functionality_safety_fix,
-        functionality_routing_fix,
-        functionality_scope_fix,
-        functionality_comparison_template_fix,
-        functionality_numeric_range_fix,
-        functionality_final_audit_fix,
-        ready_publication_fix,
-        transactional_rollback_fix,
-        chroma_lifecycle_fix,
-        page_identity_fix,
-        phase16_contract_fix,
-        ocr_state_fix,
-        phase16_evidence_fix,
-        version_transaction_fix,
-        transaction_numpy_fix,
-        failed_publication_cleanup,
-        post_index_publication_contract,
-        post_index_publication_contract_v2,
-        terminal_state_guard,
-    )
+    return (vector_store,)
 
 
 def install() -> None:
-    """Install low-level infrastructure policy once and record provenance."""
+    """Compose the single remaining infrastructure compatibility boundary once."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
         _INSTALL_PROVENANCE.clear()
-        _install_ingestion_compatibility()
         for installer in _load_installers():
             name = getattr(installer, "__module__", "unknown") + "." + getattr(installer, "__name__", "install")
             started = time.perf_counter()
@@ -177,13 +56,8 @@ def installation_report() -> dict[str, Any]:
     }
 
 
-def _install_ready_only_lexical_boundary() -> None:
-    """Deprecated compatibility hook. Ready-only semantics live in VectorStore."""
-    return None
-
-
 def install_application_contracts() -> dict[str, object]:
-    """Register non-behavioral contracts without monkey-patching application code."""
+    """Register pure application contracts without behavioral monkey patches."""
     from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
     from rag_project.ingestion.ingestion_contract import install as ingestion_contract
     from rag_project.canonical_runtime import install as canonical_runtime
