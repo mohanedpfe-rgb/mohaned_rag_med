@@ -139,6 +139,12 @@ def install() -> None:
         @wraps(original_robust_ingest)
         def robust_ingest(system: Any, pdf_path: Any, *args: Any, **kwargs: Any):
             result = original_robust_ingest(system, pdf_path, *args, **kwargs)
+            # runtime_deep_contract_fix normalizes a duplicate SKIPPED result to READY
+            # for legacy callers, but the canonical ingestion/publication contract must
+            # expose SKIPPED so versioned duplicate uploads are never re-published.
+            if isinstance(result, dict) and result.get("skipped") is True:
+                result = dict(result)
+                result["status"] = "SKIPPED"
             if isinstance(result, dict) and str(result.get("status") or "").upper() == "FAILED":
                 document_id = str(result.get("document_id") or result.get("id") or "")
                 store = getattr(system, "state_store", None)
