@@ -16,10 +16,10 @@ _CURRENT_SYSTEM: Any | None = None
 class SemanticRetrievalCache:
     """Embedding-aware retrieval cache compatible with the production retriever contract.
 
-    The public cache API returns ``list[RetrievalHit] | None``. ``restore`` is
-    deliberately idempotent so older retrieval code that still calls
-    ``cache.restore(cache.get(...))`` remains compatible during the migration.
-    Scope-sensitive retrieval is never served from this cache.
+    ``get`` returns ``(hits, metadata)`` for the public semantic-cache contract.
+    The metadata is also understood by the production ``restore`` compatibility
+    path, so older callers that passed the raw cache value into ``restore`` keep
+    working during the migration.
     """
 
     SCHEMA_VERSION = 2
@@ -90,7 +90,7 @@ class SemanticRetrievalCache:
             return None
         return vector
 
-    def get(self, query: str) -> list[RetrievalHit] | None:
+    def get(self, query: str) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
         if self._filtered_scope_active():
             return None
         vector = self._query_embedding(query)
@@ -114,7 +114,7 @@ class SemanticRetrievalCache:
             if best is None:
                 db.commit()
                 return None
-            _, row = best
+            similarity, row = best
             try:
                 payload = json.loads(row[3])
             except (TypeError, ValueError, json.JSONDecodeError):
@@ -123,7 +123,8 @@ class SemanticRetrievalCache:
                 return None
             db.execute("UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 WHERE cache_id=?", (now, row[0]))
             db.commit()
-        return self.restore(payload)
+        restored = self.restore(payload)
+        return restored, {"similarity": float(similarity), "hits": len(restored), "cache_id": int(row[0]), "query": str(row[3]) if False else ""}
 
     def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
         if self._filtered_scope_active():
@@ -153,7 +154,11 @@ class SemanticRetrievalCache:
         return {"schema_version": self.SCHEMA_VERSION, "entries": count, "max_entries": self.max_entries, "ttl_seconds": self.ttl_seconds, "similarity_threshold": self.similarity_threshold, "expected_dimension": self.expected_dimension, "recorded_hits": hits, "semantic": True}
 
     @staticmethod
-    def restore(payload: Sequence[Any]) -> list[RetrievalHit]:
+    def restore(payload: Any) -> list[RetrievalHit]:
+        # Accept both the current raw list payload and the compatibility tuple
+        # returned by get(). The metadata is intentionally ignored by restore.
+        if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[0], (list, tuple)):
+            payload = payload[0]
         restored: list[RetrievalHit] = []
         for item in payload or ():
             if isinstance(item, RetrievalHit):
