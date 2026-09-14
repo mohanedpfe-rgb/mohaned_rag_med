@@ -20,6 +20,40 @@ def install() -> None:
         def transition(self, document_id: str, new_stage: str, **values: Any) -> None:
             target_stage = str(new_stage).upper()
             if target_stage in {"READY", "COMPLETED"}:
+                record = self.get_document(document_id)
+                if not record:
+                    raise ValueError(f"Document {document_id!r} does not exist.")
+                total_pages = int(
+                    values["total_pages"]
+                    if "total_pages" in values
+                    else (record.get("total_pages") or 0)
+                )
+                current_page = int(
+                    values["current_page"]
+                    if "current_page" in values
+                    else (record.get("current_page") or 0)
+                )
+                content_hash = str(
+                    values["content_hash"]
+                    if "content_hash" in values
+                    else (record.get("content_hash") or "")
+                )
+                index_state = str(
+                    values["index_state"]
+                    if "index_state" in values
+                    else (record.get("index_state") or "")
+                ).upper()
+                if total_pages <= 0 or current_page != total_pages:
+                    raise RuntimeError(
+                        "READY publication requires complete page progress: "
+                        f"current_page={current_page}, total_pages={total_pages}."
+                    )
+                if not content_hash:
+                    raise RuntimeError("READY publication requires a non-empty content_hash.")
+                if index_state and index_state != "READY":
+                    raise RuntimeError(
+                        f"READY publication requires READY index_state, got {index_state!r}."
+                    )
                 values.setdefault("index_state", "READY")
             try:
                 return original_transition(self, document_id, new_stage, **values)
