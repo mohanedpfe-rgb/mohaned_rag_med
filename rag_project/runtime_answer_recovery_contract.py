@@ -70,12 +70,13 @@ def _preserve_verified_answer(original):
         before_status = str(before.get("status") or "").upper()
         before_verification = before.get("final_verification")
         before_grounding = before.get("grounding")
+        before_has_evidence = bool(str(before.get("answer") or "").strip()) and bool(before.get("hits"))
+        final_allow = isinstance(before_verification, dict) and before_verification.get("allow") is True
+        grounding_allow = isinstance(before_grounding, dict) and before_grounding.get("allow") is True
         before_verified = (
             before_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}
-            and isinstance(before_verification, dict)
-            and before_verification.get("allow") is True
-            and isinstance(before_grounding, dict)
-            and before_grounding.get("allow") is True
+            and before_has_evidence
+            and (final_allow or grounding_allow)
         )
         diagnostic_status = str(output.get("status") or "").upper()
         if before_verified and diagnostic_status == "REASONING_ABSTAIN":
