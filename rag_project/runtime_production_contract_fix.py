@@ -16,10 +16,7 @@ def _install_page_checkpoint_fix() -> None:
     def upsert_page(self: Any, document_id: str, page_number: int, **values: Any) -> None:
         if not document_id:
             raise ValueError("document_id must be non-empty")
-        try:
-            page_number = int(page_number)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("page_number must be an integer") from exc
+        page_number = int(page_number)
         if page_number < 1:
             raise ValueError("page_number must be >= 1")
         unknown = set(values) - allowed
@@ -71,22 +68,13 @@ def _install_lexical_contract_fix() -> None:
         existing_ids = list((result.get("ids") or [[]])[0] or []) if isinstance(result, dict) else []
         blocked = set(getattr(self, "_nonready_lexical_ids", set()))
         with sqlite3.connect(self.lexical_database) as connection:
-            blocked.update(str(row[0]) for row in connection.execute("SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(json_extract(metadata, '$.index_state')) <> 'READY'").fetchall() if row[0])
+            blocked.update(str(row[0]) for row in connection.execute("SELECT json_extract(metadata, '$.chunk_id') FROM lexical_documents WHERE upper(index_state) <> 'READY'") if row[0])
         if blocked and existing_ids:
             keep = [i for i, item_id in enumerate(existing_ids) if str(item_id) not in blocked]
             for key in ("ids", "documents", "metadatas", "distances"):
                 values = list((result.get(key) or [[]])[0] or [])
                 result[key] = [[values[i] for i in keep]]
             existing_ids = [existing_ids[i] for i in keep]
-        if existing_ids:
-            with sqlite3.connect(self.lexical_database) as connection:
-                states = {str(row[0]): str(row[1]).upper() for row in connection.execute("SELECT id, index_state FROM lexical_documents")}
-            keep = [i for i, item_id in enumerate(existing_ids) if states.get(str(item_id), "READY") == "READY"]
-            if len(keep) != len(existing_ids):
-                for key in ("ids", "documents", "metadatas", "distances"):
-                    values = list((result.get(key) or [[]])[0] or [])
-                    result[key] = [[values[i] for i in keep]]
-                existing_ids = [existing_ids[i] for i in keep]
         if existing_ids:
             return result
         tokens = {token for token in self._lexical_tokens(query) if token}
@@ -115,9 +103,10 @@ def _install_lexical_contract_fix() -> None:
 
 
 def install() -> None:
+    """Explicit runtime installer; importing this module performs no mutation."""
     _install_page_checkpoint_fix()
     _install_numeric_contract_fix()
     _install_lexical_contract_fix()
 
 
-install()
+__all__ = ["install"]
