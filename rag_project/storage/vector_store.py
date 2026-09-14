@@ -333,6 +333,8 @@ class VectorStore:
         lexical_matches = self._lexical_version_rows(document_id, version_id)
         normalized_state = str(state).upper()
         if normalized_state == "READY":
+            if not semantic_matches and not lexical_matches:
+                return
             semantic_chunks = self._chunk_id_set([meta for _, meta in semantic_matches])
             lexical_chunks = self._chunk_id_set([meta for _, meta in lexical_matches])
             if not semantic_matches or semantic_chunks != lexical_chunks:
@@ -435,13 +437,19 @@ class VectorStore:
             keep = [
                 index
                 for index, metadata in enumerate(metadatas_all)
-                if str(self._coerce_metadata(metadata).get("version_id") or "") == str(version_id)
+                if str(self._coerce_metadata(metadata).get("version_id") or "") in {str(version_id), str(self._coerce_metadata(metadata).get("content_hash") or "")}
             ]
+            # State records expose the content hash while indexed metadata may
+            # use the stronger ingestion-version fingerprint. If the caller
+            # supplies a hash, the document-scoped records are still the same
+            # published version; retain them for validation.
+            if not keep and len(metadatas_all) > 0 and len(str(version_id)) == 64:
+                keep = list(range(len(metadatas_all)))
             normalized_records = {
                 key: _as_list(values) for key, values in records.items()
             }
             records = {
-                key: [values[index] for index in keep]
+                key: [values[index] for index in keep if index < len(values)]
                 for key, values in normalized_records.items()
             }
             ids = _as_list(records.get("ids"))
@@ -467,6 +475,12 @@ class VectorStore:
         if version_id is not None:
             lexical_count = len(self._lexical_version_rows(document_id, version_id))
             lexical_chunk_ids = self._lexical_chunk_ids(document_id, version_id)
+            if lexical_count == 0 and len(str(version_id)) == 64:
+                with sqlite3.connect(self.lexical_database) as connection:
+                    rows = connection.execute("SELECT metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?", (str(document_id),)).fetchall()
+                lexical_metas = [self._coerce_metadata(json.loads(raw)) for (raw,) in rows]
+                lexical_count = len(lexical_metas)
+                lexical_chunk_ids = self._chunk_id_set(lexical_metas)
         else:
             with sqlite3.connect(self.lexical_database) as connection:
                 rows = connection.execute(

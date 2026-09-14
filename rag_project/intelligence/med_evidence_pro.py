@@ -167,7 +167,7 @@ class MultiTierRetriever:
             for future in as_completed(futures):
                 try:tier0.extend(future.result())
                 except Exception:pass
-        tier0=self._merge(tier0,16); c0=self._confidence(tier0,route.entities)
+        tier0=self._merge(tier0,16); c0=self._confidence(tier0,route.entities) or 0.0
         if c0>=.75:
             self.cache.put(question,tier0);return tier0,{"tier":"TIER0_EXIT","cache_hit":False,"early_exit":True,"tier0_confidence":round(c0,4),"tier1_confidence":None,"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier0),"queries":len(queries)}
         queries=list(dict.fromkeys([question,*route.query_variants[:4]]))[:5]; tier1=list(tier0)
@@ -176,7 +176,7 @@ class MultiTierRetriever:
             for future in as_completed(futures):
                 try:tier1.extend(future.result() or [])
                 except Exception:pass
-        tier1=self._merge(tier1,20); c1=self._confidence(tier1,route.entities)
+        tier1=self._merge(tier1,20); c1=self._confidence(tier1,route.entities) or 0.0
         if c1>=.80 or (not route.needs_multi_hop and len(tier1)>=3):
             self.cache.put(question,tier1);return tier1,{"tier":"TIER1","cache_hit":False,"early_exit":c1>=.80,"tier0_confidence":round(c0,4),"tier1_confidence":round(c1,4),"retrieval_latency_ms":round((time.perf_counter()-started)*1000,2),"candidate_count":len(tier1),"queries":len(queries)}
         if route.needs_multi_hop and route.complexity>.60:

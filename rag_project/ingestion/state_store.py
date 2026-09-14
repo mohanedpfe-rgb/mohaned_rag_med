@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -180,6 +181,11 @@ class IngestionStateStore:
         return dict(row) if row else None
 
     def upsert_document(self, values: dict[str, Any]) -> None:
+        existing = self.get_document(str(values.get("document_id") or ""))
+        if existing and self.is_ready_status(existing.get("status")) and str(values.get("content_hash") or existing.get("content_hash") or "") == str(existing.get("content_hash") or ""):
+            requested = str(values.get("status", existing.get("status") or "")).upper()
+            if requested not in {"READY", "COMPLETED", "SUPERSEDED"}:
+                raise RuntimeError("READY document cannot be overwritten by a non-terminal state.")
         if values.get("content_hash"):
             existing_hash = self.get_by_hash(values["content_hash"])
             if existing_hash and values.get("document_id") is None:
@@ -224,6 +230,11 @@ class IngestionStateStore:
             raise ValueError(f"Unsupported document update field(s): {', '.join(sorted(unknown))}")
         if "status" in values:
             values["status"] = self.normalize_status(values["status"])
+        current = self.get_document(document_id)
+        if current and self.is_ready_status(current.get("status")):
+            requested = str(values.get("status", current.get("status") or "")).upper()
+            if requested not in {"READY", "COMPLETED", "SUPERSEDED"}:
+                raise RuntimeError(f"READY document cannot regress to {requested}.")
         if "index_state" not in values and values.get("status") and self.is_ready_status(values.get("status")):
             values["index_state"] = "READY"
         values["modified_at"] = utc_now()
@@ -361,9 +372,18 @@ class IngestionStateStore:
         return cursor.rowcount == 1
 
     def release_document(self, document_id: str, worker_id: str) -> bool:
-        with self._connect() as connection:
-            cursor = connection.execute("UPDATE documents SET lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (utc_now(), document_id, worker_id))
-        return cursor.rowcount == 1
+        last_error = None
+        for attempt in range(3):
+            try:
+                with self._connect() as connection:
+                    cursor = connection.execute("UPDATE documents SET lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE document_id = ? AND lease_owner = ?", (utc_now(), document_id, worker_id))
+                return cursor.rowcount == 1
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                if attempt == 2:
+                    raise
+                time.sleep(0.01 * (attempt + 1))
+        raise last_error
 
     def recover_stale_documents(self) -> int:
         now = utc_now()
@@ -378,8 +398,8 @@ class IngestionStateStore:
         current_stage = str(record.get("current_stage", "DISCOVERED")).upper()
         new_stage_value = str(new_stage).upper()
         terminal_states = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL"}
-        if current_stage in {"READY", "COMPLETED"} and new_stage_value not in terminal_states and new_stage_value not in {"INTERRUPTED", "RECOVERING"}:
-            raise RuntimeError(f"Invalid terminal state regression: {current_stage} -> {new_stage_value}.")
+        if current_stage in {"READY", "COMPLETED"} and new_stage_value not in {"READY", "COMPLETED", "SUPERSEDED"}:
+            raise RuntimeError(f"Terminal document cannot transition: {current_stage} -> {new_stage_value}.")
         values.setdefault("current_stage", new_stage_value)
         if new_stage_value in {"READY", "COMPLETED"}:
             total_pages = int(values.get("total_pages", record.get("total_pages") or 0) or 0)
@@ -400,6 +420,9 @@ class IngestionStateStore:
             values.setdefault("index_state", "FAILED")
         elif new_stage_value == "QUARANTINED":
             values.setdefault("status", "QUARANTINED")
+            values.setdefault("index_state", "FAILED")
+        elif new_stage_value == "SUPERSEDED":
+            values.setdefault("status", "SUPERSEDED")
             values.setdefault("index_state", "FAILED")
         elif new_stage_value in {"INTERRUPTED", "RECOVERING"}:
             values.setdefault("status", new_stage_value)

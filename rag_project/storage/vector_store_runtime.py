@@ -49,24 +49,20 @@ def _chroma_scalarize(value: Any) -> Any:
     if isinstance(value, list):
         if not value:
             return None
-        if all(not isinstance(item, (dict, list, tuple)) for item in value):
-            return value
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return value
 
 
 def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
-    original = getattr(self, "_original_coerce_metadata", None)
-    if callable(original):
-        base = original(metadata)
-    else:
-        base = dict(metadata or {}) if isinstance(metadata, dict) else {}
-        base.setdefault("index_state", "READY")
-        if "document_id" not in base and "doc_id" in base:
-            base["document_id"] = base["doc_id"]
-        if "chunk_id" not in base and "id" in base:
-            base["chunk_id"] = base["id"]
-        base.setdefault("version_id", base.get("document_id", "legacy"))
+    # Compatibility installers can wrap this method more than once. Calling
+    # a saved wrapper here would recurse, so normalize from the input directly.
+    base = dict(metadata or {}) if isinstance(metadata, dict) else {}
+    base.setdefault("index_state", "READY")
+    if "document_id" not in base and "doc_id" in base:
+        base["document_id"] = base["doc_id"]
+    if "chunk_id" not in base and "id" in base:
+        base["chunk_id"] = base["id"]
+    base.setdefault("version_id", base.get("document_id", "legacy"))
     normalized: dict[str, Any] = {}
     for key, value in dict(base).items():
         scalar = _chroma_scalarize(value)

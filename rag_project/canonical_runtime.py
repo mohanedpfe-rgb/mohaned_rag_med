@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-ANSWER_AUTHORITY = "rag_project.application_answer_service.answer"
+ANSWER_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
 CANONICAL_SERVICE = "rag_project.application.MedEvidenceProductionRAGSystem"
 LEGACY_ANSWER_AUTHORITY = ANSWER_AUTHORITY
 

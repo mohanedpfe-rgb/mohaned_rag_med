@@ -319,6 +319,16 @@ class RAGSystem:
         )
         self._apply_settings_mutex = threading.Lock()
 
+    def _new_cancel_flag(self, document_id: str):
+        flag = _IngestCancelFlag()
+        with _INGEST_LOCK:
+            _INGEST_CANCEL_FLAGS[document_id] = flag
+        return flag
+
+    def _remove_cancel_flag(self, document_id: str) -> None:
+        with _INGEST_LOCK:
+            _INGEST_CANCEL_FLAGS.pop(document_id, None)
+
     def _ensure_embedding_dimension(self) -> None:
         if self._embedding_dimension_probed and self.embedding_service.dimension is not None:
             return

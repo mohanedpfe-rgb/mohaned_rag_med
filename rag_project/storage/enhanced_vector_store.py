@@ -170,10 +170,9 @@ class EnhancedVectorStore(VectorStore):
 
         if aggregate_rows:
             self.hierarchy_collection.upsert(ids=[row["id"] for row in aggregate_rows], documents=[row["document"] for row in aggregate_rows], metadatas=[row["metadata"] for row in aggregate_rows], embeddings=[row["embedding"] for row in aggregate_rows])
-            metadata = dict(self.hierarchy_collection.metadata or {})
-            metadata["dimension"] = len(aggregate_rows[0]["embedding"])
-            metadata["source_collection"] = self.collection_name
-            self.hierarchy_collection.modify(metadata=metadata)
+            # Chroma does not allow changing hnsw space/distance metadata after
+            # collection creation. The collection was initialized with its
+            # identity; publishing rows does not require modifying it.
 
     def set_version_index_state(self, document_id: str, version_id: str, state: str) -> None:
         super().set_version_index_state(document_id, version_id, state)

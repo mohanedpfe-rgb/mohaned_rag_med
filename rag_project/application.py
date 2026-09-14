@@ -144,7 +144,7 @@ def runtime_contract() -> dict[str, Any]:
         "configuration": "Settings.from_env",
         "answer_pipeline": "med_evidence_pro",
         "answer_pipeline_authority": ANSWER_AUTHORITY,
-        "answer_pipeline_execution": "rag_project.application_answer_service.answer",
+        "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY,
         "active_answer_pipeline": "med_evidence_pro",
         "active_answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_monkey_patch": False,

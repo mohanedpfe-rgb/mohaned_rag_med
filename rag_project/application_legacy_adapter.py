@@ -60,7 +60,9 @@ class LegacyProductionRAGAdapter:
         return versioned_ingestor.ingest_version_safely(self.delegate, pdf_path)
 
     def ingest_directory(self, directory: Any = None) -> Any:
-        return self.delegate.ingest_directory(directory)
+        from pathlib import Path
+        root = Path(directory or self.settings.incoming_dir)
+        return [self.ingest_file(path) for path in sorted(root.glob("*.pdf"))]
 
     def health_report(self) -> dict[str, Any]:
         return dict(self.delegate.health_report() or {})

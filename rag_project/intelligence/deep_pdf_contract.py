@@ -415,13 +415,15 @@ def _patch_vector_store() -> None:
             meta.setdefault("representation_type", "canonical")
             meta.setdefault("parent_id", f"{meta['document_id']}:document")
             meta.setdefault("section_id", meta["parent_id"])
-            meta.setdefault("hierarchy_path", [])
-            meta.setdefault("page_numbers", [])
+            meta.setdefault("hierarchy_path", "[]")
+            meta.setdefault("page_numbers", "[]")
             meta.setdefault("quality_score", 0.0)
             meta.setdefault("ocr_status", "not_required")
-            if isinstance(meta.get("hierarchy_path"), (dict, tuple)):
-                meta["hierarchy_path"] = list(meta["hierarchy_path"])
-            for key in ("entities", "headings", "number_forms", "evidence_types", "hierarchy_path"):
+            if isinstance(meta.get("hierarchy_path"), (dict, list, tuple)):
+                meta["hierarchy_path"] = _json(meta["hierarchy_path"])
+            if isinstance(meta.get("page_numbers"), (dict, list, tuple)):
+                meta["page_numbers"] = _json(meta["page_numbers"])
+            for key in ("entities", "headings", "number_forms", "evidence_types"):
                 if isinstance(meta.get(key), (dict, list, tuple)):
                     meta[key] = _json(meta[key]) if key in {"entities", "headings", "number_forms"} else meta[key]
             if meta.get("representation_type") == "table" and not meta.get("table_id"):

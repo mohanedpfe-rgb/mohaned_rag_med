@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import time
 import uuid
@@ -47,7 +48,11 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     if file_path.suffix.lower() != ".pdf" or not file_path.is_file():
         raise ValueError(f"Unsupported or missing PDF: {file_path}")
 
-    content_hash = system._hash_file(file_path)
+    hash_file = getattr(system, "_hash_file", None)
+    if callable(hash_file):
+        content_hash = hash_file(file_path)
+    else:
+        content_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
     existing = system.state_store.get_by_hash(content_hash)
     previous = system.state_store.get_by_path(str(file_path.resolve()))
     previous_version = (
