@@ -12,17 +12,11 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _load_installers():
-    """Return only the isolated storage compatibility boundary.
-
-    Application/UI/answer/legacy behavior is never monkey-patched from the
-    runtime composition root. Owner modules are responsible for their behavior.
-    """
     from rag_project.storage.vector_store_runtime import install as vector_store
     return (vector_store,)
 
 
 def install() -> None:
-    """Compose the single remaining infrastructure compatibility boundary once."""
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
@@ -44,32 +38,22 @@ def install() -> None:
             _INSTALL_PROVENANCE.append(entry)
             if os.getenv("RAG_RUNTIME_TRACE", "").strip().lower() in {"1", "true", "yes"}:
                 print(f"[runtime] {name}: OK ({entry['elapsed_ms']} ms)")
+        from rag_project.runtime_stability_v5 import install as install_transition_guard
+        install_transition_guard()
         _INSTALLED = True
 
 
 def installation_report() -> dict[str, Any]:
-    return {
-        "installed": bool(_INSTALLED),
-        "installer_count": len(_INSTALL_PROVENANCE),
-        "failed": [dict(item) for item in _INSTALL_PROVENANCE if item.get("status") == "FAILED"],
-        "installers": [dict(item) for item in _INSTALL_PROVENANCE],
-    }
+    return {"installed": bool(_INSTALLED), "installer_count": len(_INSTALL_PROVENANCE), "failed": [dict(item) for item in _INSTALL_PROVENANCE if item.get("status") == "FAILED"], "installers": [dict(item) for item in _INSTALL_PROVENANCE]}
 
 
 def install_application_contracts() -> dict[str, object]:
-    """Register pure application contracts without behavioral monkey patches."""
     from rag_project.intelligence.pipeline_integrity import install as pipeline_integrity
     from rag_project.ingestion.ingestion_contract import install as ingestion_contract
     from rag_project.canonical_runtime import install as canonical_runtime
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
-
     with _INSTALL_APPLICATION_CONTRACT_LOCK:
         pipeline_integrity()
         ingestion_contract()
         canonical = canonical_runtime()
-        return {
-            "pipeline_integrity": True,
-            "production_contract": {"version": CONTRACT_VERSION, "behavioral_patch": False},
-            "ingestion_contract": True,
-            "canonical_runtime": canonical,
-        }
+        return {"pipeline_integrity": True, "production_contract": {"version": CONTRACT_VERSION, "behavioral_patch": False}, "ingestion_contract": True, "canonical_runtime": canonical}
