@@ -69,7 +69,7 @@ def _as_query_result(ids: list[str], documents: list[str], metadatas: list[dict[
 def _valid_vector(vector: Any, expected_dimension: int = 0) -> bool:
     try: values = [float(item) for item in _normalize_sequence(vector)]
     except (TypeError, ValueError): return False
-    return bool(values and (not expected_dimension or len(values) == expected_dimension) and all(math.isfinite(item) for item in values) and math.sqrt(sum(value * value for value in values)) > 1e-12)
+    return bool(values and (not expected_dimension or len(values) == expected_dimension) and all(math.isfinite(value) for value in values) and math.sqrt(sum(value * value for value in values)) > 1e-12)
 
 
 def _collection_dim(self: Any) -> int:
@@ -197,5 +197,7 @@ def install() -> None:
         from rag_project.storage.vector_store import VectorStore
         for name, function in (("search", _compatibility_search), ("search_lexical", _lexical_search_base), ("index_health_check", _index_health_check), ("validate_document_index", _validate_document_index), ("set_version_index_state", _set_version_index_state), ("delete_version", _delete_version)):
             marker = f"_vector_runtime_original_{name}"
-            if not hasattr(VectorStore, marker): setattr(VectorStore, marker, getattr(VectorStore, name)); setattr(VectorStore, name, function)
+            original = getattr(VectorStore, name, None)
+            if original is not None and not hasattr(VectorStore, marker): setattr(VectorStore, marker, original)
+            setattr(VectorStore, name, function)
         _INSTALLED = True
