@@ -12,6 +12,7 @@ def install() -> None:
     Transient Chroma/SQLite state-update failures receive bounded retries.
     """
     from rag_project.ingestion.state_store import IngestionStateStore
+    from rag_project.storage.vector_store import VectorStore
 
     original_transition = IngestionStateStore.transition_document_state
     if not getattr(original_transition, "_runtime_ready_publication_fix", False):
@@ -50,12 +51,10 @@ def install() -> None:
     if not getattr(original_release, "_runtime_release_cleanup_fix", False):
 
         def release(self, document_id: str, worker_id: str) -> bool:
-            last_error: Exception | None = None
             for attempt in range(3):
                 try:
                     return bool(original_release(self, document_id, worker_id))
-                except Exception as exc:
-                    last_error = exc
+                except Exception:
                     if attempt < 2:
                         time.sleep(0.05 * (attempt + 1))
             # Lease cleanup is not allowed to convert a successful publication into
@@ -68,10 +67,26 @@ def install() -> None:
         release._runtime_release_cleanup_fix = True
         IngestionStateStore.release_document = release
 
-    original_set_version = IngestionStateStore.get_document
-    # Marker access keeps this installer idempotent even when the runtime is loaded
-    # through several application entry points in the same Python process.
-    _ = original_set_version
+    original_set_version = VectorStore.set_version_index_state
+    if not getattr(original_set_version, "_runtime_version_state_retry_fix", False):
+
+        def set_version_state(self, document_id: str, version_id: str, state: str) -> None:
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    return original_set_version(self, document_id, version_id, state)
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        time.sleep(0.10 * (attempt + 1))
+            if last_error is not None:
+                raise last_error
+
+        set_version_state.__module__ = VectorStore.__module__
+        set_version_state.__name__ = "set_version_index_state"
+        set_version_state.__qualname__ = "VectorStore.set_version_index_state"
+        set_version_state._runtime_version_state_retry_fix = True
+        VectorStore.set_version_index_state = set_version_state
 
 
 __all__ = ["install"]
