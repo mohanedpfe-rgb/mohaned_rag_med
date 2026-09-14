@@ -15,7 +15,7 @@ from rag_project.retrieval.hybrid_retriever import RetrievalHit
 class SemanticRetrievalCache:
     """Embedding-aware retrieval cache with explicit dependency injection."""
 
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     def __init__(
         self,
@@ -48,6 +48,18 @@ class SemanticRetrievalCache:
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_created ON semantic_retrieval_cache(created, cache_id)")
             db.execute("CREATE INDEX IF NOT EXISTS idx_semantic_cache_accessed ON semantic_retrieval_cache(accessed, cache_id)")
             db.commit()
+
+    @staticmethod
+    def _identity_namespace(identity: Any | None, fallback: str = "legacy") -> str:
+        """Return a stable namespace derived solely from embedding identity."""
+        if identity is None:
+            return str(fallback or "legacy")
+        if isinstance(identity, dict):
+            payload = {key: identity.get(key) for key in ("provider", "model", "model_version", "dimension", "fingerprint", "embedding_id")}
+        else:
+            payload = {key: getattr(identity, key, None) for key in ("provider", "model", "model_version", "dimension", "fingerprint", "embedding_id")}
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return f"embedding:{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:24]}"
 
     @staticmethod
     def _pack(values: Sequence[float]) -> bytes:
@@ -164,4 +176,19 @@ class SemanticRetrievalCache:
         return restored
 
 
-__all__ = ["SemanticRetrievalCache"]
+def create_for_system(system: Any, *, db_path: str | Path | None = None, **kwargs: Any) -> SemanticRetrievalCache:
+    """Create an isolated cache from a concrete runtime system; no global binding."""
+    settings = getattr(system, "settings", None)
+    if db_path is None:
+        configured = getattr(settings, "semantic_cache_db_path", None) or getattr(settings, "cache_db_path", None)
+        root = getattr(settings, "project_root", None)
+        db_path = configured or (Path(root) / "data" / "semantic_cache.sqlite3" if root else Path("semantic_cache.sqlite3"))
+    embedder = getattr(system, "embedding_service", None)
+    embed_query = kwargs.pop("embed_query", getattr(embedder, "embed_query", None))
+    identity = kwargs.pop("identity", getattr(embedder, "identity", None))
+    dimension = kwargs.pop("expected_dimension", getattr(embedder, "dimension", 768) or 768)
+    namespace = kwargs.pop("cache_namespace", SemanticRetrievalCache._identity_namespace(identity))
+    return SemanticRetrievalCache(db_path, embed_query=embed_query, expected_dimension=int(dimension), cache_namespace=namespace, **kwargs)
+
+
+__all__ = ["SemanticRetrievalCache", "create_for_system"]
