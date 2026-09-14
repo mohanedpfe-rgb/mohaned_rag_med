@@ -124,14 +124,10 @@ def _version_matches(meta: dict[str, Any], version_id: str) -> bool:
 
 
 def _semantic_records(self: Any, document_id: str, version_id: str | None = None) -> list[tuple[str, dict[str, Any]]]:
-    result = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"]); rows: list[tuple[str, dict[str, Any]]] = []
-    all_rows = [(str(item_id), self._coerce_metadata(raw)) for item_id, raw in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False)]
+    result = self.collection.get(where={"document_id": str(document_id)}, include=["metadatas"]); all_rows = [(str(item_id), self._coerce_metadata(raw)) for item_id, raw in zip(_normalize_sequence(result.get("ids")), _normalize_sequence(result.get("metadatas")), strict=False)]
     if version_id is None: return all_rows
     rows = [(item_id, meta) for item_id, meta in all_rows if _version_matches(meta, str(version_id))]
     if rows: return rows
-    # A 64-character content fingerprint can be the durable alias for a version.
-    # When the requested alias is absent but the document has exactly one generation,
-    # that generation is authoritative and safe to use for validation/publication.
     generations = {str(meta.get("version_id") or meta.get("content_hash") or "") for _, meta in all_rows}
     return all_rows if len(generations) == 1 and len(str(version_id)) == 64 else []
 
@@ -147,14 +143,12 @@ def _lexical_records(self: Any, document_id: str, version_id: str | None = None,
         chunk_id = str(meta.get("chunk_id") or meta.get("id") or item_id)
         if chunk_ids is not None:
             if chunk_id in chunk_ids: out.append((str(item_id), meta))
-        elif version_id is None or _version_matches(meta, str(version_id)):
-            out.append((str(item_id), meta))
+        elif version_id is None or _version_matches(meta, str(version_id)): out.append((str(item_id), meta))
     return out
 
 
 def _document_index_counts(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
-    semantic = _semantic_records(self, document_id, version_id); semantic_ids = self._chunk_id_set([meta for _, meta in semantic]); lexical = _lexical_records(self, document_id, version_id, chunk_ids=semantic_ids if semantic_ids else None); lexical_ids = self._chunk_id_set([meta for _, meta in lexical])
-    return {"semantic_count": len(semantic), "lexical_count": len(lexical), "semantic_chunk_ids": semantic_ids, "lexical_chunk_ids": lexical_ids, "valid": bool(semantic_ids) and semantic_ids == lexical_ids}
+    semantic = _semantic_records(self, document_id, version_id); semantic_ids = self._chunk_id_set([meta for _, meta in semantic]); lexical = _lexical_records(self, document_id, version_id, chunk_ids=semantic_ids if semantic_ids else None); lexical_ids = self._chunk_id_set([meta for _, meta in lexical]); return {"semantic_count": len(semantic), "lexical_count": len(lexical), "semantic_chunk_ids": semantic_ids, "lexical_chunk_ids": lexical_ids, "valid": bool(semantic_ids) and semantic_ids == lexical_ids}
 
 
 def _validate_document_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
@@ -180,17 +174,19 @@ def _set_version_index_state(self: Any, document_id: str, version_id: str, state
 
 
 def _delete_version(self: Any, document_id: str, version_id: str) -> None:
-    semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id, chunk_ids={str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}); last_error: Exception | None = None
-    ids = [item_id for item_id, meta in semantic if str(meta.get("index_state", "READY")).upper() == "BUILDING"]
-    if ids:
-        for attempt in range(2):
-            try: self.collection.delete(ids=ids); last_error = None; break
-            except Exception as exc: last_error = exc
-        if last_error is not None: raise last_error
+    semantic = _semantic_records(self, document_id, version_id); chunk_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}; lexical = _lexical_records(self, document_id, version_id, chunk_ids=chunk_ids if chunk_ids else None); ids = [item_id for item_id, _ in semantic]; last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            if ids: self.collection.delete(ids=ids)
+            last_error = None; break
+        except Exception as exc:
+            last_error = exc
+            if attempt == 1: raise
     database = Path(getattr(self, "lexical_database"))
     with _database_lock(database):
         with sqlite3.connect(database) as connection:
-            connection.executemany("DELETE FROM lexical_documents WHERE id=?", [(item_id,) for item_id, meta in lexical if str(meta.get("index_state", "READY")).upper() == "BUILDING"]); connection.commit()
+            connection.executemany("DELETE FROM lexical_documents WHERE id=?", [(item_id,) for item_id, _ in lexical]); connection.commit()
+    if last_error is not None: raise last_error
 
 
 def install() -> None:
