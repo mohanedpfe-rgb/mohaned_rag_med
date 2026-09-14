@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
+from pathlib import Path
 from typing import Any
 
 
 def install() -> None:
-    """Restore lifecycle guards and neutralize unsafe dynamic lexical lookup patching."""
+    """Restore lifecycle guards and neutralize unsafe runtime interception points."""
     from rag_project.app.rag_system import (
         RAGSystem,
         _INGEST_CANCEL_FLAGS,
@@ -63,23 +65,20 @@ def install() -> None:
         ingest_file.__qualname__ = getattr(original_ingest, "__qualname__", ingest_file.__name__)
         RAGSystem.ingest_file = ingest_file
 
+    # ------------------------------------------------------------------
+    # 1. Repair the READY-only lexical boundary.
+    # ------------------------------------------------------------------
     try:
         from rag_project.storage.vector_store import VectorStore
 
-        # runtime.py historically replaced __getattribute__ dynamically to
-        # enforce READY-only lexical retrieval. That interception is unsafe:
-        # repeated attribute access can wrap an already-wrapped method and lead
-        # to recursive lookup. The static search wrapper already applies the
-        # authoritative SQL index_state filter.
         if getattr(VectorStore, "_final_dynamic_boundary", False):
             VectorStore.__getattribute__ = object.__getattribute__
 
         current_search = VectorStore.search_lexical
         if not getattr(current_search, "_runtime_final_ready_state_guard", False):
             def search_lexical(self: Any, query: Any, n_results: int = 5, where: Any = None):
-                # The historical wrapper cached blocked IDs in memory. Those
-                # IDs can become READY later, so never trust that cache.
-                # SQLite index_state is the single source of truth.
+                # Do not trust the historical in-memory blocked-ID cache. READY
+                # is a durable property of the persisted lexical record.
                 try:
                     setattr(self, "_final_nonready_lexical_ids", set())
                 except Exception:
@@ -88,6 +87,69 @@ def install() -> None:
 
             search_lexical._runtime_final_ready_state_guard = True
             VectorStore.search_lexical = search_lexical
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 2. Retrieval must not turn a partially matched query into zero evidence.
+    #    The previous deep-contract filter was too destructive: one missing
+    #    entity/marker could erase all valid hits and cascade into abstention.
+    # ------------------------------------------------------------------
+    try:
+        from rag_project.intelligence import runtime_deep_contract_fix
+
+        def safe_filter_relevant_hits(hits: list[Any], question: str, route: Any) -> list[Any]:
+            if not hits:
+                return []
+            terms = runtime_deep_contract_fix._strong_query_terms(question, route)
+            if not terms:
+                return hits
+            matched = [
+                hit for hit in hits
+                if runtime_deep_contract_fix._hit_matches_terms(hit, terms)
+            ]
+            if matched:
+                matched_ids = {id(hit) for hit in matched}
+                return matched + [hit for hit in hits if id(hit) not in matched_ids]
+            # Retrieval already supplied evidence. Do not destroy it merely
+            # because a derived entity or numeric marker was absent from the
+            # current candidate set; downstream grounding decides support.
+            return hits
+
+        runtime_deep_contract_fix._filter_relevant_hits = safe_filter_relevant_hits
+    except Exception:
+        pass
+
+    # ------------------------------------------------------------------
+    # 3. Retrieval cache invalidation must follow the indexed data generation.
+    #    The previous cache key was query-only, so a document replacement could
+    #    leave old chunks visible under the same question until TTL expiry.
+    # ------------------------------------------------------------------
+    try:
+        from rag_project.intelligence import med_evidence_pro
+
+        original_retrieve = med_evidence_pro.MultiTierRetriever.retrieve
+        if not getattr(original_retrieve, "_runtime_generation_guard", False):
+            def retrieve_with_generation_guard(self: Any, question: str, route: Any, where: Any = None):
+                try:
+                    root = Path(getattr(getattr(self, "system", None), "settings", None).project_root)
+                    state_db = root / "data" / "ingestion.sqlite3"
+                    marker = state_db.stat().st_mtime_ns if state_db.exists() else 0
+                    previous = getattr(self, "_ready_generation_marker", None)
+                    if previous is not None and marker != previous:
+                        cache = getattr(self, "cache", None)
+                        db_path = Path(getattr(cache, "db_path", ""))
+                        if db_path:
+                            with sqlite3.connect(db_path) as connection:
+                                connection.execute("DELETE FROM retrieval_cache")
+                                connection.commit()
+                    self._ready_generation_marker = marker
+                except Exception:
+                    pass
+                return original_retrieve(self, question, route, where)
+
+            retrieve_with_generation_guard._runtime_generation_guard = True
+            med_evidence_pro.MultiTierRetriever.retrieve = retrieve_with_generation_guard
     except Exception:
         pass
 
