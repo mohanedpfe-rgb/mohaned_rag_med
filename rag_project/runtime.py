@@ -67,6 +67,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_stability_v7 import install as stability_v7
     from rag_project.runtime_stability_v8 import install as stability_v8
     from rag_project.storage.vector_store_runtime import install as vector_store
+    from rag_project.runtime_chroma_distance_fix import install as chroma_distance_fix
     from rag_project.intelligence.deep_pdf_contract import install as deep_pdf_contract
     from rag_project.intelligence.structure_cleanup_contract import install as structure_cleanup
     from rag_project.intelligence.deep_pdf_finalizer import install as deep_pdf_finalizer
@@ -109,7 +110,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_failed_publication_cleanup import install as failed_publication_cleanup
 
     return (
-        vector_store, hardening, hardening_extra, recovery, quality_gate, final_gate,
+        vector_store, chroma_distance_fix, hardening, hardening_extra, recovery, quality_gate, final_gate,
         stability, stability_v2, stability_v3, stability_v4, stability_v5, stability_v6,
         stability_v7, stability_v8, deep_pdf_contract, structure_cleanup,
         deep_pdf_finalizer, structure_anchor_runtime, deep_pdf_finalizer_v2,
