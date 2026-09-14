@@ -10,10 +10,13 @@ CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
-    """Inspect and return the canonical runtime contract without mutating modules."""
+    """Bind the canonical runtime and install final owner-level repairs."""
     from rag_project import application
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+
+    from rag_project.runtime_canonical_repair import install as install_repairs
+    install_repairs()
 
     service_cls = getattr(application, "MedEvidenceProductionRAGSystem", None)
     certified = getattr(service_cls, "_certified_god_answer", None) if service_cls is not None else None
@@ -26,7 +29,8 @@ def install() -> dict[str, Any]:
         "class_binding_installed": binding_installed,
         "runtime_contract_bound": binding_installed and authority == ANSWER_AUTHORITY,
         "health_contract_bound": callable(getattr(service_cls, "health_report", None)),
-        "monkey_patch": False,
+        "owner_level_repairs": True,
+        "monkey_patch": True,
         "production_contract_version": CONTRACT_VERSION,
         "ingestion_contract_version": INGESTION_CONTRACT_VERSION,
     }
