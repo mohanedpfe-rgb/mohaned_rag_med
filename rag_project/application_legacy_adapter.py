@@ -21,16 +21,13 @@ class LegacyProductionRAGAdapter:
         "settings", "state_store", "vector_store", "retriever", "conversation_memory",
         "logger", "embedding_identity", "embedder", "parser", "cloud_hybrid",
         "startup_quality", "_active_metadata_filter", "_answer_service_corpus_generation",
-        "_hash_file", "health_report", "ingest_directory", "cancel_all_ingests",
-        "cancel_ingest", "_new_cancel_flag", "_remove_cancel_flag",
+        "_hash_file", "health_report", "ingest_directory", "ingest_file",
+        "cancel_all_ingests", "cancel_ingest", "_new_cancel_flag", "_remove_cancel_flag",
+        "clear_pdf_data", "apply_settings_in_place",
     })
 
     def __init__(self, settings: Any) -> None:
-        object.__setattr__(
-            self,
-            "_delegate",
-            ProductionRAGSystem(settings),
-        )
+        object.__setattr__(self, "_delegate", ProductionRAGSystem(settings))
         object.__setattr__(self, "_local", {})
 
     @property
