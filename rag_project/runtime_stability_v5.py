@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 _INSTALLED = False
-_TERMINAL = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL"}
+_TERMINAL = {"READY", "COMPLETED", "FAILED", "FAILED_EXTRACTION", "FAILED_OCR", "FAILED_EMBEDDING", "FAILED_INDEXING", "QUARANTINED", "DEGRADED_LEXICAL", "SUPERSEDED"}
 
 
 def _transition_guard(self, document_id, new_stage, **values):
@@ -20,8 +20,6 @@ def _transition_guard(self, document_id, new_stage, **values):
     try:
         return self._runtime_v5_original_transition(document_id, new_stage, **values)
     except Exception:
-        # READY/COMPLETED publication is durable before its optional audit event.
-        # If only the audit append failed, retain the committed terminal state.
         if target in {"READY", "COMPLETED"}:
             after = self.get_document(document_id)
             if after and self.is_ready_status(after.get("status")) and str(after.get("index_state") or "").upper() == "READY":
@@ -33,7 +31,6 @@ def _release_guard(self, document_id, worker_id):
     try:
         return bool(self._runtime_v5_original_release_document(document_id, worker_id))
     except Exception:
-        # Lease release is cleanup. It must not replace the primary ingestion outcome.
         return False
 
 
