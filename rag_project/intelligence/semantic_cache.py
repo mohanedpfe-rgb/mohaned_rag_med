@@ -16,7 +16,7 @@ _CURRENT_SYSTEM: Any | None = None
 class SemanticRetrievalCache:
     """Embedding-aware retrieval cache with a stable tuple return contract.
 
-    ``get`` returns ``(hits, metadata)``.  Dimension is learned from the active
+    ``get`` returns ``(hits, metadata)``. Dimension is learned from the active
     embedding service when the caller does not provide an explicit expected
     dimension, preventing test-mode/runtime embedding-size drift from becoming a
     cache miss or false contract failure.
@@ -174,10 +174,9 @@ class SemanticRetrievalCache:
 
 
 def install(system: Any) -> None:
+    """Bind the current system context; do not mutate another module's classes."""
     global _CURRENT_SYSTEM
     _CURRENT_SYSTEM = system
-    from rag_project.intelligence import med_evidence_pro
-    med_evidence_pro.SemanticCache = SemanticRetrievalCache
 
 
 __all__ = ["SemanticRetrievalCache", "install"]
