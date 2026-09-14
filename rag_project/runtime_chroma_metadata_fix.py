@@ -15,12 +15,10 @@ def _is_chroma_scalar(value: Any) -> bool:
 
 
 def _normalize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Return metadata accepted by Chroma without changing meaningful scalar fields.
+    """Return metadata accepted by Chroma for both inserts and later updates.
 
-    Chroma rejects empty list metadata values. It also rejects mappings and nested or
-    heterogeneous sequences. Empty optional structural fields are therefore omitted,
-    while meaningful structured values are encoded as compact JSON strings when they
-    cannot be represented directly by Chroma.
+    Chroma rejects empty list metadata values and nested/non-scalar structures.
+    Optional empty fields are omitted; meaningful structured values are JSON encoded.
     """
     normalized: dict[str, Any] = {}
     for key, value in dict(metadata or {}).items():
@@ -63,17 +61,48 @@ def _safe_add_documents(self: Any, documents, metadatas, embeddings, ids):
     )
 
 
+def _safe_coerce_metadata(self: Any, metadata: Any) -> dict[str, Any]:
+    original = self._chroma_metadata_fix_original_coerce_metadata
+    return _normalize_metadata(original(self, metadata))
+
+
+def _safe_transition_document_state(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
+    """Make READY publication satisfy the state/index invariant.
+
+    The production ingestion path marks the vector records READY immediately before
+    transitioning the durable document row from VALIDATING_INDEX to READY. The row's
+    previous index_state is PENDING, so the state contract would otherwise reject a
+    valid publication even though the index was already verified.
+    """
+    stage = str(new_stage).upper()
+    if stage in {"READY", "COMPLETED"} and "index_state" not in values:
+        values["index_state"] = "READY"
+    return self._chroma_metadata_fix_original_transition_document_state(
+        document_id, new_stage, **values
+    )
+
+
 def install() -> None:
     global _INSTALLED
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
+        from rag_project.ingestion.state_store import IngestionStateStore
         from rag_project.storage.vector_store import VectorStore
 
         if not hasattr(VectorStore, "_chroma_metadata_fix_original_add_documents"):
             VectorStore._chroma_metadata_fix_original_add_documents = VectorStore.add_documents
             VectorStore.add_documents = _safe_add_documents
+
+        if not hasattr(VectorStore, "_chroma_metadata_fix_original_coerce_metadata"):
+            VectorStore._chroma_metadata_fix_original_coerce_metadata = VectorStore._coerce_metadata
+            VectorStore._coerce_metadata = _safe_coerce_metadata
+
+        if not hasattr(IngestionStateStore, "_chroma_metadata_fix_original_transition_document_state"):
+            IngestionStateStore._chroma_metadata_fix_original_transition_document_state = IngestionStateStore.transition_document_state
+            IngestionStateStore.transition_document_state = _safe_transition_document_state
+
         _INSTALLED = True
 
 
-__all__ = ["install"]
+__all__ = ["install", "_normalize_metadata"]
