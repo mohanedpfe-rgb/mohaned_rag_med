@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-import json
 import sqlite3
 
 import fitz
@@ -145,7 +144,7 @@ def test_phase6_ready_state_publishes_both_indexes_atomically_enough_for_validat
     assert states == {"READY"}
 
 
-def test_phase6_ready_publication_is_idempotent(tmp_path):
+def test_phase6_ready_state_is_idempotent(tmp_path):
     store = _make_vector_store(tmp_path)
     _seed_index(store)
     store.set_version_index_state("doc", "v1", "READY")
@@ -273,24 +272,29 @@ def test_phase7_file_move_failure_never_returns_ready(tmp_path, monkeypatch):
     assert list(settings.failed_dir.glob("*.pdf")), "failed PDF must be quarantined"
 
 
-def test_phase7_existing_processed_target_is_protected_until_new_publication_finishes(tmp_path):
+def test_phase7_existing_processed_target_is_replaced_without_losing_new_publication(tmp_path):
     settings = _settings(tmp_path)
     existing_target = settings.processed_dir / "collision.pdf"
     _make_pdf(existing_target, text_prefix="existing processed target")
+    old_bytes = existing_target.read_bytes()
     source = settings.incoming_dir / "collision.pdf"
     _make_pdf(source, text_prefix="new incoming target")
+    new_bytes = source.read_bytes()
     system = _make_system(settings)
 
     result = robust_ingestor.robust_ingest_file(system, source)
     row = _assert_final_ready(system, result)
-    assert Path(row["file_path"]).read_bytes() != existing_target.read_bytes()
     assert existing_target.exists()
+    assert existing_target.read_bytes() != old_bytes
+    assert existing_target.read_bytes() == new_bytes
+    assert Path(row["file_path"]) == existing_target.resolve()
 
 
 def test_phase7_file_publication_failure_restores_previous_processed_target(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
     existing_target = settings.processed_dir / "restore.pdf"
     _make_pdf(existing_target, text_prefix="old processed target")
+    old_bytes = existing_target.read_bytes()
     source = settings.incoming_dir / "restore.pdf"
     _make_pdf(source, text_prefix="new incoming target")
     system = _make_system(settings)
@@ -306,7 +310,7 @@ def test_phase7_file_publication_failure_restores_previous_processed_target(tmp_
     result = robust_ingestor.robust_ingest_file(system, source)
     assert str(result["status"]).lower() == "failed"
     assert existing_target.exists()
-    assert b"old processed target" in existing_target.read_bytes()
+    assert existing_target.read_bytes() == old_bytes
 
 
 def test_phase7_archive_cleanup_failure_does_not_invalidate_ready_document(tmp_path, monkeypatch):
@@ -781,8 +785,6 @@ def test_cross_phase_failures_never_corrupt_an_already_published_ready_version(t
         assert row["status"] == "READY"
         return
 
-    old = settings.processed_dir / source.name
-    _make_pdf(old, text_prefix="old version")
     old_source = settings.incoming_dir / source.name
     _make_pdf(old_source, text_prefix="first version")
     first = versioned_ingestor.ingest_version_safely(system, old_source)
