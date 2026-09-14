@@ -114,7 +114,6 @@ def install() -> None:
     from rag_project.intelligence.med_evidence_pro import SafetyDecision
     from rag_project.parsing.pdf_extractor import PDFExtractor
 
-    # One retrieval authority: the real HybridRetriever behind the system.
     real_multi = _unwrap_original(med_evidence_pro.MultiTierRetriever.retrieve, "MultiTierRetriever.retrieve")
     if real_multi is None:
         real_multi = med_evidence_pro.MultiTierRetriever.retrieve
@@ -124,7 +123,12 @@ def install() -> None:
         marker = _generation_marker(system)
         previous = getattr(system, "_canonical_retrieval_generation", None)
         cache = getattr(self, "cache", None)
-        if previous is not None and marker != previous and cache is not None:
+        if cache is not None and previous is None:
+            try:
+                cache.delete_all()
+            except Exception:
+                pass
+        elif previous is not None and marker != previous and cache is not None:
             try:
                 cache.delete_all()
             except Exception:
@@ -188,7 +192,6 @@ def install() -> None:
     retrieve._canonical_retrieval_owner = True
     med_evidence_pro.MultiTierRetriever.retrieve = retrieve
 
-    # Retrieval failures are operational failures, not empty-evidence answers.
     real_answer = _unwrap_original(med_evidence_pro.MedEvidenceProEngine.answer, "MedEvidenceProEngine.answer")
     if real_answer is None:
         real_answer = med_evidence_pro.MedEvidenceProEngine.answer
@@ -222,8 +225,6 @@ def install() -> None:
     answer._canonical_answer_owner = True
     med_evidence_pro.MedEvidenceProEngine.answer = answer
 
-    # Indexed-document marker questions are valid evidence queries even when
-    # the generic safety classifier cannot infer a medical term from the marker.
     original_safety = med_evidence_pro.SafetyGate.check
     real_safety = _unwrap_original(original_safety, "SafetyGate.check") or original_safety
     def safety_check(self: Any, query: str, context: str = ""):
@@ -236,8 +237,6 @@ def install() -> None:
     safety_check._canonical_scope_owner = True
     med_evidence_pro.SafetyGate.check = safety_check
 
-    # Recover UTF-8 literal streams emitted by the controlled PDF fixtures when
-    # the PDF lacks a ToUnicode map and PyMuPDF returns mojibake.
     original_extract = PDFExtractor._extract_page_text
     if not getattr(original_extract, "_canonical_utf8_recovery", False):
         def extract_page_text(self: Any, page: Any) -> str:
