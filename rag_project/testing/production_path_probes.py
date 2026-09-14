@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -21,66 +22,46 @@ ROOT = Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "tests" / "support" / "gold_sets" / "phase16_production_corpus.jsonl"
 GOLD = ROOT / "tests" / "support" / "gold_sets" / "phase16_production_gold.jsonl"
 
-
 class _CancelFlag:
     cancelled = False
-
 
 class _ProductionIngestionProbeSystem:
     def __init__(self, root: Path) -> None:
         incoming = root / "incoming"; processed = root / "processed"; failed = root / "failed"; archive = root / "archive"; vector_db = root / "vector_db"; logs = root / "logs"
         for directory in (incoming, processed, failed, archive, vector_db, logs): directory.mkdir(parents=True, exist_ok=True)
         self.settings = Settings(device_mode="i5_16gb", project_root=root, incoming_dir=incoming, processed_dir=processed, failed_dir=failed, archive_dir=archive, vector_db_dir=vector_db, log_dir=logs, ingestion_db_path=root / "ingestion.sqlite3", embedding_model="diagnostic-deterministic", embedding_test_mode=True, ocr_enabled=False, auto_ocr=False, chunk_size=220, chunk_overlap=30, page_batch_size=2, embedding_batch_size=8, ingestion_lease_seconds=120)
-        self.state_store = IngestionStateStore(self.settings.ingestion_db_path)
-        self._bind_page_identity_boundary()
-        self.vector_store = VectorStore(vector_db, collection_name="production_path_probe")
-        self.embedding_service = EmbeddingService("", self.settings.embedding_model, batch_size=self.settings.embedding_batch_size, retries=0, timeout_seconds=30, test_mode=True)
-        self.embedding_startup_error: Exception | None = None; self.logger = logging.getLogger("production_path_probe")
-
+        self.state_store = IngestionStateStore(self.settings.ingestion_db_path); self._bind_page_identity_boundary(); self.vector_store = VectorStore(vector_db, collection_name="production_path_probe")
+        self.embedding_service = EmbeddingService("", self.settings.embedding_model, batch_size=self.settings.embedding_batch_size, retries=0, timeout_seconds=30, test_mode=True); self.embedding_startup_error = None; self.logger = logging.getLogger("production_path_probe")
     def _bind_page_identity_boundary(self) -> None:
-        state_store = self.state_store
-        original_record = state_store.record_page
-
+        state_store = self.state_store; original_record = state_store.record_page
         def record_page(extraction: Any, *, cache_reference: str | None = None) -> None:
             document_id = str(getattr(extraction, "document_id", "") or "").strip()
             if not document_id:
-                source_path = getattr(extraction, "source_path", None)
-                recovered = None
+                source_path = getattr(extraction, "source_path", None); recovered = None
                 if source_path:
-                    try:
-                        recovered = state_store.get_by_path(str(Path(source_path).expanduser().resolve()))
-                    except Exception:
-                        recovered = None
-                if recovered and recovered.get("document_id"):
-                    document_id = str(recovered["document_id"]).strip()
-            if not document_id:
-                raise RuntimeError("production page checkpoint lost document identity")
-            setattr(extraction, "document_id", document_id)
-            return original_record(extraction, cache_reference=cache_reference)
-
+                    try: recovered = state_store.get_by_path(str(Path(source_path).expanduser().resolve()))
+                    except Exception: recovered = None
+                if recovered and recovered.get("document_id"): document_id = str(recovered["document_id"]).strip()
+            if not document_id: raise RuntimeError("production page checkpoint lost document identity")
+            setattr(extraction, "document_id", document_id); return original_record(extraction, cache_reference=cache_reference)
         self.state_store.record_page = record_page
-
     @staticmethod
     def _hash_file(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""): digest.update(block)
         return digest.hexdigest()
-
     @staticmethod
     def _ingestion_version_id(**kwargs: Any) -> str:
         payload = json.dumps(kwargs, sort_keys=True, default=str, separators=(",", ":")); return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
     def _ensure_embedding_dimension(self) -> int:
         if self.embedding_service.dimension is None: self.embedding_service.discover_dimension()
         return int(self.embedding_service.dimension or 0)
     def _new_cancel_flag(self, document_id: str) -> _CancelFlag: return _CancelFlag()
     def _remove_cancel_flag(self, document_id: str) -> None: return None
 
-
 def _write_probe_pdf(path: Path, text: str) -> None:
     document = pymupdf.open(); page = document.new_page(width=595, height=842); page.insert_textbox(pymupdf.Rect(45, 45, 550, 790), text, fontsize=11); document.save(path); document.close()
-
 
 def _metadata_document_ids(payload: dict[str, Any]) -> list[str]:
     values = (payload.get("metadatas") or [[]])[0]; found: list[str] = []
@@ -95,6 +76,14 @@ def _metadata_document_ids(payload: dict[str, Any]) -> list[str]:
         if isinstance(metadata, dict) and metadata.get("document_id") is not None: found.append(str(metadata["document_id"]))
     return found
 
+def _normalize_evidence_text(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-").replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-").replace("\u00a0", " ")
+    text = re.sub(r"(?<=\w)-\s*\n\s*(?=\w)", "-", text)
+    return re.sub(r"\s+", " ", text).casefold().strip()
+
+def _normalize_evidence_term(value: Any) -> str:
+    return _normalize_evidence_text(value).strip(" .,:;()[]{}")
 
 def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
     result = _result(phase); temporary_root: Path | None = None
@@ -110,16 +99,13 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             document_id = str(outcome.get("document_id") or "")
             if not document_id: raise RuntimeError(f"production ingestion returned no document_id: {outcome}")
             document_ids[row["doc_id"]] = document_id; ingestion_rows.append({"source_doc_id": row["doc_id"], "document_id": document_id, "status": outcome.get("status"), "timings_ms": outcome.get("timings_ms", {}), "pages": outcome.get("page_count"), "chunks": outcome.get("chunk_count"), "embeddings": outcome.get("embedding_count"), "retrieval_mode": outcome.get("retrieval_mode")})
-
         ready_states = 0; indexed_chunks = 0
         for source_doc_id, document_id in document_ids.items():
             state = system.state_store.get_document(document_id) or {}; processed = system.settings.processed_dir / f"{source_doc_id}.pdf"
             if not processed.exists(): raise RuntimeError(f"processed publication missing for {source_doc_id}")
             validation = system.vector_store.validate_document_index(document_id, system._hash_file(processed)); ready_states += int(system.state_store.is_ready_status(state.get("status"))); indexed_chunks += int(validation.get("count") or 0)
             if not validation.get("valid") or not system.state_store.is_ready_status(state.get("status")): raise RuntimeError(f"post-ingestion integrity check failed for {source_doc_id}: {validation}")
-
-        retrieval_rows: list[dict[str, Any]] = []; evidence_hits = 0; evidence_term_total = 0
-        retrieval_depth = max(1, indexed_chunks)
+        retrieval_rows: list[dict[str, Any]] = []; evidence_hits = 0; evidence_term_total = 0; retrieval_depth = max(1, indexed_chunks)
         for case in gold:
             expected_source_ids = set(case["expected_doc_ids"]); expected_document_ids = {document_ids[key] for key in expected_source_ids if key in document_ids}
             lexical = system.vector_store.search_lexical(case["question"], n_results=retrieval_depth); semantic = system.vector_store.search(system.embedding_service.embed_texts([case["question"]])[0], n_results=retrieval_depth)
@@ -127,21 +113,15 @@ def phase16_production_ingestion_benchmark(phase: Any) -> PhaseResult:
             if not retrieved_document_ids:
                 ids = [str(value) for value in ((lexical.get("ids") or [[]])[0] + (semantic.get("ids") or [[]])[0])]
                 retrieved_document_ids = [document_id for document_id in document_ids.values() if any(document_id in item for item in ids)]
-            hit = bool(expected_document_ids & set(retrieved_document_ids))
-            evidence_text_parts: list[str] = []
+            hit = bool(expected_document_ids & set(retrieved_document_ids)); evidence_text_parts: list[str] = []
             for retrieved_id in set(retrieved_document_ids):
-                records = system.vector_store.get_documents(where={"document_id": retrieved_id})
-                evidence_text_parts.extend(str(value or "") for value in (records.get("documents") or []))
-            retrieved_text = " ".join(evidence_text_parts).casefold()
-            expected_terms = [str(term).casefold() for term in case.get("expected_evidence_terms", [])]
-            matched_terms = sorted(term for term in expected_terms if term in retrieved_text)
-            evidence_term_total += len(expected_terms); evidence_hits += len(matched_terms); evidence_supported = hit and bool(expected_terms) and set(matched_terms) == set(expected_terms)
+                records = system.vector_store.get_documents(where={"document_id": retrieved_id}); evidence_text_parts.extend(str(value or "") for value in (records.get("documents") or []))
+            retrieved_text = _normalize_evidence_text(" ".join(evidence_text_parts)); expected_terms = [_normalize_evidence_term(term) for term in case.get("expected_evidence_terms", [])]; expected_terms = [term for term in expected_terms if term]
+            matched_terms = sorted(term for term in expected_terms if term in retrieved_text); evidence_term_total += len(expected_terms); evidence_hits += len(matched_terms); evidence_supported = hit and bool(expected_terms) and set(matched_terms) == set(expected_terms)
             retrieval_rows.append({"id": case["id"], "hit": hit, "evidence_supported": evidence_supported, "matched_evidence_terms": matched_terms, "expected_evidence_terms": expected_terms, "expected_source_doc_ids": sorted(expected_source_ids), "expected_document_ids": sorted(expected_document_ids), "retrieved_document_ids": sorted(set(retrieved_document_ids))})
-
         recall = sum(int(row["hit"]) for row in retrieval_rows) / max(1, len(retrieval_rows)); evidence_case_rate = sum(int(row["evidence_supported"]) for row in retrieval_rows) / max(1, len(retrieval_rows)); evidence_term_recall = evidence_hits / max(1, evidence_term_total)
-        result.details = {"evidence_level": "real_production_robust_ingestion_to_storage_retrieval", "evidence_level_extended": "real_pdf_extraction_to_storage_retrieval_and_evidence_grounding", "production_entrypoint": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "production_path_strict": True, "production_components": ["DocumentClassifier", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore"], "corpus_document_count": len(corpus), "indexed_chunk_count": indexed_chunks, "ready_state_count": ready_states, "gold_case_count": len(retrieval_rows), "retrieval_depth": retrieval_depth, "retrieval_recall": round(recall, 3), "evidence_grounding_case_rate": round(evidence_case_rate, 3), "evidence_term_recall": round(evidence_term_recall, 3), "gold_labels_independent_of_corpus_text": True, "durable_state_verified": ready_states == len(corpus), "index_integrity_verified": indexed_chunks > 0, "publication_verified": True, "ingestion_rows": ingestion_rows, "results": retrieval_rows, "clinical_correctness_claimed": False, "dataset_id": "phase16_production_independent_v2", "gold_integrity_contract_verified": True, "gold_references_resolved": True, "independent_from_phase9_dataset": True, "evidence_validation_mode": "retrieved_source_document_aggregate_across_indexed_chunks"}
-        result.score = round((recall + evidence_case_rate + evidence_term_recall) / 3.0, 3)
-        result.status = "PASS" if recall >= 0.8 and evidence_case_rate >= 0.8 and evidence_term_recall >= 0.8 and ready_states == len(corpus) and indexed_chunks > 0 else "FAIL"
+        result.details = {"evidence_level": "real_production_robust_ingestion_to_storage_retrieval", "evidence_level_extended": "real_pdf_extraction_to_storage_retrieval_and_evidence_grounding", "production_entrypoint": "rag_project.ingestion.robust_ingestor.robust_ingest_file", "production_path_strict": True, "production_components": ["DocumentClassifier", "PDFExtractor", "SemanticChunker", "EmbeddingService(test_mode)", "VectorStore", "IngestionStateStore"], "corpus_document_count": len(corpus), "indexed_chunk_count": indexed_chunks, "ready_state_count": ready_states, "gold_case_count": len(retrieval_rows), "retrieval_depth": retrieval_depth, "retrieval_recall": round(recall, 3), "evidence_grounding_case_rate": round(evidence_case_rate, 3), "evidence_term_recall": round(evidence_term_recall, 3), "gold_labels_independent_of_corpus_text": True, "durable_state_verified": ready_states == len(corpus), "index_integrity_verified": indexed_chunks > 0, "publication_verified": True, "ingestion_rows": ingestion_rows, "results": retrieval_rows, "clinical_correctness_claimed": False, "dataset_id": "phase16_production_independent_v2", "gold_integrity_contract_verified": True, "gold_references_resolved": True, "independent_from_phase9_dataset": True, "evidence_validation_mode": "retrieved_source_document_aggregate_across_indexed_chunks", "evidence_normalization": "unicode_dash_whitespace_linebreak"}
+        result.score = round((recall + evidence_case_rate + evidence_term_recall) / 3.0, 3); result.status = "PASS" if recall >= 0.8 and evidence_case_rate >= 0.8 and evidence_term_recall >= 0.8 and ready_states == len(corpus) and indexed_chunks > 0 else "FAIL"
     except Exception as exc:
         result.status = "FAIL"; result.failures.append({"location": "phase 16 canonical production ingestion", "exception": type(exc).__name__, "message": str(exc)})
     finally:
