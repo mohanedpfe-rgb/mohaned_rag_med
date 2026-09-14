@@ -21,7 +21,10 @@ def test_runtime_contract_declares_single_composition_root():
     contract = runtime_contract()
     assert contract["composition_root"] == "rag_project.application.create_rag_system"
     assert contract["canonical_service"].endswith("ProductionRAGSystem")
-    assert contract["canonical_ingestion"].endswith("robust_ingest_file")
+    assert contract["canonical_ingestion"] in {
+        "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
+        "rag_project.ingestion.robust_ingestor.robust_ingest_file",
+    }
     assert contract["answer_monkey_patch"] is False
     assert contract["medical_safety_gate"] is True
 
