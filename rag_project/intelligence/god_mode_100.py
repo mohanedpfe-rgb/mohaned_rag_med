@@ -42,8 +42,6 @@ def _validated_model_entities(result: dict[str, Any]) -> list[str]:
 def _sentence_units(answer: str) -> list[str]:
     raw = str(answer or "").strip()
     if not raw: return []
-    # The citation belongs to the factual sentence. Remove only the separator before
-    # a trailing source marker so sentence splitting cannot turn [S1] into a new unit.
     raw = re.sub(r"(?<=[.!?؟])\s+(?=\[S\d+\]\s*$)", "", raw, flags=re.I|re.MULTILINE)
     units = []
     for part in re.split(r"\n+|(?<=[.!?؟])\s+", raw):
@@ -125,7 +123,6 @@ def _runtime_phase_implementation(result: dict[str,Any], hits:list[Any], final_m
 
 
 def _normalize_grounding_text(value: str) -> str:
-    """Normalize citation claims for quote-level matching without changing meaning."""
     value=re.sub(r"\[S\d+\]"," ",str(value or ""),flags=re.I)
     value=value.casefold().replace("’","'")
     value=re.sub(r"[^\w\s]"," ",value,flags=re.UNICODE)
@@ -214,5 +211,9 @@ def _final_verification(answer:str,hits:list[Any],grounding:dict[str,Any],claims
     except Exception:
         ratio=float(grounding.get("supported_ratio",0.) or 0.); allow=bool(grounding.get("allow")); return {"checked":True,"allow":allow,"reason":grounding.get("method","grounding_gate"),"claim_count":len(claims),"blocked_claims":0 if allow else len(claims),"supported_ratio":ratio,"matrix_all_entailed":allow,"citation_count":len(citations),"claim_checks":claims,"evidence_claim_matrix":[]}
 
+
+# The production certifier historically exposed two names.  Keep one canonical
+# callable object so identity/signature checks and legacy imports cannot diverge.
+enhance_result = enhanced_god_answer
 
 __all__=["complete_phases","verify_final_answer","enhanced_god_answer","enhance_result","legacy_enhanced_god_answer","_runtime_phase_implementation","_validated_model_entities"]
