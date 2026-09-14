@@ -24,28 +24,13 @@ def install() -> None:
         def transition(self, document_id: str, new_stage: str, **values: Any) -> None:
             target_stage = str(new_stage).upper()
             if target_stage in {"READY", "COMPLETED"}:
-                # The canonical robust ingestor has already completed the semantic /
-                # lexical publication before asking the state store to commit READY.
-                # Make that publication fact explicit in the durable transition.
                 values.setdefault("index_state", "READY")
                 record = self.get_document(document_id)
                 if not record:
                     raise ValueError(f"Document {document_id!r} does not exist.")
-                total_pages = int(
-                    values["total_pages"]
-                    if "total_pages" in values
-                    else (record.get("total_pages") or 0)
-                )
-                current_page = int(
-                    values["current_page"]
-                    if "current_page" in values
-                    else (record.get("current_page") or 0)
-                )
-                content_hash = str(
-                    values["content_hash"]
-                    if "content_hash" in values
-                    else (record.get("content_hash") or "")
-                )
+                total_pages = int(values["total_pages"] if "total_pages" in values else (record.get("total_pages") or 0))
+                current_page = int(values["current_page"] if "current_page" in values else (record.get("current_page") or 0))
+                content_hash = str(values["content_hash"] if "content_hash" in values else (record.get("content_hash") or ""))
                 index_state = str(values.get("index_state") or "").upper()
                 if total_pages <= 0 or current_page != total_pages:
                     raise RuntimeError(
@@ -55,27 +40,17 @@ def install() -> None:
                 if not content_hash:
                     raise RuntimeError("READY publication requires a non-empty content_hash.")
                 if index_state != "READY":
-                    raise RuntimeError(
-                        f"READY publication requires READY index_state, got {index_state!r}."
-                    )
+                    raise RuntimeError(f"READY publication requires READY index_state, got {index_state!r}.")
 
             try:
                 return original_transition(self, document_id, new_stage, **values)
             except Exception:
-                # transition_document_state writes the durable row before recording its
-                # audit event. If the row is already at the requested terminal state,
-                # do not invalidate that publication merely because event logging failed.
                 try:
                     record = self.get_document(document_id)
                     current_stage = str((record or {}).get("current_stage") or "").upper()
                     status = str((record or {}).get("status") or "").upper()
                     index_state = str((record or {}).get("index_state") or "").upper()
-                    if (
-                        target_stage in {"READY", "COMPLETED"}
-                        and current_stage in {"READY", "COMPLETED"}
-                        and status in {"READY", "COMPLETED"}
-                        and index_state == "READY"
-                    ):
+                    if target_stage in {"READY", "COMPLETED"} and current_stage in {"READY", "COMPLETED"} and status in {"READY", "COMPLETED"} and index_state == "READY":
                         return None
                     if current_stage == target_stage:
                         return None
@@ -99,8 +74,6 @@ def install() -> None:
                 except Exception:
                     if attempt < 2:
                         time.sleep(0.05 * (attempt + 1))
-            # Lease cleanup is not allowed to convert a successful publication into
-            # an ingestion failure. A stale lease is recoverable by the supervisor.
             return False
 
         release.__module__ = IngestionStateStore.__module__
@@ -130,18 +103,12 @@ def install() -> None:
         set_version_state._runtime_version_state_retry_fix = True
         VectorStore.set_version_index_state = set_version_state
 
-    # The canonical empty-PDF failure is a generic terminal FAILED outcome, not a
-    # specialized extraction status. Normalize only that exact failure so genuine OCR
-    # and parser failures retain their more precise statuses.
     original_robust_ingest = robust_ingestor.robust_ingest_file
     if not getattr(original_robust_ingest, "_runtime_empty_pdf_status_fix", False):
 
         @wraps(original_robust_ingest)
         def robust_ingest(system: Any, pdf_path: Any, *args: Any, **kwargs: Any):
             result = original_robust_ingest(system, pdf_path, *args, **kwargs)
-            # runtime_deep_contract_fix normalizes a duplicate SKIPPED result to READY
-            # for legacy callers, but the canonical ingestion/publication contract must
-            # expose SKIPPED so versioned duplicate uploads are never re-published.
             if isinstance(result, dict) and result.get("skipped") is True:
                 result = dict(result)
                 result["status"] = "SKIPPED"
@@ -152,22 +119,31 @@ def install() -> None:
                     try:
                         row = store.get_document(document_id)
                         error = str((row or {}).get("error") or result.get("error") or "")
-                        if (
-                            str((row or {}).get("status") or "").upper() == "FAILED_EXTRACTION"
-                            and "no extractable searchable content" in error.casefold()
-                        ):
-                            store.update_document(
-                                document_id,
-                                current_stage="FAILED",
-                                status="FAILED",
-                                index_state="FAILED",
-                            )
+                        if str((row or {}).get("status") or "").upper() == "FAILED_EXTRACTION" and "no extractable searchable content" in error.casefold():
+                            store.update_document(document_id, current_stage="FAILED", status="FAILED", index_state="FAILED")
                     except Exception:
                         pass
             return result
 
         robust_ingest._runtime_empty_pdf_status_fix = True
         robust_ingestor.robust_ingest_file = robust_ingest
+
+    # Normalize duplicate archive result shape without changing the public
+    # ProductionRAGSystem archive implementation itself.
+    try:
+        from rag_project.app.production_rag import ProductionRAGSystem
+        original_archive_duplicate = ProductionRAGSystem._archive_duplicate_upload
+        if not getattr(original_archive_duplicate, "_runtime_duplicate_archive_contract", False):
+            def archive_duplicate(self: Any, pdf_path: Any, document_id: str, result: dict[str, Any]):
+                out = original_archive_duplicate(self, pdf_path, document_id, result)
+                if isinstance(out, dict) and out.get("archived_duplicate"):
+                    out = dict(out)
+                    out.setdefault("archive_path", out["archived_duplicate"])
+                return out
+            archive_duplicate._runtime_duplicate_archive_contract = True
+            ProductionRAGSystem._archive_duplicate_upload = archive_duplicate
+    except Exception:
+        pass
 
 
 __all__ = ["install"]
