@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from rag_project.ingestion import robust_ingestor
+from rag_project.ingestion.status_contract import normalize_public_status, public_result
 
 
 def _unique_archive_path(directory: Path, source: Path, suffix: str) -> Path:
@@ -21,17 +22,11 @@ def _unique_archive_path(directory: Path, source: Path, suffix: str) -> Path:
 
 
 def _public_result(result: dict[str, Any]) -> dict[str, Any]:
-    out = dict(result or {})
-    status = str(out.get("status") or "").upper()
-    if status in {"SUCCESS", "COMPLETED"}:
-        out["status"] = "READY"
-    elif status == "FAILED":
-        out["status"] = "FAILED"
-    return out
+    return public_result(result)
 
 
 def _is_success(result: dict[str, Any]) -> bool:
-    return str(result.get("status") or "").upper() in {"SUCCESS", "READY", "COMPLETED"}
+    return normalize_public_status(result.get("status")) == "READY"
 
 
 def _retire_previous_version(system: Any, previous: dict[str, Any], new_document_id: str) -> list[str]:
