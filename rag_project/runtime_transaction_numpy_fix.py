@@ -21,25 +21,50 @@ def _to_plain_embedding(value: Any) -> Any:
     return value
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Convert list-like values without ever evaluating an array for truthiness."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if hasattr(value, "tolist"):
+        try:
+            converted = value.tolist()
+            if isinstance(converted, list):
+                return converted
+            if isinstance(converted, tuple):
+                return list(converted)
+            return [converted]
+        except Exception:
+            pass
+    try:
+        return list(value)
+    except (TypeError, ValueError):
+        return []
+
+
 def _semantic_only_validation(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
     records = self.collection.get(
         where={"document_id": document_id},
         include=["metadatas", "documents", "embeddings"],
     )
-    ids = list(records.get("ids") or [])
-    metadatas_all = list(records.get("metadatas") or [])
+    ids = _as_list(records.get("ids"))
+    metadatas_all = _as_list(records.get("metadatas"))
+    raw_embeddings = _as_list(records.get("embeddings"))
     if version_id is not None:
         keep = [
             index
             for index, metadata in enumerate(metadatas_all)
             if str(self._coerce_metadata(metadata).get("version_id") or "") == str(version_id)
         ]
-        normalized = {key: list(value or []) for key, value in records.items()}
+        normalized = {key: _as_list(value) for key, value in records.items()}
         ids = [normalized.get("ids", [])[index] for index in keep]
         metadatas_all = [normalized.get("metadatas", [])[index] for index in keep]
         embeddings = [normalized.get("embeddings", [])[index] for index in keep]
     else:
-        embeddings = list(records.get("embeddings") or [])
+        embeddings = raw_embeddings
 
     issues: list[str] = []
     seen: set[str] = set()
@@ -89,14 +114,14 @@ def install() -> None:
                     if raw is not None:
                         vector["embeddings"] = _to_plain_embedding(raw)
                     raw_ids = vector.get("ids")
-                    if raw_ids is not None and not isinstance(raw_ids, list):
-                        vector["ids"] = list(raw_ids)
+                    if raw_ids is not None:
+                        vector["ids"] = _as_list(raw_ids)
                     raw_docs = vector.get("documents")
-                    if raw_docs is not None and not isinstance(raw_docs, list):
-                        vector["documents"] = list(raw_docs)
+                    if raw_docs is not None:
+                        vector["documents"] = _as_list(raw_docs)
                     raw_meta = vector.get("metadatas")
-                    if raw_meta is not None and not isinstance(raw_meta, list):
-                        vector["metadatas"] = list(raw_meta)
+                    if raw_meta is not None:
+                        vector["metadatas"] = _as_list(raw_meta)
                 return original(system, snapshot)
             safe_restore._numpy_snapshot_fix = True
             transaction._restore_snapshot = safe_restore
@@ -113,4 +138,4 @@ def install() -> None:
         _INSTALLED = True
 
 
-__all__ = ["install"]
+__all__ = ["install", "_as_list"]
