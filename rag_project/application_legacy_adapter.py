@@ -13,13 +13,11 @@ from rag_project.ingestion import versioned_ingestor
 
 
 class LegacyProductionRAGAdapter:
-    """Delegate the established runtime surface to the legacy implementation."""
+    """Delegate infrastructure to legacy storage/ingestion while keeping the answer path canonical."""
 
     __slots__ = ("_delegate",)
 
     def __init__(self, settings: Any) -> None:
-        # Resolve at construction time so runtime contract tests and controlled
-        # integrations can replace the compatibility implementation safely.
         candidate = __import__(
             "rag_project.app.production_rag", fromlist=["ProductionRAGSystem"]
         ).ProductionRAGSystem
@@ -41,9 +39,18 @@ class LegacyProductionRAGAdapter:
             return
         setattr(self.delegate, name, value)
 
+    def answer(self, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Route every production answer through the canonical MedEvidence service.
+
+        The legacy delegate remains available for storage and compatibility, but it
+        must never become an implicit second answer authority through __getattr__.
+        """
+        from rag_project.application_answer_service import answer as canonical_answer
+
+        return canonical_answer(self, question, metadata_filter)
+
     def ingest_file(self, pdf_path: Any) -> Any:
-        delegate = self.delegate
-        return versioned_ingestor.ingest_version_safely(delegate, pdf_path)
+        return versioned_ingestor.ingest_version_safely(self.delegate, pdf_path)
 
     def ingest_directory(self, directory: Any = None) -> Any:
         return self.delegate.ingest_directory(directory)
