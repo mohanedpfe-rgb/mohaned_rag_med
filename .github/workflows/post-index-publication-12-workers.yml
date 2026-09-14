@@ -24,18 +24,20 @@ jobs:
       - name: Validate installed environment
         run: python -m pip check
       - name: Compile touched runtime and test modules
-        run: python -m compileall -q rag_project tests/test_post_index_publication_phases.py
+        run: |
+          python -m compileall -q rag_project \
+            tests/test_post_index_publication_phases.py \
+            tests/test_post_commit_ingestion_hardening.py \
+            tests/test_semantic_ready_retrieval_boundary.py \
+            tests/test_terminal_ready_monotonicity.py
       - name: Run all post-index publication phases with exactly 12 pytest workers
         env:
           DEVICE_MODE: i5_16gb
           OCR_ENABLED: "false"
           EMBEDDING_TEST_MODE: "true"
         run: |
-          python -m pytest -q -n 12 --dist loadscope tests/test_post_index_publication_phases.py
-      - name: Run the existing post-commit hardening regressions with 12 workers
-        env:
-          DEVICE_MODE: i5_16gb
-          OCR_ENABLED: "false"
-          EMBEDDING_TEST_MODE: "true"
-        run: |
-          python -m pytest -q -n 12 --dist loadscope tests/test_post_commit_ingestion_hardening.py
+          python -m pytest -q -n 12 --dist loadscope \
+            tests/test_post_index_publication_phases.py \
+            tests/test_post_commit_ingestion_hardening.py \
+            tests/test_semantic_ready_retrieval_boundary.py \
+            tests/test_terminal_ready_monotonicity.py
