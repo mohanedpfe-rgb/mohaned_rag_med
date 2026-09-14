@@ -18,9 +18,6 @@ from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepar
 from rag_project.security import harden_system
 
 _FACTORY_LOCK = threading.RLock()
-
-# There is one public answer authority.  The MedEvidence Pro engine is an
-# implementation detail of that service, not a competing public pipeline.
 ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
 
 
@@ -62,39 +59,12 @@ class MedEvidenceProductionRAGSystem:
 
     def ingest_directory(self, directory: Any = None) -> list[dict[str, Any]]:
         results = self.runtime.ingest_directory(directory)
-        normalized: list[dict[str, Any]] = []
-        for item in results:
-            row = dict(item or {})
-            row["status"] = normalize_public_status(row.get("status"))
-            normalized.append(row)
-        return normalized
+        return [dict(item or {}) | {"status": normalize_public_status((item or {}).get("status"))} for item in results]
 
     def health_report(self) -> dict[str, Any]:
         report = dict(self.runtime.health_report() or {})
         pipeline = dict(report.get("pipeline") or {})
-        pipeline.update({
-            "explicit_composition": True,
-            "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
-            "answer_pipeline": "med_evidence_pro",
-            "med_evidence_pro": True,
-            "phase_count": 8,
-            "safety_gate": True,
-            "multi_tier_retrieval": True,
-            "structured_knowledge": True,
-            "semantic_cache": True,
-            "answer_cascade": True,
-            "active_verification": True,
-            "feedback_logging": True,
-            "operations_store": True,
-            "ab_testing": True,
-            "retraining_manifest": True,
-            "backup_rotation": True,
-            "circuit_breaker": True,
-            "cloud_hybrid": True,
-            "cloud_opt_in": True,
-            "cloud_pii_redaction": True,
-            "enterprise_roles": True,
-        })
+        pipeline.update({"explicit_composition": True, "authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY, "answer_pipeline": "explicit_delegation", "med_evidence_pro": True, "phase_count": 8, "safety_gate": True, "multi_tier_retrieval": True, "structured_knowledge": True, "semantic_cache": True, "answer_cascade": True, "active_verification": True, "feedback_logging": True, "operations_store": True, "ab_testing": True, "retraining_manifest": True, "backup_rotation": True, "circuit_breaker": True, "cloud_hybrid": True, "cloud_opt_in": True, "cloud_pii_redaction": True, "enterprise_roles": True})
         report["pipeline"] = pipeline
         return report
 
@@ -103,7 +73,6 @@ class MedEvidenceProductionRAGSystem:
 
 
 def create_rag_system(settings: Settings | None = None, *, runtime_prepared: bool | None = None):
-    """Build the canonical runtime without importing or owning the composition root."""
     with _FACTORY_LOCK:
         prepared = runtime_is_prepared() if runtime_prepared is None else runtime_prepared
         if not prepared:
@@ -127,10 +96,11 @@ def create_default_rag_system():
 
 
 def runtime_contract() -> dict[str, Any]:
+    """Expose one stable contract while the legacy implementation remains adapter-only."""
     return {
         "composition_root": "rag_project.application.create_rag_system",
         "canonical_service": CANONICAL_SERVICE,
-        "service": "MedEvidenceProductionRAGSystem",
+        "service": "ProductionRAGSystem",
         "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
         "legacy_adapter": "rag_project.application_legacy_adapter.LegacyProductionRAGAdapter",
         "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely",
@@ -142,10 +112,10 @@ def runtime_contract() -> dict[str, Any]:
         "security_policy": "rag_project.security.harden_system",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "answer_pipeline": "med_evidence_pro",
+        "answer_pipeline": "explicit_delegation",
         "answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_pipeline_execution": ANSWER_PIPELINE_AUTHORITY,
-        "active_answer_pipeline": "med_evidence_pro",
+        "active_answer_pipeline": "explicit_delegation",
         "active_answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_monkey_patch": False,
         "canonical_runtime_binding": "rag_project.canonical_runtime.install",
@@ -201,9 +171,4 @@ def runtime_contract() -> dict[str, Any]:
     }
 
 
-__all__ = [
-    "create_rag_system", "create_default_rag_system", "runtime_contract",
-    "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY",
-    "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION",
-    "MedEvidenceProductionRAGSystem", "_med_evidence_answer",
-]
+__all__ = ["create_rag_system", "create_default_rag_system", "runtime_contract", "ANSWER_PIPELINE_AUTHORITY", "ACTIVE_ANSWER_PIPELINE_AUTHORITY", "PRODUCTION_CONTRACT_VERSION", "INGESTION_CONTRACT_VERSION", "MedEvidenceProductionRAGSystem", "_med_evidence_answer"]
