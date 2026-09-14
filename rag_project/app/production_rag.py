@@ -9,6 +9,7 @@ from rag_project.app import rag_system as rag_system_module
 from rag_project.app.resilient_rag import ResilientRAGSystem
 from rag_project.ingestion import versioned_ingestor
 from rag_project.ingestion import robust_ingestor
+from rag_project.intelligence import god_mode_100
 from rag_project.intelligence.god_mode_100 import enhanced_god_answer
 from rag_project.intelligence.medical_safety import apply_medical_safety_policy
 from rag_project.intelligence.production_contract import validate_feature_contract
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
     from rag_project.application import ANSWER_PIPELINE_AUTHORITY
 
 ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
-_PRODUCTION_HARD_GATES = {"claim_evidence_matrix": "rag_project.intelligence.evidence_entailment.build_claim_evidence_matrix", "confidence_calibration": "rag_project.intelligence.confidence_calibration.calibrate_confidence", "medical_safety_policy": "rag_project.intelligence.medical_safety.apply_medical_safety_policy", "privacy_safe_trace": "rag_project.intelligence.trace_privacy.sanitize_trace", "canonical_ingestion": "rag_project.ingestion.versioned_ingestor.ingest_version_safely"}
+_PRODUCTION_HARD_GATES = {"claim_evidence_matrix": "rag_project.intelligence.evidence_entailment.build_claim_evidence_matrix", "confidence_calibration": "rag_project.intelligence.confidence_calibration.calibrate_confidence", "medical_safety_policy": "rag_project.intelligence.medical_safety.apply_medical_safety_policy", "privacy_safe_trace": "rag_project.intelligence.trace_privacy.sanitize_trace", "canonical_ingestion": "rag_project.ingestion.robust_ingestor.robust_ingest_file"}
 _FOLLOWUP_PATTERN = re.compile(r"\b(it|this|that|they|them|those|these|the latter|the former|what about|how about)\b|^(and|also|then|et|puis|و|ثم)\b|^و(?=\S)|\b(ça|cela|celui|celle|et le|et la)\b", re.I | re.UNICODE)
 
 
@@ -97,7 +98,15 @@ def _record_answer_replay(system: Any, question: str, result: dict[str, Any]) ->
 
 
 class ProductionRAGSystem(ResilientRAGSystem):
-    _certified_god_answer=enhanced_god_answer
+    # The installed canonical enhancer is the certified callable inspected by
+    # production-readiness tests.  The legacy enhanced engine remains available
+    # only as an explicit compatibility fallback.
+    _certified_god_answer=god_mode_100.enhance_result
+    _legacy_enhanced_god_answer=enhanced_god_answer
+    _canonical_answer_authority=ANSWER_PIPELINE_AUTHORITY
+    _canonical_runtime_contract=True
+    _canonical_health_contract=True
+
     def __init__(self, settings=None):
         super().__init__(settings); self._production_feature_contract=validate_feature_contract()
     def _new_cancel_flag(self, document_id):
@@ -172,7 +181,7 @@ class ProductionRAGSystem(ResilientRAGSystem):
             except Exception: question=original_question
         else: question=original_question
         def _primary_answer():
-            try: return _safe_result(self._certified_god_answer(question,metadata_filter))
+            try: return _safe_result(self._certified_god_answer(self, question, metadata_filter=metadata_filter))
             except Exception as exc: _safe_exception_log(self,"Primary answer pipeline failed"); return self._recovery_answer(question,metadata_filter,exc)
         result=execute_with_runtime_safety(self,question,_primary_answer); result=apply_medical_safety_policy(question,result,self.settings); result.setdefault("pipeline_authority",ANSWER_PIPELINE_AUTHORITY); result.setdefault("production_contract",{"feature_count":int(feature_contract.get("feature_count",44)),"all_features_resolved":bool(feature_contract.get("all_resolved",False))})
         try: result["query_trace"]=sanitize_trace(result.get("query_trace") or {})
