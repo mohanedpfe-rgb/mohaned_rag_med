@@ -62,8 +62,17 @@ def _safe_add_documents(self: Any, documents, metadatas, embeddings, ids):
 
 
 def _safe_coerce_metadata(self: Any, metadata: Any) -> dict[str, Any]:
+    """Normalize metadata through the previously installed bound method.
+
+    ``_chroma_metadata_fix_original_coerce_metadata`` is stored on the
+    ``VectorStore`` class. Accessing it through ``self`` produces a bound method,
+    so passing ``self`` again would call the wrapper with three positional
+    arguments and raise ``TypeError: ... takes 2 positional arguments but 3 were
+    given``. Keep the wrapper compatible with both the base implementation and
+    earlier runtime layers by calling the bound method with only ``metadata``.
+    """
     original = self._chroma_metadata_fix_original_coerce_metadata
-    return _normalize_metadata(original(self, metadata))
+    return _normalize_metadata(original(metadata))
 
 
 def _safe_transition_document_state(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
