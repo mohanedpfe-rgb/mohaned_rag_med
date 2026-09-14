@@ -14,17 +14,17 @@ _CURRENT_SYSTEM: Any | None = None
 
 
 class SemanticRetrievalCache:
-    """Embedding-aware retrieval cache compatible with the production retriever contract.
+    """Embedding-aware retrieval cache with a stable tuple return contract.
 
-    ``get`` returns ``(hits, metadata)`` for the public semantic-cache contract.
-    The metadata is also understood by the production ``restore`` compatibility
-    path, so older callers that passed the raw cache value into ``restore`` keep
-    working during the migration.
+    ``get`` returns ``(hits, metadata)``.  Dimension is learned from the active
+    embedding service when the caller does not provide an explicit expected
+    dimension, preventing test-mode/runtime embedding-size drift from becoming a
+    cache miss or false contract failure.
     """
 
     SCHEMA_VERSION = 2
 
-    def __init__(self, db_path: str | Path, ttl_seconds: float = 7 * 24 * 60 * 60, *, embed_query: Callable[[str], Sequence[float]] | None = None, similarity_threshold: float = 0.95, max_entries: int = 10_000, expected_dimension: int = 768) -> None:
+    def __init__(self, db_path: str | Path, ttl_seconds: float = 7 * 24 * 60 * 60, *, embed_query: Callable[[str], Sequence[float]] | None = None, similarity_threshold: float = 0.95, max_entries: int = 10_000, expected_dimension: int = 0) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embed_query = embed_query
@@ -86,8 +86,10 @@ class SemanticRetrievalCache:
             return None
         if not vector or any(not math.isfinite(v) for v in vector):
             return None
-        if self.embed_query is None and len(vector) != self.expected_dimension:
+        if self.expected_dimension > 0 and len(vector) != self.expected_dimension:
             return None
+        if self.expected_dimension <= 0:
+            self.expected_dimension = len(vector)
         return vector
 
     def get(self, query: str) -> tuple[list[RetrievalHit], dict[str, Any]] | None:
@@ -107,6 +109,8 @@ class SemanticRetrievalCache:
             rows = db.execute("SELECT cache_id, embedding, dimension, payload, created, accessed, hits FROM semantic_retrieval_cache").fetchall()
             best: tuple[float, tuple[Any, ...]] | None = None
             for row in rows:
+                if int(row[2]) != len(vector):
+                    continue
                 cached_vector = self._unpack(row[1], int(row[2]))
                 similarity = self.cosine(vector, cached_vector)
                 if similarity >= self.similarity_threshold and (best is None or similarity > best[0] or (math.isclose(similarity, best[0]) and int(row[0]) > int(best[1][0]))):
@@ -124,7 +128,7 @@ class SemanticRetrievalCache:
             db.execute("UPDATE semantic_retrieval_cache SET accessed=?, hits=hits+1 WHERE cache_id=?", (now, row[0]))
             db.commit()
         restored = self.restore(payload)
-        return restored, {"similarity": float(similarity), "hits": len(restored), "cache_id": int(row[0]), "query": str(row[3]) if False else ""}
+        return restored, {"similarity": float(similarity), "hits": len(restored), "cache_id": int(row[0]), "query": ""}
 
     def put(self, query: str, hits: Sequence[RetrievalHit]) -> bool:
         if self._filtered_scope_active():
@@ -155,8 +159,6 @@ class SemanticRetrievalCache:
 
     @staticmethod
     def restore(payload: Any) -> list[RetrievalHit]:
-        # Accept both the current raw list payload and the compatibility tuple
-        # returned by get(). The metadata is intentionally ignored by restore.
         if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[0], (list, tuple)):
             payload = payload[0]
         restored: list[RetrievalHit] = []
