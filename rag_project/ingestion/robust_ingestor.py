@@ -50,13 +50,17 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     content_hash = system._hash_file(file_path)
     existing = system.state_store.get_by_hash(content_hash)
     previous = system.state_store.get_by_path(str(file_path.resolve()))
-    previous_version = previous.get("content_hash") if previous and previous.get("content_hash") != content_hash else None
+    previous_version = (
+        str(previous.get("version_id") or previous.get("content_hash") or "")
+        if previous and previous.get("content_hash") != content_hash
+        else None
+    )
     current_chunking_config = json.dumps({"size": system.settings.chunk_size, "overlap": system.settings.chunk_overlap}, sort_keys=True)
     current_ocr_config = json.dumps({"engine": "rapidocr", "scale": 2}, sort_keys=True)
     current_version_id = system._ingestion_version_id(content_hash=content_hash, parser_version="pdf-extractor-v3", ocr_config=current_ocr_config, chunking_config=current_chunking_config, embedding_model=system.settings.embedding_model, embedding_profile=None, embedding_dimension=None)
 
     if existing and system.state_store.is_ready_status(existing.get("status")) and existing.get("version_id") == current_version_id:
-        validation = system.vector_store.validate_document_index(existing["document_id"], content_hash)
+        validation = system.vector_store.validate_document_index(existing["document_id"], current_version_id)
         if validation.get("valid") and validation.get("count", 0) > 0:
             archived_path = _unique_archive_path(system.settings.archive_dir, file_path, "duplicate")
             if file_path.resolve() != archived_path.resolve():
@@ -88,7 +92,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     try:
         if existing and not system.state_store.is_ready_status(existing.get("status")):
             try:
-                system.vector_store.delete_version(document_id, content_hash)
+                system.vector_store.delete_version(document_id, current_version_id)
             except Exception:
                 system.logger.exception("Failed to clean partial retry index for %s", file_path.name)
         if previous and previous.get("content_hash") != content_hash:
@@ -184,7 +188,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                         "language": document_language,
                         "evidence_types": chunk.metadata.get("evidence_types", ["text"]),
                         "index_state": "BUILDING",
-                        "version_id": content_hash,
+                        "version_id": current_version_id,
+                        "content_hash": content_hash,
                         "structure_version": 2,
                         "representation_type": chunk.representation_type,
                         "parent_id": chunk.parent_id,
@@ -234,7 +239,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         validation = None
         validation_attempts = 3
         for attempt in range(1, validation_attempts + 1):
-            validation = system.vector_store.validate_document_index(document_id, content_hash)
+            validation = system.vector_store.validate_document_index(document_id, current_version_id)
             if validation.get("valid") and validation.get("count") == embedding_count:
                 break
             if attempt < validation_attempts:
@@ -245,7 +250,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             raise RuntimeError(f"FAILED_INDEXING: committed index validation failed (expected {embedding_count}, found {actual_count}): {issues}")
 
         system.state_store.transition_document_state(document_id, "VALIDATING_INDEX", current_page=total_pages, total_pages=total_pages)
-        system.state_store.record_event(document_id, stage="VALIDATING_INDEX", status="RUNNING", event_type="validation", message="Index integrity passed; preparing atomic publication", details={"version_id": content_hash, "chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
+        system.state_store.record_event(document_id, stage="VALIDATING_INDEX", status="RUNNING", event_type="validation", message="Index integrity passed; preparing atomic publication", details={"version_id": current_version_id, "chunk_count": chunk_count, "embedding_count": embedding_count}, current_page=total_pages, total_pages=total_pages, file_name=file_path.name)
         mark("validation")
         renew(force=True)
         check_cancel()
@@ -258,7 +263,7 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             file_path.replace(target)
             moved_into_processed = True
 
-        system.vector_store.set_version_index_state(document_id, content_hash, "READY")
+        system.vector_store.set_version_index_state(document_id, current_version_id, "READY")
         system.state_store.transition_document_state(
             document_id,
             "READY",
@@ -296,8 +301,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         if published:
             return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed.", "error": type(exc).__name__}
         try:
-            system.vector_store.delete_version(document_id, content_hash)
-            system.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
+            system.vector_store.delete_version(document_id, current_version_id)
+            system.vector_store.set_version_index_state(document_id, current_version_id, "FAILED")
         except Exception:
             system.logger.exception("Failed to remove partial index for %s", file_path.name)
         failure_text = str(exc)
@@ -318,9 +323,6 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.logger.exception("Failed to persist ingestion failure state for %s", file_path.name)
 
         failed_path = _unique_archive_path(system.settings.failed_dir, file_path, content_hash[:12])
-        # Quarantine the newly published/moved file before restoring any previous
-        # processed target. Otherwise the restored good file can be mistaken for
-        # the failed input and moved into failed/.
         quarantine_source = target if moved_into_processed and target.exists() else (file_path if file_path.exists() else None)
         if quarantine_source is not None and quarantine_source.exists():
             try:
@@ -330,32 +332,34 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                     in_incoming = True
                 except ValueError:
                     in_incoming = False
-                if quarantine_source.resolve() == failed_path.resolve():
-                    pass
-                elif in_incoming or moved_into_processed:
+                if not in_incoming:
                     quarantine_source.replace(failed_path)
                 else:
                     shutil.copy2(quarantine_source, failed_path)
+                    quarantine_source.unlink(missing_ok=True)
             except OSError:
-                system.logger.exception("Failed to quarantine %s", file_path.name)
-
-        if previous_target_backup is not None and previous_target_backup.exists() and not target.exists():
+                system.logger.exception("Failed to quarantine %s", quarantine_source.name)
+        if previous_target_backup is not None and previous_target_backup.exists():
             try:
+                target.parent.mkdir(parents=True, exist_ok=True)
                 previous_target_backup.replace(target)
+                previous_target_backup = None
             except OSError:
                 system.logger.exception("Failed to restore previous processed file for %s", file_path.name)
-        return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text}
+        if file_path.exists() and file_path.resolve() != failed_path.resolve():
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError:
+                system.logger.exception("Failed to remove failed incoming source %s", file_path.name)
+        return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text, "failed_path": str(failed_path.resolve())}
     finally:
+        try:
+            if not published:
+                system.vector_store.set_version_index_state(document_id, current_version_id, "FAILED")
+        except Exception:
+            pass
         try:
             system.state_store.release_document(document_id, worker_id)
         except Exception:
-            system.logger.exception("Lease cleanup failed after ingestion of %s", file_path.name)
-        try:
-            system._remove_cancel_flag(document_id)
-        except Exception:
-            system.logger.exception("Cancel-flag cleanup failed after ingestion of %s", file_path.name)
-
-
-def datetime_from_mtime(path: Path) -> str:
-    from datetime import datetime, timezone
-    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            system.logger.exception("Failed to release ingestion lease for %s", file_path.name)
+        system._remove_cancel_flag(document_id)
