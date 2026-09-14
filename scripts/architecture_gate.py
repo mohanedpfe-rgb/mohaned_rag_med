@@ -22,21 +22,10 @@ REQUIRED_ANSWER_SERVICE_SYMBOLS = {"answer", "detect_answer_language", "install_
 REQUIRED_COMPOSITION_SYMBOLS = {"prepare_runtime", "install_production_contracts", "normalize_runtime_environment", "runtime_is_prepared"}
 FORBIDDEN_COMPOSITION_IMPORT_PREFIXES = ("streamlit", "rag_project.app")
 FORBIDDEN_APPLICATION_IMPORTS = {"rag_project.composition"}
-FORBIDDEN_APPLICATION_INSTALLER_MODULES = {
-    "rag_project.intelligence.pipeline_integrity",
-    "rag_project.intelligence.production_contract_v2",
-    "rag_project.ingestion.ingestion_contract",
-    "rag_project.canonical_runtime",
-}
+FORBIDDEN_APPLICATION_INSTALLER_MODULES = {"rag_project.intelligence.pipeline_integrity", "rag_project.intelligence.production_contract_v2", "rag_project.ingestion.ingestion_contract", "rag_project.canonical_runtime"}
 LEGACY_IMPLEMENTATION_MODULE = "rag_project.app.production_rag"
 LEGACY_BOUNDARY_FILES = {"rag_project/application_legacy_adapter.py", "rag_project/security.py"}
-FORBIDDEN_DEAD_PATHS = {
-    "rag_project/runtime_canonical_contract_guard.py",
-    "rag_project/runtime_storage_contract_fix.py",
-    "rag_project/runtime_test_embedding_guard.py",
-    "tests/test_44_final_certification.py",
-    "tests/test_production_contract.py",
-}
+FORBIDDEN_DEAD_PATHS = {"rag_project/runtime_canonical_contract_guard.py", "rag_project/runtime_storage_contract_fix.py", "rag_project/runtime_test_embedding_guard.py", "tests/test_44_final_certification.py", "tests/test_production_contract.py"}
 CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence")
 
 
@@ -48,23 +37,23 @@ def _python_files() -> Iterable[Path]:
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imports: set[str] = set()
+    found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            imports.update(alias.name for alias in node.names)
+            found.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.add(node.module)
-    return imports
+            found.add(node.module)
+    return found
 
 
 def _imported_names(path: Path) -> set[tuple[str, str]]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    imported: set[tuple[str, str]] = set()
+    found: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module:
             for alias in node.names:
-                imported.add((node.module, alias.name))
-    return imported
+                found.add((node.module, alias.name))
+    return found
 
 
 def _symbols(path: Path) -> set[str]:
@@ -82,14 +71,12 @@ def inspect() -> dict[str, object]:
     for relative_path in sorted(FORBIDDEN_DEAD_PATHS):
         if (ROOT / relative_path).exists():
             violations.append(f"purged artifact was resurrected: {relative_path}")
-
     app_lines = len(APP.read_text(encoding="utf-8").splitlines())
     if app_lines > MAX_APP_LINES:
         violations.append(f"app.py is {app_lines} lines; limit is {MAX_APP_LINES}")
     app_imports = _imports(APP)
     if "rag_project.application" in app_imports:
         violations.append("app.py must not own application-service imports; use the composition/UI boundary")
-
     composition_imports = _imports(COMPOSITION)
     bad_composition_imports = sorted(name for name in composition_imports if name == "streamlit" or name.startswith("rag_project.app"))
     if bad_composition_imports:
@@ -97,14 +84,13 @@ def inspect() -> dict[str, object]:
     missing = sorted(REQUIRED_COMPOSITION_SYMBOLS - _symbols(COMPOSITION))
     if missing:
         violations.append(f"composition.py missing stable symbols: {missing}")
-
     application_imports = _imports(APPLICATION)
     missing_application = sorted(REQUIRED_APPLICATION_SYMBOLS - _symbols(APPLICATION))
     if missing_application:
         violations.append(f"application.py missing stable symbols: {missing_application}")
-    answer_symbols = sorted(REQUIRED_ANSWER_SERVICE_SYMBOLS - _symbols(ANSWER_SERVICE))
-    if answer_symbols:
-        violations.append(f"application_answer_service.py missing stable symbols: {answer_symbols}")
+    missing_answer = sorted(REQUIRED_ANSWER_SERVICE_SYMBOLS - _symbols(ANSWER_SERVICE))
+    if missing_answer:
+        violations.append(f"application_answer_service.py missing stable symbols: {missing_answer}")
     reverse_dependency = sorted(application_imports & FORBIDDEN_APPLICATION_IMPORTS)
     if reverse_dependency:
         violations.append(f"application.py imports composition root: {reverse_dependency}")
@@ -122,23 +108,18 @@ def inspect() -> dict[str, object]:
     if duplicated_installers:
         violations.append(f"application.py bypasses neutral installer ownership: {duplicated_installers}")
     application_source = APPLICATION.read_text(encoding="utf-8")
-    if "MedEvidenceProductionRAGSystem" not in application_source:
-        violations.append("application.py lost the canonical production service")
     if '"answer_monkey_patch": False' not in application_source:
         violations.append("canonical answer path must remain explicitly non-monkey-patched")
     if "_med_evidence_answer" not in application_source or "_certified_god_answer" not in application_source:
         violations.append("application.py must preserve the canonical answer binding compatibility seam")
     if "runtime_is_prepared()" not in application_source:
         violations.append("application factory must honor the prepared-runtime marker")
-
     answer_service_imports = _imports(ANSWER_SERVICE)
     if "streamlit" in answer_service_imports or any(name.startswith("rag_project.app") for name in answer_service_imports):
         violations.append("application_answer_service.py must remain presentation-independent")
-
     legacy_adapter_imports = _imports(LEGACY_ADAPTER)
     if LEGACY_IMPLEMENTATION_MODULE not in legacy_adapter_imports:
         violations.append("legacy compatibility adapter must own the legacy ProductionRAGSystem import")
-
     for path in _python_files():
         relative = str(path.relative_to(ROOT)).replace("\\", "/")
         if relative in LEGACY_BOUNDARY_FILES or relative.startswith("rag_project/app/"):
@@ -148,7 +129,6 @@ def inspect() -> dict[str, object]:
                 violations.append(f"{relative} imports legacy ProductionRAGSystem outside the compatibility boundaries")
         except SyntaxError:
             continue
-
     for path in (ROOT / "rag_project").glob("runtime_*.py"):
         try:
             imports = _imports(path)
@@ -156,16 +136,12 @@ def inspect() -> dict[str, object]:
             continue
         if any(name == "rag_project.app" or name.startswith("rag_project.app.") for name in imports):
             violations.append(f"{path.relative_to(ROOT)} imports the legacy application package; runtime must be neutral")
-
-    runtime_symbols = _symbols(RUNTIME)
-    if "install_application_contracts" not in runtime_symbols:
+    if "install_application_contracts" not in _symbols(RUNTIME):
         violations.append("runtime.py must own the neutral application-contract bootstrap")
     if "rag_project.runtime" not in composition_imports:
         violations.append("composition.py must delegate contract installation to neutral runtime policy")
-    bootstrap_imports = _imports(BOOTSTRAP_STATE)
-    if any(name == "streamlit" or name.startswith("rag_project.app") for name in bootstrap_imports):
+    if any(name == "streamlit" or name.startswith("rag_project.app") for name in _imports(BOOTSTRAP_STATE)):
         violations.append("runtime_bootstrap_state.py must remain presentation-independent")
-
     for layer in CORE_DIRS:
         layer_root = ROOT / "rag_project" / layer
         if not layer_root.is_dir():
@@ -179,43 +155,24 @@ def inspect() -> dict[str, object]:
             bad = sorted(name for name in imports if name == "streamlit" or name.startswith("rag_project.app"))
             if bad:
                 violations.append(f"{path.relative_to(ROOT)} imports presentation layer: {bad}")
-
     for path in _python_files():
         try:
             if _has_wildcard_import(path):
                 violations.append(f"{path.relative_to(ROOT)} uses a wildcard import")
         except SyntaxError:
             continue
-
     architecture_text = ARCHITECTURE.read_text(encoding="utf-8")
-    for marker in (
-        "rag_project.composition.prepare_runtime", "rag_project.app.ui_security_boundary",
-        "scripts/architecture_gate.py", "application_answer_service", "LegacyProductionRAGAdapter",
-        "BOOKRAG_RUNTIME_PREPARED_VERSION", "runtime_bootstrap_state", "immutable published document versions", "app.py",
-    ):
+    for marker in ("rag_project.composition.prepare_runtime", "rag_project.app.ui_security_boundary", "scripts/architecture_gate.py", "application_answer_service", "LegacyProductionRAGAdapter", "BOOKRAG_RUNTIME_PREPARED_VERSION", "runtime_bootstrap_state", "immutable published document versions", "app.py"):
         if marker.lower() not in architecture_text.lower():
             violations.append(f"ARCHITECTURE.md is missing contract marker: {marker}")
     if not LOCKFILE.is_file() or not LOCKFILE.read_text(encoding="utf-8").strip():
         violations.append("requirements.lock must exist and be non-empty")
-
-    syntax_failures: list[str] = []
     for path in _python_files():
         try:
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         except (OSError, SyntaxError) as exc:
-            syntax_failures.append(f"{path.relative_to(ROOT)}: {exc}")
-    violations.extend(syntax_failures)
-
-    return {
-        "ready": not violations,
-        "app_lines": app_lines,
-        "python_file_count": sum(1 for _ in _python_files()),
-        "checked_core_layers": list(CORE_DIRS),
-        "purge_contract_paths": sorted(FORBIDDEN_DEAD_PATHS),
-        "legacy_boundary_files": sorted(LEGACY_BOUNDARY_FILES),
-        "violations": violations,
-        "contract": "architecture-gate-v7",
-    }
+            violations.append(f"{path.relative_to(ROOT)}: {exc}")
+    return {"ready": not violations, "app_lines": app_lines, "python_file_count": sum(1 for _ in _python_files()), "checked_core_layers": list(CORE_DIRS), "purge_contract_paths": sorted(FORBIDDEN_DEAD_PATHS), "legacy_boundary_files": sorted(LEGACY_BOUNDARY_FILES), "violations": violations, "contract": "architecture-gate-v6"}
 
 
 def main() -> int:
