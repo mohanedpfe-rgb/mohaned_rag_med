@@ -1,12 +1,8 @@
 """Canonical request/evidence/answer contract for the production RAG path.
 
-This layer is intentionally additive. It closes the remaining architecture gaps:
-- one canonical request context for routing and diagnostics;
-- deterministic complexity classification before any LLM planner;
-- structured evidence bundles with source provenance;
-- confidence broken into independent signals;
-- controlled abstentions represented as state, never as medical claims;
-- request IDs and contract-version telemetry for reproducible diagnostics.
+This module is deliberately pure: it defines and applies data contracts but
+never imports or monkey-patches the legacy application, top_level_pipeline, or
+God-mode compatibility layers.
 """
 from __future__ import annotations
 
@@ -15,12 +11,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Mapping, Sequence
 
-from rag_project.intelligence.pipeline_integrity import safe_extract_query_entities, is_control_message
+from rag_project.intelligence.pipeline_integrity import is_control_message, safe_extract_query_entities
 from rag_project.intelligence.query_intelligence import plan_query
 from rag_project.intelligence.semantic_reasoning import understand_query
 from rag_project.utils.text_utils import meaningful_tokens
 
-CONTRACT_VERSION = "2026-09-11-production-contract-v2"
+CONTRACT_VERSION = "2026-09-14-production-contract-v3"
 _HARD_INTENTS = {"comparison", "etiology", "mechanism", "diagnosis", "management", "prognosis", "causal", "relationship"}
 _HARD_CUES = (
     "why", "how does", "how do", "compare", "versus", " vs ", "difference", "contraindication",
@@ -122,7 +118,6 @@ def _is_followup(question: str, history: Sequence[tuple[str, str]]) -> bool:
 
 
 def _strict_canonicalize(question: str, history: Sequence[tuple[str, str]]) -> tuple[str, bool]:
-    """Resolve only genuine follow-ups; preserve standalone questions verbatim."""
     cleaned = _clean(question)
     followup = _is_followup(cleaned, history)
     if not followup:
@@ -140,8 +135,6 @@ def _strict_canonicalize(question: str, history: Sequence[tuple[str, str]]) -> t
         except Exception:
             continue
     unique = tuple(dict.fromkeys(_clean(value).casefold() for value in anchors if _clean(value)))
-    # Idempotence: when a previous-turn anchor is already present in the current
-    # canonical query, never append the same context a second time.
     if unique and any(anchor_text in cleaned.casefold() for anchor_text in unique):
         return cleaned[:3500], True
     if unique:
@@ -208,7 +201,13 @@ def build_request_context(
     )
 
 
-def build_evidence_bundle(request_id: str, hits: Sequence[Any], *, entity_coverage: Mapping[str, Any] | None = None, contradiction_count: int = 0) -> EvidenceBundle:
+def build_evidence_bundle(
+    request_id: str,
+    hits: Sequence[Any],
+    *,
+    entity_coverage: Mapping[str, Any] | None = None,
+    contradiction_count: int = 0,
+) -> EvidenceBundle:
     records: list[EvidenceSource] = []
     for index, hit in enumerate(hits):
         text = _clean(getattr(hit, "text", ""))
@@ -241,15 +240,42 @@ def build_evidence_bundle(request_id: str, hits: Sequence[Any], *, entity_covera
     )
 
 
-def compute_confidence(*, retrieval: float, evidence_quality: float, entailment: float, entity_coverage: float, verification: float, contradiction: float, hard_gate_passed: bool) -> ConfidenceBreakdown:
-    values = {"retrieval": retrieval, "evidence_quality": evidence_quality, "entailment": entailment, "entity_coverage": entity_coverage, "verification": verification, "contradiction": contradiction}
+def compute_confidence(
+    *,
+    retrieval: float,
+    evidence_quality: float,
+    entailment: float,
+    entity_coverage: float,
+    verification: float,
+    contradiction: float,
+    hard_gate_passed: bool,
+) -> ConfidenceBreakdown:
+    values = {
+        "retrieval": retrieval,
+        "evidence_quality": evidence_quality,
+        "entailment": entailment,
+        "entity_coverage": entity_coverage,
+        "verification": verification,
+        "contradiction": contradiction,
+    }
     values = {key: max(0.0, min(1.0, float(value))) for key, value in values.items()}
-    final = 0.20 * values["retrieval"] + 0.18 * values["evidence_quality"] + 0.24 * values["entailment"] + 0.12 * values["entity_coverage"] + 0.26 * values["verification"] - 0.35 * values["contradiction"]
+    final = (
+        0.20 * values["retrieval"]
+        + 0.18 * values["evidence_quality"]
+        + 0.24 * values["entailment"]
+        + 0.12 * values["entity_coverage"]
+        + 0.26 * values["verification"]
+        - 0.35 * values["contradiction"]
+    )
     final = max(0.0, min(1.0, final))
     if not hard_gate_passed:
         final = min(final, 0.49)
     level = "high" if final >= 0.80 else "medium" if final >= 0.60 else "low"
-    return ConfidenceBreakdown(values["retrieval"], values["evidence_quality"], values["entailment"], values["entity_coverage"], values["verification"], values["contradiction"], final, level)
+    return ConfidenceBreakdown(
+        values["retrieval"], values["evidence_quality"], values["entailment"],
+        values["entity_coverage"], values["verification"], values["contradiction"],
+        final, level,
+    )
 
 
 def apply_contract(result: Mapping[str, Any], context: RequestContext) -> dict[str, Any]:
@@ -264,8 +290,21 @@ def apply_contract(result: Mapping[str, Any], context: RequestContext) -> dict[s
     entity_score = 1.0 if not context.entities else float(entity_report.get("coverage", 0.0) or 0.0)
     contradiction = 1.0 if bool(contradiction_report.get("has_contradiction")) else 0.0
     hard_pass = bool(final_verification.get("allow"))
-    confidence = compute_confidence(retrieval=retrieval, evidence_quality=evidence_quality, entailment=verification_ratio, entity_coverage=entity_score, verification=1.0 if hard_pass else 0.0, contradiction=contradiction, hard_gate_passed=hard_pass)
-    evidence = build_evidence_bundle(context.request_id, hits, entity_coverage=entity_report, contradiction_count=1 if contradiction else 0)
+    confidence = compute_confidence(
+        retrieval=retrieval,
+        evidence_quality=evidence_quality,
+        entailment=verification_ratio,
+        entity_coverage=entity_score,
+        verification=1.0 if hard_pass else 0.0,
+        contradiction=contradiction,
+        hard_gate_passed=hard_pass,
+    )
+    evidence = build_evidence_bundle(
+        context.request_id,
+        hits,
+        entity_coverage=entity_report,
+        contradiction_count=1 if contradiction else 0,
+    )
     answer = str(enhanced.get("answer") or "")
     status = "abstain" if is_control_message(answer) or str(enhanced.get("status", "")).endswith("ABSTAIN") else "verified"
     checks = list(final_verification.get("claim_checks") or ())
@@ -285,7 +324,7 @@ def apply_contract(result: Mapping[str, Any], context: RequestContext) -> dict[s
         "entity_coverage": confidence.entity_coverage,
         "verification": confidence.verification,
         "contradiction": confidence.contradiction,
-        "policy": "independent_signals_v2",
+        "policy": "independent_signals_v3",
     }
     enhanced["answer_envelope"] = {
         "request_id": context.request_id,
@@ -301,9 +340,13 @@ def apply_contract(result: Mapping[str, Any], context: RequestContext) -> dict[s
     }
     enhanced["claim_matrix_summary"] = {
         "claim_count": len(matrix),
-        "entailed_claims": sum(1 for record in matrix if str(record.get("status", "")) == "ENTAILED") if matrix and isinstance(matrix[0], Mapping) else 0,
+        "entailed_claims": sum(
+            1 for record in matrix if isinstance(record, Mapping) and str(record.get("status", "")) == "ENTAILED"
+        ),
         "blocked_claims": blocked,
-        "all_entailed": bool(matrix) and blocked == 0 and all(str(record.get("status", "")) == "ENTAILED" for record in matrix if isinstance(record, Mapping)),
+        "all_entailed": bool(matrix) and blocked == 0 and all(
+            str(record.get("status", "")) == "ENTAILED" for record in matrix if isinstance(record, Mapping)
+        ),
         "supported_ratio": verification_ratio,
     }
     enhanced["contract_status"] = status
@@ -321,50 +364,12 @@ def apply_contract(result: Mapping[str, Any], context: RequestContext) -> dict[s
 
 
 def install() -> None:
-    """Install the v2 contract over the already-installed integrity policy."""
-    from rag_project.intelligence import god_mode_100, top_level_pipeline
-    if not getattr(top_level_pipeline, "_production_contract_v2_installed", False):
-        previous_rewrite = top_level_pipeline.rewrite_follow_up
-        def canonical_rewrite(question: str, history: Sequence[tuple[str, str]] | None = None) -> str:
-            context = tuple(history or ())
-            canonical, followup = _strict_canonicalize(question, context)
-            if not followup:
-                return _clean(question)
-            try:
-                candidate = previous_rewrite(question, history)
-            except Exception:
-                candidate = canonical
-            candidate = _clean(candidate)
-            # Strict canonicalizer is authoritative whenever the candidate contains
-            # protocol metadata, and idempotence is enforced for repeated calls.
-            if "relevant entities:" in candidate.casefold() or "follow-up:" in candidate.casefold():
-                return canonical
-            if any(anchor and anchor in canonical.casefold() for anchor in re.findall(r"\b[a-z][a-z0-9_-]{3,}\b", candidate.casefold())) and candidate.casefold() == canonical.casefold():
-                return canonical
-            return candidate or canonical
-        top_level_pipeline.rewrite_follow_up = canonical_rewrite
-        top_level_pipeline._production_contract_v2_installed = True
-    if not getattr(god_mode_100, "_production_contract_v2_installed", False):
-        original_enhance = god_mode_100.enhance_result
-        def wrapped_enhance(system: Any, question: str, result: dict[str, Any], metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
-            history = ()
-            memory = getattr(system, "conversation_memory", None)
-            raw_history = getattr(memory, "history", ()) if memory is not None else ()
-            try:
-                history = tuple(raw_history or ())
-            except Exception:
-                history = ()
-            context = build_request_context(question, history=history, metadata_filter=metadata_filter)
-            completed = original_enhance(system, context.canonical_question, result, metadata_filter)
-            return apply_contract(completed, context)
-        god_mode_100.enhance_result = wrapped_enhance
-        god_mode_100._production_contract_v2_original_enhance = original_enhance
-        god_mode_100._production_contract_v2_installed = True
-    production_rag = __import__("rag_project.app.production_rag", fromlist=["ProductionRAGSystem"])
-    production_rag.ProductionRAGSystem._certified_god_answer = god_mode_100.enhance_result
-    production_rag.ProductionRAGSystem._canonical_answer_authority = "rag_project.intelligence.top_level_pipeline.complete_phases"
-    production_rag.ProductionRAGSystem._canonical_runtime_contract = True
-    production_rag.ProductionRAGSystem._canonical_health_contract = True
+    """Compatibility registration only; behavioral contract application is explicit."""
+    return None
 
 
-__all__ = ["CONTRACT_VERSION", "RequestContext", "EvidenceSource", "EvidenceBundle", "ConfidenceBreakdown", "new_request_id", "build_request_context", "build_evidence_bundle", "compute_confidence", "apply_contract", "install"]
+__all__ = [
+    "CONTRACT_VERSION", "RequestContext", "EvidenceSource", "EvidenceBundle",
+    "ConfidenceBreakdown", "new_request_id", "build_request_context",
+    "build_evidence_bundle", "compute_confidence", "apply_contract", "install",
+]
