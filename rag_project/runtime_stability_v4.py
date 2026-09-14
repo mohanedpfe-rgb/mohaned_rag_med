@@ -9,6 +9,8 @@ _INSTALLED = False
 _THREAD = threading.local()
 _QUERY_LOCK = threading.RLock()
 _CLEAR_LOCK = threading.RLock()
+_LEASE_RENEWERS: dict[tuple[int, str], tuple[threading.Event, threading.Thread]] = {}
+_RENEWERS_LOCK = threading.RLock()
 _ACTIVE = ("RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING", "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "INTERRUPTED", "RECOVERING")
 
 
@@ -24,11 +26,65 @@ def _workers():
     return value
 
 
+def _renewal_key(self, document_id):
+    return id(self), str(document_id)
+
+
+def _stop_renewer(self, document_id):
+    key = _renewal_key(self, document_id)
+    with _RENEWERS_LOCK:
+        entry = _LEASE_RENEWERS.pop(key, None)
+    if entry is not None:
+        entry[0].set()
+        entry[1].join(timeout=2.0)
+
+
+def _start_renewer(self, document_id, worker_id, lease_seconds):
+    key = _renewal_key(self, document_id)
+    _stop_renewer(self, document_id)
+    stop = threading.Event()
+    interval = max(1.0, min(30.0, float(lease_seconds) / 4.0))
+
+    def _loop():
+        while not stop.wait(interval):
+            try:
+                row = self.get_document(document_id)
+                if not row:
+                    return
+                owner = str(row.get("lease_owner") or "")
+                if owner != str(worker_id):
+                    return
+                if not bool(self.heartbeat_document(document_id, worker_id, lease_seconds=lease_seconds)):
+                    return
+            except Exception:
+                # The ingestion writer remains responsible for surfacing a real
+                # lease loss; this thread must never kill the process or mask it.
+                continue
+
+    thread = threading.Thread(
+        target=_loop,
+        name=f"lease-renew-{str(document_id)[:8]}",
+        daemon=True,
+    )
+    with _RENEWERS_LOCK:
+        _LEASE_RENEWERS[key] = (stop, thread)
+    thread.start()
+
+
 def _claim(self, document_id, worker_id, lease_seconds=900):
     ok = bool(self._runtime_v4_original_claim(document_id, worker_id, lease_seconds=lease_seconds))
     if ok:
         _workers()[str(document_id)] = str(worker_id)
+        _start_renewer(self, document_id, worker_id, lease_seconds)
     return ok
+
+
+def _release(self, document_id, worker_id):
+    try:
+        return self._runtime_v4_original_release(document_id, worker_id)
+    finally:
+        _stop_renewer(self, document_id)
+        _workers().pop(str(document_id), None)
 
 
 def _live(row):
@@ -116,6 +172,9 @@ def install():
         if not hasattr(IngestionStateStore, "_runtime_v4_original_claim"):
             IngestionStateStore._runtime_v4_original_claim = IngestionStateStore.claim_document
             IngestionStateStore.claim_document = _claim
+        if not hasattr(IngestionStateStore, "_runtime_v4_original_release"):
+            IngestionStateStore._runtime_v4_original_release = IngestionStateStore.release_document
+            IngestionStateStore.release_document = _release
         if not hasattr(IngestionStateStore, "_runtime_v4_original_update_document"):
             IngestionStateStore._runtime_v4_original_update_document = IngestionStateStore.update_document
             IngestionStateStore.update_document = _update
