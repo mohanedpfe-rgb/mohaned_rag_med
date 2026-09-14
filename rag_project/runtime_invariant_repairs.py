@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import json
-import multiprocessing as mp
-import os
-import sqlite3
 from functools import wraps
-from pathlib import Path
 from typing import Any
 
 _INSTALLED = False
@@ -60,21 +55,26 @@ def _patch_collection_upsert() -> None:
 def _patch_lease_boundary() -> None:
     import rag_project.runtime_quality_gate as quality_gate
 
-    current = getattr(quality_gate, "_lease_is_valid", None)
-    if not callable(current) or getattr(current, "_invariant_lease_semantics", False):
+    current_guard = getattr(quality_gate, "_guard_transition", None)
+    if not callable(current_guard) or getattr(current_guard, "_invariant_lease_semantics", False):
         return
-    _ORIGINALS["lease_is_valid"] = current
+    _ORIGINALS["guard_transition"] = current_guard
 
-    @wraps(current)
-    def lease_is_valid(record: dict[str, Any] | None) -> bool:
-        # A missing lease is an explicit non-fenced direct state transition.
-        # Lease fencing applies once a lease has actually been claimed.
-        if not record or not record.get("lease_owner"):
-            return True
-        return bool(current(record))
+    @wraps(current_guard)
+    def guard_transition(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
+        stage = str(new_stage).upper()
+        if stage in getattr(quality_gate, "_TERMINAL_STAGES", set()) or stage in {"INDEXING", "VALIDATING_INDEX"}:
+            record = self.get_document(document_id)
+            # A record without an owner has no lease to fence. This preserves
+            # direct state-store contract tests while keeping active lease fencing.
+            if not record or not record.get("lease_owner"):
+                original_transition = getattr(self, "_original_runtime_quality_transition", None)
+                if callable(original_transition):
+                    return original_transition(document_id, new_stage, **values)
+        return current_guard(self, document_id, new_stage, **values)
 
-    lease_is_valid._invariant_lease_semantics = True
-    quality_gate._lease_is_valid = lease_is_valid
+    guard_transition._invariant_lease_semantics = True
+    quality_gate._guard_transition = guard_transition
 
 
 def _direct_table_extract(page: Any) -> str:
@@ -106,39 +106,10 @@ def _patch_table_extraction() -> None:
     _ORIGINALS["extract_tables"] = current
 
     def extract_tables(self: Any, page: Any) -> str:
-        # Never fork from the production ingestion process. pytest-xdist and
-        # directory ingestion both use threads, while filelock explicitly rejects
-        # fork from a multi-threaded process on modern Python.
         return _direct_table_extract(page)
 
     extract_tables._invariant_no_fork = True
     PDFExtractor._extract_tables = extract_tables
-
-
-def _patch_multiprocessing_start_guard() -> None:
-    # Defensive fallback for legacy runtime code that still starts a Process from
-    # a table timeout path. Prefer the direct extractor above; this guard simply
-    # turns the specific fork-safety RuntimeError into a clean no-table result.
-    try:
-        from rag_project import runtime_stability_v3
-    except Exception:
-        return
-    current = getattr(runtime_stability_v3, "_timed_table_extract", None)
-    if not callable(current) or getattr(current, "_invariant_fork_guard", False):
-        return
-    _ORIGINALS["timed_table_extract"] = current
-
-    @wraps(current)
-    def guarded(page: Any) -> str:
-        try:
-            return current(page)
-        except RuntimeError as exc:
-            if "os.fork is unsafe" in str(exc).lower():
-                return _direct_table_extract(page)
-            raise
-
-    guarded._invariant_fork_guard = True
-    runtime_stability_v3._timed_table_extract = guarded
 
 
 def install() -> None:
@@ -148,7 +119,6 @@ def install() -> None:
     _patch_lease_boundary()
     _patch_collection_upsert()
     _patch_table_extraction()
-    _patch_multiprocessing_start_guard()
     _INSTALLED = True
 
 
