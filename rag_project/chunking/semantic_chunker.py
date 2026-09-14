@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Iterable, Iterator
 from typing import List
@@ -42,7 +43,6 @@ class SemanticChunker:
         )
 
     def _parent_sections(self, text: str) -> list[tuple[str, dict[str, str]]]:
-        """Keep headings attached to their following prose instead of creating heading-only chunks."""
         value = str(text or "").replace("\r\n", "\n")
         lines = value.split("\n")
         sections: list[tuple[str, dict[str, str]]] = []
@@ -68,11 +68,9 @@ class SemanticChunker:
         for line in lines:
             match = re.match(r"^\s*(#{1,3})\s+(.+?)\s*$", line)
             if match:
-                # A heading-only buffer belongs to the new heading, not to a
-                # standalone parent section. Flush only when actual prose exists.
                 if buffer and any(not self._is_heading_line(item) and item.strip() for item in buffer):
                     flush()
-                elif buffer:
+                else:
                     buffer = []
                 title = match.group(2).strip()
                 level = len(match.group(1))
@@ -138,11 +136,13 @@ class SemanticChunker:
             table_ids = list(getattr(page, "table_ids", []) or [])
             figure_ids = list(getattr(page, "figure_ids", []) or [])
             captions = [str(v).strip() for v in (getattr(page, "figure_captions", []) or []) if str(v).strip()]
+            image_count = int(getattr(page, "image_count", 0) or 0)
+            table_count = int(getattr(page, "table_count", 0) or 0)
 
             evidence = {"text"}
-            if bool(getattr(page, "has_images", False)) or figure_ids or captions:
+            if bool(getattr(page, "has_images", False)) or image_count > 0 or figure_ids or captions:
                 evidence.add("figure")
-            if int(getattr(page, "table_count", 0) or 0) > 0 or table_ids or table_texts:
+            if table_count > 0 or table_ids or table_texts:
                 evidence.add("table")
             evidence_types = [name for name in ("figure", "table", "text") if name in evidence]
 
@@ -178,7 +178,15 @@ class SemanticChunker:
                 for child_index, child in enumerate(children):
                     enriched = enrich_text(child)
                     prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
-                    searchable = "[RAG-STRUCTURE schema=3]\n" + (f"[{prefix}]\n" if prefix else "") + child.strip()
+                    marker = (
+                        "[RAG-STRUCTURE schema=3; "
+                        f"chapter_id={chapter_id}; chapter={chapter or ''}; "
+                        f"section_id={section_id}; section={section or ''}; "
+                        f"parent_id={parent_id}; path={json.dumps(hierarchy_path, ensure_ascii=False)}; "
+                        f"page={page_no}; quality={float(getattr(page, 'quality_score', 0.0) or 0.0)}; "
+                        f"ocr={getattr(page, 'ocr_status', 'not_required')}]"
+                    )
+                    searchable = marker + (f"\n[{prefix}]\n" if prefix else "\n") + child.strip()
                     metadata = {
                         "source_pages": [page_no], "page_numbers": [page_no], "evidence_types": evidence_types,
                         "chapter": chapter, "chapter_id": chapter_id, "section": section, "section_id": section_id,
