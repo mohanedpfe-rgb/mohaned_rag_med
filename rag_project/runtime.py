@@ -14,8 +14,14 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 def _load_installers():
     from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle
     from rag_project.storage.vector_store_runtime import install as vector_store
+    from rag_project.storage.atomic_index_transaction import install as atomic_index_transaction
     from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication
-    return (chroma_lifecycle, vector_store, post_index_publication)
+    return (
+        chroma_lifecycle,
+        vector_store,
+        atomic_index_transaction,
+        post_index_publication,
+    )
 
 
 def install() -> None:
@@ -48,7 +54,12 @@ def install() -> None:
 
 
 def installation_report() -> dict[str, Any]:
-    return {"installed": bool(_INSTALLED), "installer_count": len(_INSTALL_PROVENANCE), "failed": [dict(item) for item in _INSTALL_PROVENANCE if item.get("status") == "FAILED"], "installers": [dict(item) for item in _INSTALL_PROVENANCE]}
+    return {
+        "installed": bool(_INSTALLED),
+        "installer_count": len(_INSTALL_PROVENANCE),
+        "failed": [dict(item) for item in _INSTALL_PROVENANCE if item.get("status") == "FAILED"],
+        "installers": [dict(item) for item in _INSTALL_PROVENANCE],
+    }
 
 
 def install_application_contracts() -> dict[str, object]:
@@ -60,4 +71,9 @@ def install_application_contracts() -> dict[str, object]:
         pipeline_integrity()
         ingestion_contract()
         canonical = canonical_runtime()
-        return {"pipeline_integrity": True, "production_contract": {"version": CONTRACT_VERSION, "behavioral_patch": False}, "ingestion_contract": True, "canonical_runtime": canonical}
+        return {
+            "pipeline_integrity": True,
+            "production_contract": {"version": CONTRACT_VERSION, "behavioral_patch": False},
+            "ingestion_contract": True,
+            "canonical_runtime": canonical,
+        }
