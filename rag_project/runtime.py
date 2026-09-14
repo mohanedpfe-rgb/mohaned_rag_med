@@ -14,27 +14,12 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _install_ingestion_compatibility() -> None:
-    """Install storage compatibility only; never replace ingestion callables."""
-    from rag_project.ingestion.state_store import IngestionStateStore
-
-    def delete_pages(self, document_id: str) -> int:
-        if not document_id:
-            return 0
-        with self._connect() as connection:
-            cursor = connection.execute("DELETE FROM pages WHERE document_id = ?", (str(document_id),))
-        return max(0, int(cursor.rowcount))
-
-    if not hasattr(IngestionStateStore, "delete_pages"):
-        IngestionStateStore.delete_pages = delete_pages
+    """Deprecated compatibility hook; ingestion helpers now belong to state_store."""
+    return None
 
 
 def _load_installers() -> tuple[Callable[[], None], ...]:
-    """Return the infrastructure policy stack in one deterministic order.
-
-    These installers are legacy infrastructure adapters grouped here as one
-    composition root. They must not discover or wrap previous method versions;
-    canonical application/answer ownership lives outside this list.
-    """
+    """Return the infrastructure policy stack in one deterministic order."""
     from rag_project.runtime_hardening import install as hardening
     from rag_project.runtime_hardening_extra import install as hardening_extra
     from rag_project.runtime_recovery import install as recovery
@@ -145,7 +130,6 @@ def install() -> None:
 
 
 def installation_report() -> dict[str, Any]:
-    """Return an immutable-style diagnostic snapshot of runtime installation provenance."""
     return {
         "installed": bool(_INSTALLED),
         "installer_count": len(_INSTALL_PROVENANCE),
