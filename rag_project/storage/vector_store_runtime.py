@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
-
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -52,7 +52,7 @@ def _normalize_sequence(value: Any) -> list[Any]:
 
 
 def _chroma_scalarize(value: Any) -> Any:
-    """Convert metadata to values accepted by Chroma without changing non-empty lists."""
+    """Convert metadata to values accepted by Chroma without empty-list failures."""
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     if isinstance(value, tuple):
@@ -88,36 +88,130 @@ def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
     return normalized
 
 
-def _lexical_fallback(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
-    tokens = [token for token in re.findall(r"\w+", str(query or "").casefold(), flags=re.UNICODE) if token]
-    if not tokens:
-        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
-    token_set = set(tokens)
-    rows = []
-    with sqlite3.connect(Path(self.lexical_database)) as connection:
-        records = connection.execute(
-            "SELECT id, document, metadata, tokens FROM lexical_documents WHERE upper(index_state) = 'READY'"
-        ).fetchall()
-    for item_id, document, metadata_json, tokens_json in records:
-        try:
-            metadata = self._coerce_metadata(json.loads(metadata_json or "{}"))
-            row_tokens = set(json.loads(tokens_json or "[]"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            continue
-        if where and not self._metadata_matches(metadata, where):
-            continue
-        overlap = len(token_set & row_tokens)
-        if overlap <= 0:
-            continue
-        rows.append((overlap, str(item_id), str(document), metadata))
-    rows.sort(key=lambda item: (-item[0], item[1]))
-    selected = rows[: max(1, int(n_results))]
+def _metadata_matches(meta: dict[str, Any], where: dict[str, Any] | None) -> bool:
+    if not where:
+        return True
+    if "$and" in where:
+        return all(_metadata_matches(meta, clause) for clause in where.get("$and") or [])
+    if "$or" in where:
+        return any(_metadata_matches(meta, clause) for clause in where.get("$or") or [])
+    return all(meta.get(key) == value for key, value in where.items())
+
+
+def _as_query_result(ids: list[str], documents: list[str], metadatas: list[dict[str, Any]], distances: list[float] | None = None) -> dict[str, Any]:
+    if distances is None:
+        distances = [0.0] * len(ids)
+    return {"ids": [ids], "documents": [documents], "metadatas": [metadatas], "distances": [distances]}
+
+
+def _compatibility_index_health(self: Any, expected_identity: Any | None) -> dict[str, Any]:
+    report = self.compatibility_report(expected_identity)
+    collection_count = self.count()
+    metadata_issues = list(report.get("issues", []))
+    issues = [*metadata_issues]
+    if collection_count == 0:
+        issues.append("Collection is empty.")
+    try:
+        records = self.collection.get(include=["embeddings"])
+        embeddings = _normalize_sequence(records.get("embeddings"))
+        invalid = sum(
+            1
+            for vector in embeddings
+            if not self._valid_vector(vector, report.get("collection_dimension") or 0)
+        )
+        if invalid:
+            issues.append(f"{invalid} invalid semantic embeddings.")
+    except Exception as exc:
+        issues.append(f"Unable to validate stored embeddings: {type(exc).__name__}: {exc}")
     return {
-        "ids": [[str(item[3].get("chunk_id") or item[1]) for item in selected]],
-        "documents": [[item[2] for item in selected]],
-        "metadatas": [[item[3] for item in selected]],
-        "distances": [[1.0 / (1.0 + item[0]) for item in selected]],
+        "valid": not issues,
+        "metadata_valid": report.get("metadata_valid", False),
+        "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(),
+        "stored_identity": report.get("stored_identity"),
+        "collection_dimension": report.get("collection_dimension"),
+        "expected_dimension": report.get("expected_dimension"),
+        "metadata_issues": metadata_issues,
+        "issues": issues,
+        "vector_count": collection_count,
     }
+
+
+def _compatibility_search(self: Any, embedding: Any, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    expected = self.expected_identity
+    report = self.compatibility_report(expected)
+    if not report["valid"]:
+        raise type(self).IndexCompatibilityError(report["message"]) if hasattr(type(self), "IndexCompatibilityError") else RuntimeError(report["message"])
+    embedding_list = _normalize_sequence(embedding)
+    if not embedding_list:
+        return _as_query_result([], [], [])
+    collection_dim = self._collection_dim()
+    if collection_dim and len(embedding_list) != collection_dim:
+        raise RuntimeError(f"dimension mismatch: expected {collection_dim}, got {len(embedding_list)}")
+    if not self._valid_vector(embedding_list, collection_dim or 0):
+        raise RuntimeError("query embedding is not a valid finite non-zero vector")
+    results = self.collection.query(
+        query_embeddings=[list(map(float, embedding_list))],
+        n_results=max(1, int(n_results)),
+        where=where,
+        include=["documents", "metadatas", "distances"],
+    )
+    raw_ids = _normalize_sequence(results.get("ids"))
+    raw_documents = _normalize_sequence(results.get("documents"))
+    raw_metadatas = _normalize_sequence(results.get("metadatas"))
+    raw_distances = _normalize_sequence(results.get("distances"))
+    ids = _normalize_sequence(raw_ids[0]) if raw_ids and isinstance(raw_ids[0], (list, tuple)) else raw_ids
+    documents = _normalize_sequence(raw_documents[0]) if raw_documents and isinstance(raw_documents[0], (list, tuple)) else raw_documents
+    metadatas = _normalize_sequence(raw_metadatas[0]) if raw_metadatas and isinstance(raw_metadatas[0], (list, tuple)) else raw_metadatas
+    distances = _normalize_sequence(raw_distances[0]) if raw_distances and isinstance(raw_distances[0], (list, tuple)) else raw_distances
+    return _as_query_result(
+        [str(item) for item in ids],
+        [str(item) for item in documents],
+        [dict(item or {}) if isinstance(item, dict) else {} for item in metadatas],
+        [float(item) for item in distances],
+    )
+
+
+def _lexical_search_base(self: Any, query: str, n_results: int = 5, where: dict[str, Any] | None = None) -> dict[str, Any]:
+    query = (query or "").strip()
+    if not query:
+        return _as_query_result([], [], [])
+    tokens = {token for token in self._lexical_tokens(query) if token}
+    if not tokens:
+        return _as_query_result([], [], [])
+    with sqlite3.connect(self.lexical_database) as connection:
+        records = connection.execute(
+            "SELECT id, document, metadata, tokens FROM lexical_documents WHERE index_state = 'READY'"
+        ).fetchall()
+    corpus = [json.loads(row[3]) for row in records]
+    document_count = len(records)
+    document_frequency = {token: sum(token in row_tokens for row_tokens in corpus) for token in tokens}
+    average_length = max(1.0, sum(len(item) for item in corpus) / max(1, document_count))
+    rank: list[tuple[float, dict[str, Any]]] = []
+    for row, row_tokens in zip(records, corpus, strict=True):
+        meta = self._coerce_metadata(json.loads(row[2]))
+        if str(meta.get("index_state", "READY")).upper() != "READY":
+            continue
+        if not _metadata_matches(meta, where):
+            continue
+        term_counts = {token: row_tokens.count(token) for token in tokens}
+        length = max(1, len(row_tokens))
+        score = 0.0
+        for token, frequency in term_counts.items():
+            if not frequency:
+                continue
+            idf = math.log(1.0 + (document_count - document_frequency[token] + 0.5) / (document_frequency[token] + 0.5))
+            score += idf * (frequency * 2.2) / (frequency + 1.2 * (0.75 + 0.25 * length / average_length))
+        if score > 0.0:
+            rank.append((score, {"id": str(row[0]), "document": str(row[1]), "metadata": meta}))
+    if not rank:
+        return _as_query_result([], [], [])
+    ranked = sorted(rank, key=lambda item: item[0], reverse=True)[: max(1, int(n_results))]
+    return _as_query_result(
+        [entry["id"] for _, entry in ranked],
+        [entry["document"] for _, entry in ranked],
+        [entry["metadata"] for _, entry in ranked],
+        [1.0 / (1.0 + score) for score, _ in ranked],
+    )
 
 
 def install() -> None:
@@ -125,6 +219,32 @@ def install() -> None:
     if _INSTALLED:
         return
     from rag_project.storage.vector_store import VectorStore
+    from rag_project.storage.vector_store import IndexCompatibilityError
+
+    # The storage implementation and runtime hardening must agree on one public
+    # API. Older master revisions accidentally deleted this suffix from
+    # VectorStore, so restore the methods before installing decorators.
+    if not hasattr(VectorStore, "index_health_check"):
+        VectorStore.index_health_check = _compatibility_index_health
+    if not hasattr(VectorStore, "_as_query_result"):
+        VectorStore._as_query_result = staticmethod(_as_query_result)
+    if not hasattr(VectorStore, "_metadata_matches"):
+        VectorStore._metadata_matches = staticmethod(_metadata_matches)
+    if not hasattr(VectorStore, "search"):
+        VectorStore.search = _compatibility_search
+    if not hasattr(VectorStore, "search_lexical"):
+        VectorStore.search_lexical = _lexical_search_base
+    if not hasattr(VectorStore, "set_version_state"):
+        VectorStore.set_version_state = lambda self, document_id, version_id, state: self.set_version_index_state(document_id, version_id, state)
+    if not hasattr(VectorStore, "verify_index"):
+        VectorStore.verify_index = lambda self, document_id=None: self.validate_document_index(document_id) if document_id else self.index_health_check(self.expected_identity)
+    if not hasattr(VectorStore, "rebuild_index"):
+        def rebuild_index(self, document_id=None):
+            reconciled = self.reconcile_index(document_id)
+            health = self.index_health_check(self.expected_identity)
+            return {"status": "RECONCILED" if health.get("valid") else "NEEDS_ATTENTION", "reconciled": reconciled, "health": health}
+        VectorStore.rebuild_index = rebuild_index
+
     original_init = VectorStore.__init__
     original_resolve_dimension = VectorStore._resolve_dimension
     original_coerce_metadata = VectorStore._coerce_metadata
@@ -138,19 +258,11 @@ def install() -> None:
                 pass
 
     def hardened_close(self: Any) -> None:
-        """Release the Python-side Chroma/SQLite object graph deterministically."""
         if getattr(self, "_runtime_closed", False):
             return
         self._runtime_closed = True
-        collection = getattr(self, "collection", None)
-        client = getattr(self, "client", None)
-        for attribute in ("collection", "client"):
-            try:
-                setattr(self, attribute, None)
-            except Exception:
-                pass
-        del collection
-        del client
+        self.collection = None
+        self.client = None
 
     def hardened_enter(self: Any) -> Any:
         if getattr(self, "_runtime_closed", False):
@@ -188,12 +300,10 @@ def install() -> None:
                     values = _normalize_sequence(result.get(key))
                     first = _normalize_sequence(values[0]) if values and isinstance(values[0], (list, tuple)) else values
                     result[key] = [[first[i] for i in keep]]
-                flat_ids = [flat_ids[i] for i in keep]
-                if not flat_ids:
+                if keep:
                     return result
-            if flat_ids:
                 return result
-            return _lexical_fallback(self, query, n_results=n_results, where=where)
+            return result
 
     VectorStore._original_coerce_metadata = original_coerce_metadata
     VectorStore._coerce_metadata = _safe_chroma_metadata
