@@ -65,8 +65,6 @@ def _patch_lease_boundary() -> None:
         stage = str(new_stage).upper()
         if stage in getattr(quality_gate, "_TERMINAL_STAGES", set()) or stage in {"INDEXING", "VALIDATING_INDEX"}:
             record = self.get_document(document_id)
-            # A record without an owner has no lease to fence. This preserves
-            # direct state-store contract tests while keeping active lease fencing.
             if not record or not record.get("lease_owner"):
                 original_transition = getattr(self, "_original_runtime_quality_transition", None)
                 if callable(original_transition):
@@ -112,6 +110,39 @@ def _patch_table_extraction() -> None:
     PDFExtractor._extract_tables = extract_tables
 
 
+def _patch_ingestion_failure_cleanup() -> None:
+    from rag_project.ingestion import robust_ingestor
+
+    current = robust_ingestor.robust_ingest_file
+    if not callable(current) or getattr(current, "_invariant_failure_cleanup", False):
+        return
+    _ORIGINALS["robust_ingest_file"] = current
+
+    @wraps(current)
+    def guarded(system: Any, pdf_path: Any, *args: Any, **kwargs: Any):
+        result = current(system, pdf_path, *args, **kwargs)
+        status = str((result or {}).get("status") or "").upper() if isinstance(result, dict) else ""
+        if status in {"FAILED", "FAILED_EMBEDDING", "FAILED_INDEXING", "FAILED_EXTRACTION", "FAILED_OCR"}:
+            document_id = str((result or {}).get("document_id") or "")
+            if document_id:
+                try:
+                    system.state_store.delete_pages(document_id)
+                except Exception:
+                    getattr(system, "logger", None) and system.logger.exception(
+                        "Failed to purge page state for failed ingestion %s", document_id
+                    )
+                try:
+                    version_id = str((result or {}).get("version_id") or "")
+                    if version_id:
+                        system.vector_store.delete_version(document_id, version_id)
+                except Exception:
+                    pass
+        return result
+
+    guarded._invariant_failure_cleanup = True
+    robust_ingestor.robust_ingest_file = guarded
+
+
 def install() -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -119,6 +150,7 @@ def install() -> None:
     _patch_lease_boundary()
     _patch_collection_upsert()
     _patch_table_extraction()
+    _patch_ingestion_failure_cleanup()
     _INSTALLED = True
 
 
