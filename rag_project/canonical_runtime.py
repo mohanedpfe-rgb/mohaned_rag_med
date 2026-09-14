@@ -3,37 +3,31 @@ from __future__ import annotations
 
 from typing import Any
 
-ANSWER_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
-# Keep the historical public service path as the compatibility contract while
-# the application factory remains the actual runtime composition root.
-CANONICAL_SERVICE = "rag_project.app.production_rag.ProductionRAGSystem"
+ANSWER_AUTHORITY = "rag_project.application_answer_service.answer"
+CANONICAL_SERVICE = "rag_project.application.MedEvidenceProductionRAGSystem"
 
 
 def install() -> dict[str, Any]:
-    """Bind the canonical runtime and install final owner-level repairs."""
+    """Verify canonical ownership without installing monkey patches."""
     from rag_project import application
     from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION
     from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
     from rag_project.runtime_invariant_repairs import install as install_invariant_repairs
     from rag_project.runtime_pdf_text_normalization import install as install_pdf_unicode_normalization
-    from rag_project.runtime_root_cause_fix import install as install_root_cause_repairs
 
-    # These are owner-level repairs: install them after the infrastructure
-    # compatibility stack so their contracts are the final deterministic boundary.
-    install_root_cause_repairs()
     install_pdf_unicode_normalization()
     install_invariant_repairs()
 
     service_cls = getattr(application, "MedEvidenceProductionRAGSystem", None)
-    certified = getattr(service_cls, "_certified_god_answer", None) if service_cls is not None else None
     expected = getattr(application, "_med_evidence_answer", None)
-    binding_installed = callable(certified) and callable(expected) and certified is expected
-    authority = str(getattr(application, "ACTIVE_ANSWER_PIPELINE_AUTHORITY", ""))
+    certified = getattr(service_cls, "_certified_god_answer", None) if service_cls is not None else None
+    binding_installed = callable(certified) and certified is expected
+    application_authority = str(getattr(application, "ACTIVE_ANSWER_PIPELINE_AUTHORITY", ""))
     return {
         "canonical_service": CANONICAL_SERVICE,
         "answer_pipeline_authority": ANSWER_AUTHORITY,
         "class_binding_installed": binding_installed,
-        "runtime_contract_bound": binding_installed and authority == ANSWER_AUTHORITY,
+        "runtime_contract_bound": binding_installed and application_authority == ANSWER_AUTHORITY,
         "health_contract_bound": callable(getattr(service_cls, "health_report", None)),
         "owner_level_repairs": True,
         "monkey_patch": False,
