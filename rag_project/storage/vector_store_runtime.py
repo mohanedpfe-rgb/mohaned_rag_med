@@ -54,8 +54,6 @@ def _chroma_scalarize(value: Any) -> Any:
 
 
 def _safe_chroma_metadata(self: Any, metadata: Any) -> dict[str, Any]:
-    # Compatibility installers can wrap this method more than once. Calling
-    # a saved wrapper here would recurse, so normalize from the input directly.
     base = dict(metadata or {}) if isinstance(metadata, dict) else {}
     base.setdefault("index_state", "READY")
     if "document_id" not in base and "doc_id" in base:
@@ -79,6 +77,11 @@ def _metadata_matches(meta: dict[str, Any], where: dict[str, Any] | None) -> boo
     if "$or" in where:
         return any(_metadata_matches(meta, clause) for clause in where.get("$or") or [])
     return all(meta.get(key) == value for key, value in where.items())
+
+
+def _ready_where(where: dict[str, Any] | None) -> dict[str, Any]:
+    ready = {"index_state": "READY"}
+    return ready if not where else {"$and": [ready, where]}
 
 
 def _as_query_result(ids: list[str], documents: list[str], metadatas: list[dict[str, Any]], distances: list[float] | None = None) -> dict[str, Any]:
@@ -109,7 +112,7 @@ def _compatibility_search(self: Any, embedding: Any, n_results: int = 5, where: 
         raise RuntimeError(f"dimension mismatch: expected {dimension}, got {len(vector)}")
     if not _valid_vector(vector, dimension):
         raise RuntimeError("query embedding is not a valid finite non-zero vector")
-    result = self.collection.query(query_embeddings=[list(map(float, vector))], n_results=max(1, int(n_results)), where=where, include=["documents", "metadatas", "distances"])
+    result = self.collection.query(query_embeddings=[list(map(float, vector))], n_results=max(1, int(n_results)), where=_ready_where(where), include=["documents", "metadatas", "distances"])
     ids = _normalize_sequence(result.get("ids")); documents = _normalize_sequence(result.get("documents")); metadatas = _normalize_sequence(result.get("metadatas")); distances = _normalize_sequence(result.get("distances"))
     ids = _normalize_sequence(ids[0]) if ids and isinstance(ids[0], (list, tuple)) else ids
     documents = _normalize_sequence(documents[0]) if documents and isinstance(documents[0], (list, tuple)) else documents
@@ -172,14 +175,29 @@ def install() -> None:
         VectorStore._as_query_result = staticmethod(_as_query_result)
     if not hasattr(VectorStore, "_metadata_matches"):
         VectorStore._metadata_matches = staticmethod(_metadata_matches)
-    # These are mandatory public storage APIs. Restore them on every install call
-    # because another compatibility adapter must never be able to remove them.
     if not hasattr(VectorStore, "search"):
         VectorStore.search = _compatibility_search
     if not hasattr(VectorStore, "search_lexical"):
         VectorStore.search_lexical = _lexical_search_base
     if not hasattr(VectorStore, "index_health_check"):
         VectorStore.index_health_check = _index_health_check
+    if not hasattr(VectorStore, "verify_index"):
+        VectorStore.verify_index = lambda self, document_id=None: self.validate_document_index(document_id) if document_id else {"valid": self.count() == self.lexical_count(), "semantic_count": self.count(), "lexical_count": self.lexical_count(), "count": self.count()}
+    if not hasattr(VectorStore, "rebuild_index"):
+        VectorStore.rebuild_index = lambda self, document_id=None: {"status": "RECONCILED" if self.reconcile_index(document_id).get("valid", False) else "NEEDS_ATTENTION"}
+
+    original_resolve = VectorStore._resolve_dimension
+    if not getattr(original_resolve, "_runtime_unknown_dimension_guard", False):
+        def resolve_dimension(self: Any, embeddings: Any = None) -> int:
+            if embeddings is None:
+                try:
+                    if int(_collection_dim(self) or 0) <= 0:
+                        return 0
+                except Exception:
+                    return 0
+            return original_resolve(self, embeddings)
+        resolve_dimension._runtime_unknown_dimension_guard = True
+        VectorStore._resolve_dimension = resolve_dimension
 
     original_coerce = VectorStore._coerce_metadata
     if not getattr(original_coerce, "_runtime_storage_metadata_owner", False):
@@ -219,6 +237,7 @@ def install() -> None:
                 self.client = None
             close._runtime_storage_close_owner = True
             VectorStore.close = close
+
     if not hasattr(VectorStore, "__enter__"):
         VectorStore.__enter__ = lambda self: self if not getattr(self, "_runtime_closed", False) else (_ for _ in ()).throw(RuntimeError("VectorStore is closed."))
     if not hasattr(VectorStore, "__exit__"):
