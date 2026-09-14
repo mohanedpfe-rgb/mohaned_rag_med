@@ -343,8 +343,14 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.logger.exception("Failed to quarantine %s", file_path.name)
         return {"status": "failed", "file_name": file_path.name, "document_id": document_id, "error": failure_text}
     finally:
-        system.state_store.release_document(document_id, worker_id)
-        system._remove_cancel_flag(document_id)
+        try:
+            system.state_store.release_document(document_id, worker_id)
+        except Exception:
+            system.logger.exception("Lease cleanup failed after ingestion of %s", file_path.name)
+        try:
+            system._remove_cancel_flag(document_id)
+        except Exception:
+            system.logger.exception("Cancel-flag cleanup failed after ingestion of %s", file_path.name)
 
 
 def datetime_from_mtime(path: Path) -> str:
