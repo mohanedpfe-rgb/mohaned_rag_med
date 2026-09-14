@@ -1,0 +1,35 @@
+name: Windows Chroma Lifecycle
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  chroma-cleanup-regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install deterministic dependency set
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --require-hashes -r requirements.lock
+
+      - name: Validate installed environment
+        run: python -m pip check
+
+      - name: Run exact Windows HNSW cleanup regression
+        shell: pwsh
+        run: |
+          python -m pytest -q `
+            tests/integration/test_17_phase_production_matrix.py::test_integration_040_vector_semantic_search `
+            -W error::pytest.PytestUnraisableExceptionWarning `
+            --tb=long
