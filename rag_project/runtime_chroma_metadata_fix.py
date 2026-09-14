@@ -15,11 +15,7 @@ def _is_chroma_scalar(value: Any) -> bool:
 
 
 def _normalize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    """Return metadata accepted by Chroma for both inserts and later updates.
-
-    Chroma rejects empty list metadata values and nested/non-scalar structures.
-    Optional empty fields are omitted; meaningful structured values are JSON encoded.
-    """
+    """Normalize metadata into the scalar/list subset accepted by Chroma."""
     normalized: dict[str, Any] = {}
     for key, value in dict(metadata or {}).items():
         if value is None:
@@ -54,35 +50,43 @@ def _normalize_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _sanitize_upsert_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(kwargs)
+    metadatas = payload.get("metadatas")
+    if metadatas is not None:
+        payload["metadatas"] = [_normalize_metadata(metadata) for metadata in metadatas]
+    return payload
+
+
 def _safe_add_documents(self: Any, documents, metadatas, embeddings, ids):
     normalized = [_normalize_metadata(metadata) for metadata in metadatas]
-    return self._chroma_metadata_fix_original_add_documents(
-        documents, normalized, embeddings, ids
-    )
+    original_upsert = getattr(self.collection, "upsert", None)
+    if not callable(original_upsert):
+        return self._chroma_metadata_fix_original_add_documents(
+            documents, normalized, embeddings, ids
+        )
+
+    def safe_upsert(*args: Any, **kwargs: Any):
+        return original_upsert(*args, **_sanitize_upsert_kwargs(kwargs))
+
+    self.collection.upsert = safe_upsert
+    try:
+        return self._chroma_metadata_fix_original_add_documents(
+            documents, normalized, embeddings, ids
+        )
+    finally:
+        self.collection.upsert = original_upsert
 
 
 def _safe_coerce_metadata(self: Any, metadata: Any) -> dict[str, Any]:
-    """Normalize metadata through the previously installed bound method.
-
-    ``_chroma_metadata_fix_original_coerce_metadata`` is stored on the
-    ``VectorStore`` class. Accessing it through ``self`` produces a bound method,
-    so passing ``self`` again would call the wrapper with three positional
-    arguments and raise ``TypeError: ... takes 2 positional arguments but 3 were
-    given``. Keep the wrapper compatible with both the base implementation and
-    earlier runtime layers by calling the bound method with only ``metadata``.
-    """
-    original = self._chroma_metadata_fix_original_coerce_metadata
-    return _normalize_metadata(original(metadata))
+    """Use the installed bound method when available; support lightweight fakes."""
+    original = getattr(self, "_chroma_metadata_fix_original_coerce_metadata", None)
+    if callable(original):
+        return _normalize_metadata(original(metadata))
+    return _normalize_metadata(metadata if isinstance(metadata, dict) else {})
 
 
 def _safe_transition_document_state(self: Any, document_id: str, new_stage: str, **values: Any) -> None:
-    """Make READY publication satisfy the state/index invariant.
-
-    The production ingestion path marks the vector records READY immediately before
-    transitioning the durable document row from VALIDATING_INDEX to READY. The row's
-    previous index_state is PENDING, so the state contract would otherwise reject a
-    valid publication even though the index was already verified.
-    """
     stage = str(new_stage).upper()
     if stage in {"READY", "COMPLETED"} and "index_state" not in values:
         values["index_state"] = "READY"
