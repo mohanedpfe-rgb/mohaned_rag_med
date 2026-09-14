@@ -30,9 +30,8 @@ class SemanticChunker:
                 return candidate
         return None
 
-    @staticmethod
-    def _child_splitter(chunk_size: int, chunk_overlap: int) -> RecursiveCharacterTextSplitter:
-        return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=min(chunk_overlap, max(0, chunk_size // 2)), separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""])
+    def _child_splitter(self) -> RecursiveCharacterTextSplitter:
+        return RecursiveCharacterTextSplitter(chunk_size=self.chunk_size, chunk_overlap=min(self.chunk_overlap, max(0, self.chunk_size // 2)), separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""])
 
     def _parent_sections(self, text: str) -> list[tuple[str, dict[str, str]]]:
         value = str(text or "").replace("\r\n", "\n")
@@ -47,7 +46,11 @@ class SemanticChunker:
             nonlocal buffer
             content = "\n".join(buffer).strip()
             if content:
-                sections.append((content, {"chapter": chapter} if chapter else {} | ({"section": section} if section else {})))
+                meta: dict[str, str] = {}
+                if chapter: meta["chapter"] = chapter
+                if section: meta["section"] = section
+                if subsection: meta["subsection"] = subsection
+                sections.append((content, meta))
             buffer = []
 
         for line in lines:
@@ -55,40 +58,22 @@ class SemanticChunker:
             if not match:
                 buffer.append(line)
                 continue
-            if buffer:
-                flush()
-            level = len(match.group(1)); title = match.group(2).strip()
+            title = match.group(2).strip()
+            level = len(match.group(1))
             if level == 1:
+                if buffer: flush()
                 chapter, section, subsection = title, None, None
+                buffer.append(title)
             elif level == 2:
+                if buffer: flush()
                 section, subsection = title, None
+                buffer.append(title)
             else:
+                if buffer: flush()
                 subsection = title
-            # Keep every heading in the searchable parent context.
-            buffer.append(title)
-        if buffer:
-            flush()
-        if sections:
-            normalized: list[tuple[str, dict[str, str]]] = []
-            current_chapter: str | None = None
-            current_section: str | None = None
-            for content, _ in sections:
-                lines2 = content.splitlines(); title = lines2[0].strip() if lines2 else ""
-                if content and not normalized:
-                    current_chapter = title if title else None
-                meta = {}
-                heading = re.match(r"^(?:Chapter|Chapitre)\s*:?\s*(.+)$", title, re.I)
-                numbered = re.match(r"^(\d+(?:\.\d+)*)[.)]?\s+(.+)$", title)
-                if title.lower().startswith(("chapter ", "chapitre ")):
-                    current_chapter = title.split(":", 1)[-1].strip()
-                elif numbered and "." not in numbered.group(1):
-                    current_section = title
-                elif title:
-                    current_section = title
-                if current_chapter: meta["chapter"] = current_chapter
-                if current_section: meta["section"] = current_section
-                normalized.append((content, meta))
-            return normalized
+                buffer.append(title)
+        if buffer: flush()
+        if sections: return sections
         fallback = self._section_fallback(value)
         return [(value, {"section": fallback} if fallback else {})] if value.strip() else []
 
@@ -96,8 +81,7 @@ class SemanticChunker:
     def _remove_table_blocks(text: str, table_texts: list[str]) -> str:
         prose = str(text or "")
         for table_text in table_texts:
-            exact = f"[TABLE]\n{table_text}"
-            prose = prose.replace(exact, "")
+            prose = prose.replace(f"[TABLE]\n{table_text}", "")
             compact = re.sub(r"\s+", " ", table_text)
             if compact and compact != table_text:
                 prose = prose.replace(f"[TABLE]\n{compact}", "")
@@ -115,7 +99,8 @@ class SemanticChunker:
                 pending = value
                 continue
             if pending:
-                value = f"{pending}\n{value}".strip(); pending = ""
+                value = f"{pending}\n{value}".strip()
+                pending = ""
             out.append(value)
         if pending:
             if out: out[-1] = f"{out[-1]}\n{pending}".strip()
@@ -125,7 +110,7 @@ class SemanticChunker:
     def chunk_pages(self, pages: List[PageExtraction]) -> List[Chunk]:
         pages = list(pages or [])
         if not pages: return []
-        splitter = self._child_splitter(self.chunk_size, self.chunk_overlap)
+        splitter = self._child_splitter()
         chunks: list[Chunk] = []
         for page in pages:
             page_no = int(getattr(page, "page_number", getattr(page, "page_index", 0) + 1) or 1)
@@ -141,23 +126,34 @@ class SemanticChunker:
             page_info = enrich_text(prose)
             fallback = (page_info.get("headings") or [None])[0] or self._section_fallback(prose)
             rows = self._parent_sections(prose) or [(prose, {})]
-            first = rows[0]; first_parent = f"{page.document_id}:p{page_no}:parent:{self._stable_id(f'{page_no}|{first[1].get('chapter','')}|{first[1].get('section',fallback) or '__page__'}')}"; first_section = f"{page.document_id}:p{page_no}:section:{self._stable_id(first_parent)}"; first_chapter = f"{page.document_id}:p{page_no}:chapter:{self._stable_id(first[1].get('chapter','__document__'))}"
+            first_meta = rows[0][1]
+            first_key = f"{page_no}|{first_meta.get('chapter', '')}|{first_meta.get('section', first_meta.get('subsection', fallback)) or '__page__'}"
+            anchor_parent = f"{page.document_id}:p{page_no}:parent:{self._stable_id(first_key)}"
+            anchor_section = f"{page.document_id}:p{page_no}:section:{self._stable_id(first_key)}"
+            anchor_chapter = f"{page.document_id}:p{page_no}:chapter:{self._stable_id(first_meta.get('chapter', '__document__'))}"
             for parent_text, hierarchy in rows:
-                chapter = hierarchy.get("chapter"); section = hierarchy.get("section") or fallback
-                anchor = f"{page_no}|{chapter or ''}|{section or '__page__'}"
-                parent_id = f"{page.document_id}:p{page_no}:parent:{self._stable_id(anchor)}"; section_id = f"{page.document_id}:p{page_no}:section:{self._stable_id(anchor)}"; chapter_id = f"{page.document_id}:p{page_no}:chapter:{self._stable_id(chapter or '__document__')}"
+                chapter = hierarchy.get("chapter")
+                section = hierarchy.get("subsection") or hierarchy.get("section") or fallback
+                key = f"{page_no}|{chapter or ''}|{section or '__page__'}"
+                parent_id = f"{page.document_id}:p{page_no}:parent:{self._stable_id(key)}"
+                section_id = f"{page.document_id}:p{page_no}:section:{self._stable_id(key)}"
+                chapter_id = f"{page.document_id}:p{page_no}:chapter:{self._stable_id(chapter or '__document__')}"
                 children = self._compact_children(splitter.split_text(parent_text)) or ([parent_text.strip()] if parent_text.strip() else [])
                 for child_index, child in enumerate(children):
-                    enriched = enrich_text(child); prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
+                    enriched = enrich_text(child)
+                    prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
                     searchable = "[RAG-STRUCTURE schema=3]\n" + (f"[{prefix}]\n" if prefix else "") + child.strip()
                     metadata = {"source_pages":[page_no],"page_numbers":[page_no],"evidence_types":evidence_types,"chapter":chapter,"chapter_id":chapter_id,"section":section,"section_id":section_id,"global_section_id":section_id,"parent_id":parent_id,"parent_text":parent_text,"child_index":child_index,"normalized_text":enriched["normalized_text"],"entities":enriched["entities"],"headings":enriched["headings"],"number_forms":enriched["number_forms"],"table_id":table_ids[0] if table_ids else None,"figure_id":figure_ids[0] if figure_ids else None,"document_id":page.document_id,"file_name":page.file_name,"page_type":page.page_type,"quality_score":page.quality_score,"ocr_status":page.ocr_status,"ocr_confidence":getattr(page,"ocr_confidence",None),"routing_decision":getattr(page,"routing_decision",None)}
                     chunks.append(Chunk(page.document_id,page.file_name,len(chunks),searchable,[page_no],metadata,"canonical",parent_id,section_id,metadata["table_id"],metadata["figure_id"],enriched["normalized_text"]))
-            anchor_parent = first_parent; anchor_section = first_section; anchor_chapter = first_chapter; anchor_meta = first[1]
             for i, table_text in enumerate(table_texts):
-                table_id = table_ids[i] if i < len(table_ids) else f"{page.document_id}:p{page_no}:table:{i+1}"; enriched=enrich_text(table_text); meta={"source_pages":[page_no],"page_numbers":[page_no],"evidence_types":evidence_types,"chapter":anchor_meta.get("chapter"),"chapter_id":anchor_chapter,"section":anchor_meta.get("section") or fallback,"section_id":anchor_section,"global_section_id":anchor_section,"parent_id":anchor_parent,"parent_text":table_text,"child_index":i,"normalized_text":enriched["normalized_text"],"entities":enriched["entities"],"headings":enriched["headings"],"number_forms":enriched["number_forms"],"table_id":table_id,"figure_id":figure_ids[0] if figure_ids else None,"document_id":page.document_id,"file_name":page.file_name,"page_type":page.page_type,"quality_score":page.quality_score,"ocr_status":page.ocr_status,"routing_decision":getattr(page,"routing_decision",None),"representation_type":"table"}
+                table_id = table_ids[i] if i < len(table_ids) else f"{page.document_id}:p{page_no}:table:{i+1}"
+                enriched = enrich_text(table_text)
+                meta = {"source_pages":[page_no],"page_numbers":[page_no],"evidence_types":evidence_types,"chapter":first_meta.get("chapter"),"chapter_id":anchor_chapter,"section":first_meta.get("section") or fallback,"section_id":anchor_section,"global_section_id":anchor_section,"parent_id":anchor_parent,"parent_text":table_text,"child_index":i,"normalized_text":enriched["normalized_text"],"entities":enriched["entities"],"headings":enriched["headings"],"number_forms":enriched["number_forms"],"table_id":table_id,"figure_id":figure_ids[0] if figure_ids else None,"document_id":page.document_id,"file_name":page.file_name,"page_type":page.page_type,"quality_score":page.quality_score,"ocr_status":page.ocr_status,"routing_decision":getattr(page,"routing_decision",None),"representation_type":"table"}
                 chunks.append(Chunk(page.document_id,page.file_name,len(chunks),f"[TABLE]\nSection: {meta['section']}\n{table_text}" if meta.get("section") else f"[TABLE]\n{table_text}",[page_no],meta,"table",anchor_parent,anchor_section,table_id,meta["figure_id"],enriched["normalized_text"]))
             for i, caption in enumerate(captions):
-                figure_id = figure_ids[i] if i < len(figure_ids) else f"{page.document_id}:p{page_no}:figure:{i+1}"; enriched=enrich_text(caption); meta={"source_pages":[page_no],"page_numbers":[page_no],"evidence_types":evidence_types,"chapter":anchor_meta.get("chapter"),"chapter_id":anchor_chapter,"section":anchor_meta.get("section") or fallback,"section_id":anchor_section,"global_section_id":anchor_section,"parent_id":anchor_parent,"parent_text":caption,"child_index":i,"normalized_text":enriched["normalized_text"],"entities":enriched["entities"],"headings":enriched["headings"],"number_forms":enriched["number_forms"],"table_id":table_ids[0] if table_ids else None,"figure_id":figure_id,"document_id":page.document_id,"file_name":page.file_name,"page_type":page.page_type,"quality_score":page.quality_score,"ocr_status":page.ocr_status,"routing_decision":getattr(page,"routing_decision",None),"representation_type":"figure_caption"}
+                figure_id = figure_ids[i] if i < len(figure_ids) else f"{page.document_id}:p{page_no}:figure:{i+1}"
+                enriched = enrich_text(caption)
+                meta = {"source_pages":[page_no],"page_numbers":[page_no],"evidence_types":evidence_types,"chapter":first_meta.get("chapter"),"chapter_id":anchor_chapter,"section":first_meta.get("section") or fallback,"section_id":anchor_section,"global_section_id":anchor_section,"parent_id":anchor_parent,"parent_text":caption,"child_index":i,"normalized_text":enriched["normalized_text"],"entities":enriched["entities"],"headings":enriched["headings"],"number_forms":enriched["number_forms"],"table_id":table_ids[0] if table_ids else None,"figure_id":figure_id,"document_id":page.document_id,"file_name":page.file_name,"page_type":page.page_type,"quality_score":page.quality_score,"ocr_status":page.ocr_status,"routing_decision":getattr(page,"routing_decision",None),"representation_type":"figure_caption"}
                 chunks.append(Chunk(page.document_id,page.file_name,len(chunks),f"[FIGURE CAPTION]\n{caption}",[page_no],meta,"figure_caption",anchor_parent,anchor_section,meta["table_id"],figure_id,enriched["normalized_text"]))
         for index, chunk in enumerate(chunks): chunk.chunk_index=index
         return chunks
