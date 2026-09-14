@@ -263,40 +263,60 @@ class VectorStore:
         if str(state).upper() == "READY":
             self._nonready_lexical_ids = set()
 
+    def _lexical_version_rows(self, document_id: str, version_id: str) -> list[tuple[str, dict[str, Any]]]:
+        with sqlite3.connect(self.lexical_database) as connection:
+            rows = connection.execute(
+                "SELECT id, metadata FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
+                (str(document_id),),
+            ).fetchall()
+        result: list[tuple[str, dict[str, Any]]] = []
+        for item_id, raw_metadata in rows:
+            try:
+                metadata = json.loads(raw_metadata)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                metadata = {}
+            metadata = self._coerce_metadata(metadata)
+            if str(metadata.get("version_id") or "") == str(version_id):
+                result.append((str(item_id), metadata))
+        return result
+
     def set_version_index_state(
         self, document_id: str, version_id: str, state: str
     ) -> None:
         matches = self.collection.get(
             where={"document_id": document_id}, include=["metadatas"]
         )
+        semantic_matches: list[tuple[str, dict[str, Any]]] = []
         for item_id, metadata in zip(
             _as_list(matches.get("ids")),
             _as_list(matches.get("metadatas")),
             strict=False,
         ):
             meta = self._coerce_metadata(metadata)
-            if meta.get("version_id") == version_id:
-                meta["index_state"] = state
-                self.collection.update(ids=[str(item_id)], metadatas=[meta])
-        with sqlite3.connect(self.lexical_database) as connection:
-            rows = connection.execute("SELECT id, metadata FROM lexical_documents").fetchall()
-            matching = [
-                row[0]
-                for row in rows
-                if (
-                    json.loads(row[1]).get("document_id") == document_id
-                    and json.loads(row[1]).get("version_id") == version_id
+            if str(meta.get("version_id") or "") == str(version_id):
+                semantic_matches.append((str(item_id), meta))
+        lexical_matches = self._lexical_version_rows(document_id, version_id)
+        normalized_state = str(state).upper()
+        if normalized_state == "READY":
+            if not semantic_matches or len(semantic_matches) != len(lexical_matches):
+                raise RuntimeError(
+                    "READY publication contract requires semantic/lexical count parity: "
+                    f"semantic={len(semantic_matches)}, lexical={len(lexical_matches)}."
                 )
-            ]
-            if matching:
+        for item_id, meta in semantic_matches:
+            meta["index_state"] = normalized_state
+            self.collection.update(ids=[item_id], metadatas=[meta])
+        if lexical_matches:
+            with sqlite3.connect(self.lexical_database) as connection:
                 connection.executemany(
                     "UPDATE lexical_documents SET index_state = ?, "
                     "metadata = json_set(metadata, '$.index_state', ?) WHERE id = ?",
                     [
-                        (str(state).upper(), str(state).upper(), item_id)
-                        for item_id in matching
+                        (normalized_state, normalized_state, item_id)
+                        for item_id, _ in lexical_matches
                     ],
                 )
+                connection.commit()
 
     def delete_version(self, document_id: str, version_id: str) -> None:
         matches = self.collection.get(
@@ -366,7 +386,6 @@ class VectorStore:
     def validate_document_index(
         self, document_id: str, version_id: str | None = None
     ) -> Dict[str, Any]:
-        print(f"DEBUG VALIDATE: persist_directory={self.persist_directory}, collection_name={self.collection_name}")
         records = self.collection.get(
             where={"document_id": document_id},
             include=["metadatas", "documents", "embeddings"],
@@ -377,7 +396,7 @@ class VectorStore:
             keep = [
                 index
                 for index, metadata in enumerate(metadatas_all)
-                if self._coerce_metadata(metadata).get("version_id") == version_id
+                if str(self._coerce_metadata(metadata).get("version_id") or "") == str(version_id)
             ]
             normalized_records = {
                 key: _as_list(values) for key, values in records.items()
@@ -405,10 +424,27 @@ class VectorStore:
         for vector in embeddings:
             if not self._valid_vector(vector, self._collection_dim()):
                 issues.append("invalid semantic embedding")
-        valid = not issues and bool(ids)
+        lexical_count = 0
+        if version_id is not None:
+            lexical_count = len(self._lexical_version_rows(document_id, version_id))
+        else:
+            with sqlite3.connect(self.lexical_database) as connection:
+                row = connection.execute(
+                    "SELECT COUNT(*) FROM lexical_documents WHERE json_extract(metadata, '$.document_id') = ?",
+                    (str(document_id),),
+                ).fetchone()
+            lexical_count = int(row[0] if row else 0)
+        semantic_count = len(ids)
+        if semantic_count != lexical_count:
+            issues.append(
+                f"semantic/lexical count mismatch: semantic={semantic_count}, lexical={lexical_count}"
+            )
+        valid = not issues and bool(ids) and semantic_count == lexical_count
         return {
             "document_id": document_id,
-            "count": len(ids),
+            "count": semantic_count,
+            "semantic_count": semantic_count,
+            "lexical_count": lexical_count,
             "valid": valid,
             "issues": issues,
         }
