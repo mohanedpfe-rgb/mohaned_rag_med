@@ -11,17 +11,22 @@ def _source(relative: str) -> str:
 
 
 def test_runtime_composition_has_no_behavioral_patch_stack() -> None:
-    tree = ast.parse(_source("rag_project/runtime.py"))
-    names = {
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    }
-    assert "runtime_stability_v8" not in names
-    assert "runtime_final_contracts_v8" not in names
-    assert "runtime_deep_contract_fix" not in names
-    assert "runtime_chroma_lifecycle_fix" not in names
-    assert len([node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "install"]) <= 2
+    source = _source("rag_project/runtime.py")
+    tree = ast.parse(source)
+    forbidden = (
+        "runtime_stability_v8",
+        "runtime_final_contracts_v8",
+        "runtime_deep_contract_fix",
+        "runtime_chroma_lifecycle_fix",
+    )
+    assert not any(name in source for name in forbidden)
+    installer_tuple = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Tuple)
+        and any(isinstance(item, ast.Name) and item.id == "vector_store" for item in node.value.elts)
+    )
+    assert len(installer_tuple.value.elts) == 1
 
 
 def test_semantic_cache_has_no_process_global_system_binding() -> None:
