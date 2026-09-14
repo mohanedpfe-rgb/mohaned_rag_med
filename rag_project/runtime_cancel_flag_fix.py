@@ -5,7 +5,7 @@ from typing import Any
 
 
 def install() -> None:
-    """Restore the cancel-flag lifecycle and normalize one canonical empty-PDF failure."""
+    """Restore lifecycle guards and neutralize unsafe dynamic lexical lookup patching."""
     from rag_project.app.rag_system import (
         RAGSystem,
         _INGEST_CANCEL_FLAGS,
@@ -62,6 +62,34 @@ def install() -> None:
         ingest_file.__name__ = getattr(original_ingest, "__name__", "ingest_file")
         ingest_file.__qualname__ = getattr(original_ingest, "__qualname__", ingest_file.__name__)
         RAGSystem.ingest_file = ingest_file
+
+    try:
+        from rag_project.storage.vector_store import VectorStore
+
+        # runtime.py historically replaced __getattribute__ dynamically to
+        # enforce READY-only lexical retrieval. That interception is unsafe:
+        # repeated attribute access can wrap an already-wrapped method and lead
+        # to recursive lookup. The static search wrapper already applies the
+        # authoritative SQL index_state filter.
+        if getattr(VectorStore, "_final_dynamic_boundary", False):
+            VectorStore.__getattribute__ = object.__getattribute__
+
+        current_search = VectorStore.search_lexical
+        if not getattr(current_search, "_runtime_final_ready_state_guard", False):
+            def search_lexical(self: Any, query: Any, n_results: int = 5, where: Any = None):
+                # The historical wrapper cached blocked IDs in memory. Those
+                # IDs can become READY later, so never trust that cache.
+                # SQLite index_state is the single source of truth.
+                try:
+                    setattr(self, "_final_nonready_lexical_ids", set())
+                except Exception:
+                    pass
+                return current_search(self, query, n_results=n_results, where=where)
+
+            search_lexical._runtime_final_ready_state_guard = True
+            VectorStore.search_lexical = search_lexical
+    except Exception:
+        pass
 
 
 __all__ = ["install"]
