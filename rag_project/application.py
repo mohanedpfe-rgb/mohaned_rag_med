@@ -131,7 +131,7 @@ def create_default_rag_system():
 def runtime_contract() -> dict[str, Any]:
     return {
         "composition_root": "rag_project.application.create_rag_system",
-        "canonical_service": "rag_project.application.MedEvidenceProductionRAGSystem",
+        "canonical_service": CANONICAL_SERVICE,
         "service": "MedEvidenceProductionRAGSystem",
         "legacy_service": "rag_project.app.production_rag.ProductionRAGSystem",
         "legacy_adapter": "rag_project.application_legacy_adapter.LegacyProductionRAGAdapter",
@@ -144,7 +144,7 @@ def runtime_contract() -> dict[str, Any]:
         "security_policy": "rag_project.security.harden_system",
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
-        "answer_pipeline": "explicit_delegation",
+        "answer_pipeline": "med_evidence_pro",
         "answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
         "answer_pipeline_execution": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
         "active_answer_pipeline": "med_evidence_pro",
