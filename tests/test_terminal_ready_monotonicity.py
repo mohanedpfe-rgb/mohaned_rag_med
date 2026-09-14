@@ -84,7 +84,38 @@ def test_ready_document_cannot_be_downgraded_by_update_document(tmp_path, target
     assert row["index_state"] == "READY"
 
 
-def test_ready_document_can_be_explicitly_superseded(tmp_path):
+@pytest.mark.parametrize("target", ["RUNNING", "FAILED", "FAILED_INDEXING", "VALIDATING_INDEX"])
+def test_ready_document_cannot_be_overwritten_by_same_published_upsert(tmp_path, target):
+    store = _ready_store(tmp_path)
+    with pytest.raises(RuntimeError, match="cannot be overwritten"):
+        store.upsert_document(
+            {
+                "document_id": "ready-doc",
+                "content_hash": "ready-hash",
+                "file_path": str(tmp_path / "ready.pdf"),
+                "file_name": "ready.pdf",
+                "file_size": 1,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "modified_at": "2026-01-01T00:00:00+00:00",
+                "ingestion_started_at": "2026-01-01T00:00:00+00:00",
+                "current_stage": target,
+                "current_page": 0,
+                "total_pages": 1,
+                "status": target,
+                "parser_version": "pdf-extractor-v3",
+                "ocr_config": "{}",
+                "chunking_config": "{}",
+                "embedding_model": "test",
+                "index_state": "PENDING",
+                "version_id": "ready-hash",
+            }
+        )
+    row = store.get_document("ready-doc")
+    assert row["status"] == "READY"
+    assert row["index_state"] == "READY"
+
+
+def test_ready_document_can_be_explicitly_superseded_by_update(tmp_path):
     store = _ready_store(tmp_path)
     store.update_document(
         "ready-doc",
@@ -97,6 +128,45 @@ def test_ready_document_can_be_explicitly_superseded(tmp_path):
     assert row["status"] == "SUPERSEDED"
     assert row["current_stage"] == "SUPERSEDED"
     assert row["index_state"] == "FAILED"
+
+
+def test_ready_document_can_be_explicitly_superseded_by_transition(tmp_path):
+    store = _ready_store(tmp_path)
+    store.transition_document_state("ready-doc", "SUPERSEDED")
+    row = store.get_document("ready-doc")
+    assert row["status"] == "SUPERSEDED"
+    assert row["current_stage"] == "SUPERSEDED"
+    assert row["index_state"] == "FAILED"
+
+
+def test_ready_document_can_be_replaced_with_new_version_when_hash_changes(tmp_path):
+    store = _ready_store(tmp_path)
+    store.upsert_document(
+        {
+            "document_id": "ready-doc",
+            "content_hash": "new-hash",
+            "file_path": str(tmp_path / "ready.pdf"),
+            "file_name": "ready.pdf",
+            "file_size": 2,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "modified_at": "2026-01-01T00:00:01+00:00",
+            "ingestion_started_at": "2026-01-01T00:00:01+00:00",
+            "current_stage": "DISCOVERED",
+            "current_page": 0,
+            "total_pages": 0,
+            "status": "RUNNING",
+            "parser_version": "pdf-extractor-v3",
+            "ocr_config": "{}",
+            "chunking_config": "{}",
+            "embedding_model": "test",
+            "index_state": "PENDING",
+            "version_id": "new-hash",
+        }
+    )
+    row = store.get_document("ready-doc")
+    assert row["status"] == "RUNNING"
+    assert row["content_hash"] == "new-hash"
+    assert row["index_state"] == "PENDING"
 
 
 def test_completed_document_can_remain_terminal_but_not_fail(tmp_path):
