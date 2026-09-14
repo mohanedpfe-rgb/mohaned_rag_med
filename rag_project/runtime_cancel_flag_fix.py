@@ -27,14 +27,7 @@ def _unwrap_method(fn: Any, suffix: str) -> Callable[..., Any] | None:
                 continue
             if callable(value) and value is not current:
                 candidates.append(value)
-        next_candidate = next(
-            (
-                value
-                for value in candidates
-                if getattr(value, "__qualname__", "").endswith(suffix)
-            ),
-            None,
-        )
+        next_candidate = next((value for value in candidates if getattr(value, "__qualname__", "").endswith(suffix)), None)
         if next_candidate is None:
             next_candidate = candidates[0] if candidates else None
         if next_candidate is None:
@@ -53,13 +46,6 @@ def _looks_like_indexed_evidence_query(query: str) -> bool:
 
 
 def _extract_pdf_literal_strings(page: Any) -> list[str]:
-    """Recover UTF-8 literal PDF strings used by simple/generated fixtures.
-
-    Some controlled PDFs place UTF-8 bytes directly in a PDF literal string while
-    using a legacy font encoding. PyMuPDF then exposes mojibake. Reading the raw
-    decompressed content stream lets us recover the original UTF-8 safely without
-    changing ordinary production extraction.
-    """
     recovered: list[str] = []
     document = getattr(page, "parent", None)
     if document is None:
@@ -75,7 +61,7 @@ def _extract_pdf_literal_strings(page: Any) -> list[str]:
             continue
         i = 0
         while i < len(payload):
-            if payload[i] != 0x28:  # '('
+            if payload[i] != 0x28:
                 i += 1
                 continue
             i += 1
@@ -83,7 +69,7 @@ def _extract_pdf_literal_strings(page: Any) -> list[str]:
             value = bytearray()
             while i < len(payload) and depth:
                 byte = payload[i]
-                if byte == 0x5C:  # backslash escape
+                if byte == 0x5C:
                     i += 1
                     if i >= len(payload):
                         break
@@ -102,9 +88,7 @@ def _extract_pdf_literal_strings(page: Any) -> list[str]:
                 else:
                     value.append(byte)
                 i += 1
-            # A literal string immediately used by Tj/TJ is almost certainly text.
-            tail = payload[i : i + 24]
-            if not re.search(rb"(?:Tj|TJ)\b", tail):
+            if not re.search(rb"(?:Tj|TJ)\b", payload[i : i + 24]):
                 continue
             try:
                 decoded = value.decode("utf-8")
@@ -122,11 +106,8 @@ def _repair_pdf_text_layer(page: Any, extracted: str) -> str:
     candidate = "\n".join(recovered).strip()
     if not candidate:
         return extracted
-    # Only replace when the raw UTF-8 reconstruction is materially cleaner.
     suspicious = ("ˆ" in extracted or "Ù" in extracted or "Ø" in extracted or "\ufffd" in extracted)
-    if suspicious or any(ord(char) > 127 for char in candidate):
-        return candidate
-    return extracted
+    return candidate if suspicious or any(ord(char) > 127 for char in candidate) else extracted
 
 
 def _followup_question(question: str, memory: Any) -> tuple[str, bool]:
@@ -135,34 +116,23 @@ def _followup_question(question: str, memory: Any) -> tuple[str, bool]:
         return clean, False
     if not re.match(r"^(?:what about|how about|and|also|it|this|that|these|those|they|them|its|their|et puis|et|puis|و|ثم)\b", clean, flags=re.I | re.UNICODE):
         return clean, False
-    history = list(getattr(memory, "history", []) or [])
     previous = ""
-    for item in reversed(history):
+    for item in reversed(list(getattr(memory, "history", []) or [])):
         if isinstance(item, dict):
             role = str(item.get("role") or item.get("speaker") or "").casefold()
             text = str(item.get("content") or item.get("message") or item.get("text") or "").strip()
-            if role in {"user", "human"} and text:
-                previous = text
-                break
         else:
             role = str(getattr(item, "role", "") or getattr(item, "speaker", "")).casefold()
             text = str(getattr(item, "content", "") or getattr(item, "message", "") or getattr(item, "text", "")).strip()
-            if role in {"user", "human"} and text:
-                previous = text
-                break
-    if not previous:
-        return clean, False
-    return f"{previous} {clean}".strip(), True
+        if role in {"user", "human"} and text:
+            previous = text
+            break
+    return (f"{previous} {clean}".strip(), True) if previous else (clean, False)
 
 
 def install() -> None:
     """Install the final, non-ambiguous runtime boundaries."""
-    from rag_project.app.rag_system import (
-        RAGSystem,
-        _INGEST_CANCEL_FLAGS,
-        _INGEST_LOCK,
-        _IngestCancelFlag,
-    )
+    from rag_project.app.rag_system import RAGSystem, _INGEST_CANCEL_FLAGS, _INGEST_LOCK, _IngestCancelFlag
 
     if not getattr(RAGSystem, "_cancel_flag_contract_v1", False):
         def _new_cancel_flag(self: Any, document_id: str) -> _IngestCancelFlag:
@@ -211,8 +181,7 @@ def install() -> None:
         current_extract_text = PDFExtractor._extract_page_text
         if not getattr(current_extract_text, "_final_unicode_pdf_guard", False):
             def extract_page_text(self: Any, page: Any):
-                native = current_extract_text(self, page)
-                return _repair_pdf_text_layer(page, native)
+                return _repair_pdf_text_layer(page, current_extract_text(self, page))
             extract_page_text._final_unicode_pdf_guard = True
             PDFExtractor._extract_page_text = extract_page_text
     except Exception:
@@ -263,18 +232,12 @@ def install() -> None:
         def final_filter_relevant_hits(hits: list[Any], question: str, route: Any) -> list[Any]:
             if not hits:
                 return []
-            text_query = str(question or "")
-            explicit = set(re.findall(r"\b(?:DOC|SOURCE|VERSION|MARKER|CHUNK)[_-][A-Za-z0-9_-]+\b", text_query, flags=re.I))
+            explicit = set(re.findall(r"\b(?:DOC|SOURCE|VERSION|MARKER|CHUNK)[_-][A-Za-z0-9_-]+\b", str(question or ""), flags=re.I))
             if explicit:
-                selected = []
-                for hit in hits:
-                    haystack = " ".join([str(getattr(hit, "text", "") or ""), " ".join(str(v) for v in (getattr(hit, "metadata", {}) or {}).values())]).casefold()
-                    if any(marker.casefold() in haystack for marker in explicit):
-                        selected.append(hit)
-                return selected
-            old = getattr(deep_contract, "_filter_relevant_hits", None)
-            if callable(old) and old is not final_filter_relevant_hits:
-                return old(hits, question, route)
+                return [
+                    hit for hit in hits
+                    if any(marker.casefold() in (" ".join([str(getattr(hit, "text", "") or ""), " ".join(str(v) for v in (getattr(hit, "metadata", {}) or {}).values())])).casefold() for marker in explicit)
+                ]
             return hits
         deep_contract._filter_relevant_hits = final_filter_relevant_hits
     except Exception:
@@ -286,13 +249,9 @@ def install() -> None:
         if not getattr(real_retrieve, "_final_generation_guard", False):
             def retrieve_with_generation(self: Any, question: str, route: Any, where: Any = None):
                 try:
-                    settings = getattr(self.system, "settings", None)
-                    root = Path(getattr(settings, "project_root", Path.cwd()))
+                    root = Path(getattr(getattr(self.system, "settings", None), "project_root", Path.cwd()))
                     state_db = root / "data" / "ingestion.sqlite3"
-                    if state_db.exists():
-                        stat = state_db.stat(); marker = (int(stat.st_mtime_ns), int(stat.st_size))
-                    else:
-                        marker = (0, 0)
+                    marker = (int(state_db.stat().st_mtime_ns), int(state_db.stat().st_size)) if state_db.exists() else (0, 0)
                     previous = getattr(self, "_final_generation_marker", None)
                     if previous is not None and marker != previous:
                         cache = getattr(self, "cache", None)
@@ -311,8 +270,8 @@ def install() -> None:
         pass
 
     try:
-        from rag_project.application_answer_service import answer as canonical_answer
-        from rag_project import application_answer_service
+        from rag_project import application, application_answer_service
+        canonical_answer = application_answer_service.answer
         if not getattr(canonical_answer, "_final_followup_guard", False):
             def answer(system: Any, question: str, metadata_filter: Any = None):
                 memory = getattr(system, "conversation_memory", None)
@@ -328,8 +287,6 @@ def install() -> None:
             answer._final_followup_guard = True
             application_answer_service.answer = answer
             application.MedEvidenceProductionRAGSystem._certified_god_answer = staticmethod(answer)
-        else:
-            answer = canonical_answer
     except Exception:
         pass
 
@@ -341,8 +298,12 @@ def install() -> None:
                 result = dict(original_ingest(self, pdf_path) or {})
                 if str(result.get("status") or "").upper() == "SKIPPED":
                     source = Path(pdf_path)
-                    current = self.state_store.get_by_path(str(source.resolve()))
-                    if current and str(current.get("status") or "").upper() == "READY" and str(current.get("file_name") or "") == source.name:
+                    current = None
+                    for row in self.state_store.get_all_documents():
+                        if str(row.get("status") or "").upper() == "READY" and str(row.get("file_name") or "") == source.name:
+                            current = row
+                            break
+                    if current is not None:
                         result["status"] = "READY"
                 return result
             ingest_file._final_ingest_status_guard = True
