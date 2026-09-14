@@ -24,6 +24,50 @@ def _load_installers():
     )
 
 
+def _install_vectorstore_compatibility_contract() -> None:
+    """Expose the canonical helper methods required by runtime retrieval patches."""
+    from rag_project.storage.vector_store import VectorStore
+
+    if not hasattr(VectorStore, "_as_query_result"):
+        def _as_query_result(
+            ids: list[str],
+            documents: list[str],
+            metadatas: list[dict[str, Any]],
+            distances: list[float] | None = None,
+        ) -> dict[str, Any]:
+            return {
+                "ids": [list(ids)],
+                "documents": [list(documents)],
+                "metadatas": [list(metadatas)],
+                "distances": [
+                    [0.0] * len(ids) if distances is None else list(distances)
+                ],
+            }
+
+        VectorStore._as_query_result = staticmethod(_as_query_result)
+
+    if not hasattr(VectorStore, "_metadata_matches"):
+        def _metadata_matches(
+            metadata: dict[str, Any],
+            where: dict[str, Any] | None,
+        ) -> bool:
+            if not where:
+                return True
+            if "$and" in where:
+                return all(
+                    _metadata_matches(metadata, clause)
+                    for clause in (where.get("$and") or [])
+                )
+            if "$or" in where:
+                return any(
+                    _metadata_matches(metadata, clause)
+                    for clause in (where.get("$or") or [])
+                )
+            return all(metadata.get(key) == value for key, value in where.items())
+
+        VectorStore._metadata_matches = staticmethod(_metadata_matches)
+
+
 def install() -> None:
     global _INSTALLED
     with _INSTALL_LOCK:
@@ -46,6 +90,7 @@ def install() -> None:
             _INSTALL_PROVENANCE.append(entry)
             if os.getenv("RAG_RUNTIME_TRACE", "").strip().lower() in {"1", "true", "yes"}:
                 print(f"[runtime] {name}: OK ({entry['elapsed_ms']} ms)")
+        _install_vectorstore_compatibility_contract()
         from rag_project.runtime_public_metadata import install as install_public_metadata
         install_public_metadata()
         from rag_project.runtime_stability_v5 import install as install_transition_guard
