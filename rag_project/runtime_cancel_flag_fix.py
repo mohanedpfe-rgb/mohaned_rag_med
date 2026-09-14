@@ -92,8 +92,6 @@ def install() -> None:
 
     # ------------------------------------------------------------------
     # 2. Retrieval must not turn a partially matched query into zero evidence.
-    #    The previous deep-contract filter was too destructive: one missing
-    #    entity/marker could erase all valid hits and cascade into abstention.
     # ------------------------------------------------------------------
     try:
         from rag_project.intelligence import runtime_deep_contract_fix
@@ -105,7 +103,8 @@ def install() -> None:
             if not terms:
                 return hits
             matched = [
-                hit for hit in hits
+                hit
+                for hit in hits
                 if runtime_deep_contract_fix._hit_matches_terms(hit, terms)
             ]
             if matched:
@@ -117,13 +116,30 @@ def install() -> None:
             return hits
 
         runtime_deep_contract_fix._filter_relevant_hits = safe_filter_relevant_hits
+
+        # The deep compiler wrapper is another competing evidence authority.
+        # It could erase every claim after the real compiler had already built
+        # valid evidence. Recover the original EvidenceCompiler.compile method
+        # from that wrapper instead of maintaining two incompatible compilers.
+        from rag_project.intelligence import med_evidence_pro
+        current_compile = med_evidence_pro.EvidenceCompiler.compile
+        if getattr(current_compile, "_deep_compiler_guard", False):
+            recovered = None
+            for cell in getattr(current_compile, "__closure__", ()) or ():
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    continue
+                if callable(value) and value is not current_compile:
+                    recovered = value
+                    break
+            if recovered is not None:
+                med_evidence_pro.EvidenceCompiler.compile = recovered
     except Exception:
         pass
 
     # ------------------------------------------------------------------
     # 3. Retrieval cache invalidation must follow the indexed data generation.
-    #    The previous cache key was query-only, so a document replacement could
-    #    leave old chunks visible under the same question until TTL expiry.
     # ------------------------------------------------------------------
     try:
         from rag_project.intelligence import med_evidence_pro
@@ -132,14 +148,15 @@ def install() -> None:
         if not getattr(original_retrieve, "_runtime_generation_guard", False):
             def retrieve_with_generation_guard(self: Any, question: str, route: Any, where: Any = None):
                 try:
-                    root = Path(getattr(getattr(self, "system", None), "settings", None).project_root)
+                    settings = getattr(getattr(self, "system", None), "settings", None)
+                    root = Path(getattr(settings, "project_root", Path.cwd()))
                     state_db = root / "data" / "ingestion.sqlite3"
                     marker = state_db.stat().st_mtime_ns if state_db.exists() else 0
                     previous = getattr(self, "_ready_generation_marker", None)
                     if previous is not None and marker != previous:
                         cache = getattr(self, "cache", None)
                         db_path = Path(getattr(cache, "db_path", ""))
-                        if db_path:
+                        if str(db_path):
                             with sqlite3.connect(db_path) as connection:
                                 connection.execute("DELETE FROM retrieval_cache")
                                 connection.commit()
