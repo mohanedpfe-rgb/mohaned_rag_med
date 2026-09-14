@@ -17,15 +17,23 @@ def _transition_guard(self, document_id, new_stage, **values):
             from rag_project.ingestion.state_store import utc_now
             connection.execute("UPDATE documents SET current_stage=?, status=?, index_state='FAILED', modified_at=? WHERE document_id=?", (target, target, utc_now(), str(document_id)))
         return
-    return self._runtime_v5_original_transition(document_id, new_stage, **values)
+    try:
+        return self._runtime_v5_original_transition(document_id, new_stage, **values)
+    except Exception:
+        # READY/COMPLETED publication is durable before its optional audit event.
+        # If only the audit append failed, retain the committed terminal state.
+        if target in {"READY", "COMPLETED"}:
+            after = self.get_document(document_id)
+            if after and self.is_ready_status(after.get("status")) and str(after.get("index_state") or "").upper() == "READY":
+                return
+        raise
 
 
 def _release_guard(self, document_id, worker_id):
     try:
         return bool(self._runtime_v5_original_release_document(document_id, worker_id))
     except Exception:
-        # Lease release is cleanup. It must not replace the primary ingestion
-        # outcome or escape the final cleanup boundary.
+        # Lease release is cleanup. It must not replace the primary ingestion outcome.
         return False
 
 
