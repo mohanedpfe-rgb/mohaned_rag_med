@@ -38,6 +38,8 @@ def install() -> None:
             _INSTALL_PROVENANCE.append(entry)
             if os.getenv("RAG_RUNTIME_TRACE", "").strip().lower() in {"1", "true", "yes"}:
                 print(f"[runtime] {name}: OK ({entry['elapsed_ms']} ms)")
+        from rag_project.runtime_public_metadata import install as install_public_metadata
+        install_public_metadata()
         from rag_project.runtime_stability_v5 import install as install_transition_guard
         install_transition_guard()
         _INSTALLED = True
