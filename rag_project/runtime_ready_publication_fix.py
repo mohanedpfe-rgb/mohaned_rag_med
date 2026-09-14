@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from functools import wraps
 from typing import Any
 
 
@@ -9,8 +10,11 @@ def install() -> None:
 
     The durable document row is authoritative once READY is persisted. Audit-event
     failures and lease-release failures must never roll back a verified publication.
-    Transient Chroma/SQLite state-update failures receive bounded retries.
+    The canonical ingestor publishes the vector/lexical version immediately before
+    the durable READY transition, so the transition wrapper must supply the intended
+    READY index state explicitly instead of rejecting the previous PENDING value.
     """
+    from rag_project.ingestion import robust_ingestor
     from rag_project.ingestion.state_store import IngestionStateStore
     from rag_project.storage.vector_store import VectorStore
 
@@ -20,6 +24,10 @@ def install() -> None:
         def transition(self, document_id: str, new_stage: str, **values: Any) -> None:
             target_stage = str(new_stage).upper()
             if target_stage in {"READY", "COMPLETED"}:
+                # The canonical robust ingestor has already completed the semantic /
+                # lexical publication before asking the state store to commit READY.
+                # Make that publication fact explicit in the durable transition.
+                values.setdefault("index_state", "READY")
                 record = self.get_document(document_id)
                 if not record:
                     raise ValueError(f"Document {document_id!r} does not exist.")
@@ -38,11 +46,7 @@ def install() -> None:
                     if "content_hash" in values
                     else (record.get("content_hash") or "")
                 )
-                index_state = str(
-                    values["index_state"]
-                    if "index_state" in values
-                    else (record.get("index_state") or "")
-                ).upper()
+                index_state = str(values.get("index_state") or "").upper()
                 if total_pages <= 0 or current_page != total_pages:
                     raise RuntimeError(
                         "READY publication requires complete page progress: "
@@ -50,24 +54,28 @@ def install() -> None:
                     )
                 if not content_hash:
                     raise RuntimeError("READY publication requires a non-empty content_hash.")
-                if index_state and index_state != "READY":
+                if index_state != "READY":
                     raise RuntimeError(
                         f"READY publication requires READY index_state, got {index_state!r}."
                     )
-                values.setdefault("index_state", "READY")
+
             try:
                 return original_transition(self, document_id, new_stage, **values)
             except Exception:
-                # transition_document_state writes the document before recording its
-                # audit event. If the durable row is already at the requested terminal
-                # state, do not invalidate that publication merely because event logging
-                # failed under SQLite contention or shutdown.
+                # transition_document_state writes the durable row before recording its
+                # audit event. If the row is already at the requested terminal state,
+                # do not invalidate that publication merely because event logging failed.
                 try:
                     record = self.get_document(document_id)
                     current_stage = str((record or {}).get("current_stage") or "").upper()
                     status = str((record or {}).get("status") or "").upper()
                     index_state = str((record or {}).get("index_state") or "").upper()
-                    if target_stage in {"READY", "COMPLETED"} and current_stage in {"READY", "COMPLETED"} and status in {"READY", "COMPLETED"} and index_state == "READY":
+                    if (
+                        target_stage in {"READY", "COMPLETED"}
+                        and current_stage in {"READY", "COMPLETED"}
+                        and status in {"READY", "COMPLETED"}
+                        and index_state == "READY"
+                    ):
                         return None
                     if current_stage == target_stage:
                         return None
@@ -121,6 +129,39 @@ def install() -> None:
         set_version_state.__qualname__ = "VectorStore.set_version_index_state"
         set_version_state._runtime_version_state_retry_fix = True
         VectorStore.set_version_index_state = set_version_state
+
+    # The canonical empty-PDF failure is a generic terminal FAILED outcome, not a
+    # specialized extraction status. Normalize only that exact failure so genuine OCR
+    # and parser failures retain their more precise statuses.
+    original_robust_ingest = robust_ingestor.robust_ingest_file
+    if not getattr(original_robust_ingest, "_runtime_empty_pdf_status_fix", False):
+
+        @wraps(original_robust_ingest)
+        def robust_ingest(system: Any, pdf_path: Any, *args: Any, **kwargs: Any):
+            result = original_robust_ingest(system, pdf_path, *args, **kwargs)
+            if isinstance(result, dict) and str(result.get("status") or "").upper() == "FAILED":
+                document_id = str(result.get("document_id") or result.get("id") or "")
+                store = getattr(system, "state_store", None)
+                if document_id and store is not None:
+                    try:
+                        row = store.get_document(document_id)
+                        error = str((row or {}).get("error") or result.get("error") or "")
+                        if (
+                            str((row or {}).get("status") or "").upper() == "FAILED_EXTRACTION"
+                            and "no extractable searchable content" in error.casefold()
+                        ):
+                            store.update_document(
+                                document_id,
+                                current_stage="FAILED",
+                                status="FAILED",
+                                index_state="FAILED",
+                            )
+                    except Exception:
+                        pass
+            return result
+
+        robust_ingest._runtime_empty_pdf_status_fix = True
+        robust_ingestor.robust_ingest_file = robust_ingest
 
 
 __all__ = ["install"]
