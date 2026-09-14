@@ -108,6 +108,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
     from rag_project.runtime_version_transaction_fix import install as version_transaction_fix
     from rag_project.runtime_transaction_numpy_fix import install as transaction_numpy_fix
     from rag_project.runtime_failed_publication_cleanup import install as failed_publication_cleanup
+    from rag_project.runtime_post_index_publication_contract import install as post_index_publication_contract
 
     return (
         vector_store, chroma_distance_fix, hardening, hardening_extra, recovery, quality_gate, final_gate,
@@ -126,6 +127,7 @@ def _load_installers() -> tuple[Callable[[], None], ...]:
         transactional_rollback_fix, chroma_lifecycle_fix, page_identity_fix,
         phase16_contract_fix, ocr_state_fix, phase16_evidence_fix,
         version_transaction_fix, transaction_numpy_fix, failed_publication_cleanup,
+        post_index_publication_contract,
     )
 
 
@@ -176,8 +178,6 @@ def _install_ready_only_lexical_boundary() -> None:
         return result
     wrapped._final_ready_only_boundary = True
     VectorStore.search_lexical = wrapped
-    # Keep the publication boundary active even if a later compatibility
-    # installer replaces the class method.
     original_getattribute = VectorStore.__getattribute__
     if not getattr(VectorStore, "_final_dynamic_boundary", False):
         def dynamic_getattribute(self, name):
