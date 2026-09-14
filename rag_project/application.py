@@ -10,15 +10,18 @@ from rag_project.application_legacy_adapter import LegacyProductionRAGAdapter
 from rag_project.configuration.settings import Settings
 from rag_project.canonical_runtime import ANSWER_AUTHORITY, CANONICAL_SERVICE
 from rag_project.ingestion.ingestion_contract import INGESTION_CONTRACT_VERSION
+from rag_project.ingestion.status_contract import normalize_public_status
 from rag_project.intelligence.production_contract_v2 import CONTRACT_VERSION as PRODUCTION_CONTRACT_VERSION
-from rag_project.intelligence.med_evidence_pro import MedEvidenceProEngine
 from rag_project.quality_gate import run_quality_gate
 from rag_project.runtime import install, install_application_contracts
 from rag_project.runtime_bootstrap_state import is_prepared as runtime_is_prepared
 from rag_project.security import harden_system
 
 _FACTORY_LOCK = threading.RLock()
-ANSWER_PIPELINE_AUTHORITY = "rag_project.intelligence.top_level_pipeline.complete_phases"
+
+# There is one public answer authority.  The MedEvidence Pro engine is an
+# implementation detail of that service, not a competing public pipeline.
+ANSWER_PIPELINE_AUTHORITY = ANSWER_AUTHORITY
 
 
 def _normalize_runtime_settings(settings: Settings | None) -> Settings:
@@ -54,11 +57,7 @@ class MedEvidenceProductionRAGSystem:
 
     def ingest_file(self, pdf_path: Any) -> dict[str, Any]:
         result = dict(self.runtime.ingest_file(pdf_path) or {})
-        status = str(result.get("status") or "").upper()
-        if status in {"SUCCESS", "COMPLETED"}:
-            result["status"] = "READY"
-        elif status == "FAILED":
-            result["status"] = "FAILED"
+        result["status"] = normalize_public_status(result.get("status"))
         return result
 
     def ingest_directory(self, directory: Any = None) -> list[dict[str, Any]]:
@@ -66,8 +65,7 @@ class MedEvidenceProductionRAGSystem:
         normalized: list[dict[str, Any]] = []
         for item in results:
             row = dict(item or {})
-            if str(row.get("status") or "").upper() in {"SUCCESS", "COMPLETED"}:
-                row["status"] = "READY"
+            row["status"] = normalize_public_status(row.get("status"))
             normalized.append(row)
         return normalized
 
@@ -145,10 +143,10 @@ def runtime_contract() -> dict[str, Any]:
         "quality_policy": "bounded_startup_check_with_optional_deep_audit",
         "configuration": "Settings.from_env",
         "answer_pipeline": "med_evidence_pro",
-        "answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
-        "answer_pipeline_execution": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "answer_pipeline_authority": ANSWER_AUTHORITY,
+        "answer_pipeline_execution": "rag_project.application_answer_service.answer",
         "active_answer_pipeline": "med_evidence_pro",
-        "active_answer_pipeline_authority": ACTIVE_ANSWER_PIPELINE_AUTHORITY,
+        "active_answer_pipeline_authority": ANSWER_AUTHORITY,
         "answer_monkey_patch": False,
         "canonical_runtime_binding": "rag_project.canonical_runtime.install",
         "production_contract": "rag_project.intelligence.production_contract_v2.install",
