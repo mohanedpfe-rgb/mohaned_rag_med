@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 
-# A SQLite write transaction is used as the cross-process mutex.  Thread locks
+# A SQLite write transaction is used as the cross-process mutex. Thread locks
 # avoid needless SQLite contention inside one Python process, while the
 # BEGIN IMMEDIATE below also serializes independent pytest-xdist workers.
 _LOCK_GUARD = threading.Lock()
@@ -136,8 +136,6 @@ def _install_atomic_add_documents(VectorStore: type[Any]) -> None:
             == len(embedding_list)
             == len(ids_list)
         ):
-            # Preserve the base implementation's public contract and error
-            # message for malformed callers.
             return original(self, documents_list, metadata_list, embedding_list, ids_list)
 
         database = Path(self.lexical_database)
@@ -149,23 +147,17 @@ def _install_atomic_add_documents(VectorStore: type[Any]) -> None:
 
         with lock:
             try:
-                # SQLite's BEGIN IMMEDIATE obtains a process-wide write lock
-                # before Chroma is touched.  This is the crucial ordering rule:
-                # no worker can expose a semantic-only BUILDING batch while its
-                # lexical counterpart is still being committed.
                 connection = sqlite3.connect(database, timeout=60.0)
                 connection.execute("BEGIN IMMEDIATE")
 
-                try:
-                    existing = self.collection.get(ids=ids_list, include=["metadatas"])
-                    preexisting_ids = {
-                        str(item_id) for item_id in existing.get("ids", []) or []
-                    }
-                except Exception:
-                    # A failed preflight read must not make an otherwise valid
-                    # ingestion fail solely because a Chroma diagnostic query
-                    # is unsupported by a particular backend version.
-                    preexisting_ids = set()
+                # This preflight establishes the compensation boundary. If it
+                # cannot be read reliably, abort before mutating either store;
+                # assuming "nothing existed" could make rollback delete data
+                # that was actually published before this transaction began.
+                existing = self.collection.get(ids=ids_list, include=["metadatas"])
+                preexisting_ids = {
+                    str(item_id) for item_id in existing.get("ids", []) or []
+                }
 
                 active[id(self)] = connection
                 try:
@@ -183,9 +175,6 @@ def _install_atomic_add_documents(VectorStore: type[Any]) -> None:
                 finally:
                     active.pop(id(self), None)
             except Exception:
-                # The semantic store has no shared transaction with SQLite.
-                # Compensate only IDs that were not present before this batch.
-                # This leaves previously published data untouched.
                 try:
                     current = self.collection.get(ids=ids_list, include=["metadatas"])
                     current_ids = {
@@ -195,9 +184,8 @@ def _install_atomic_add_documents(VectorStore: type[Any]) -> None:
                     if newly_created:
                         self.collection.delete(ids=newly_created)
                 except Exception:
-                    # The original exception is the actionable failure.  A
-                    # compensation failure is logged by the caller's existing
-                    # ingestion failure path rather than masking the root cause.
+                    # Never replace the original failure with a compensation
+                    # failure; the caller keeps the actionable root exception.
                     pass
                 raise
             finally:
@@ -217,9 +205,6 @@ def install() -> None:
         return
     from rag_project.storage.vector_store import VectorStore
 
-    # Reuse the store's existing serializers/tokenizer instead of creating a
-    # second representation format.  The transaction bridge calls the exact
-    # same SQL shape as the production lexical writer.
     def _metadata_json(store: Any, metadata: dict[str, Any]) -> str:
         import json
         return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
