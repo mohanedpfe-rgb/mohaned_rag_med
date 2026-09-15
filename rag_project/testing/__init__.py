@@ -2,6 +2,12 @@
 
 from . import full17_hardening  # import-time install patches diagnostic bindings before runner import
 
+# Production storage hardening is explicitly owned by rag_project.runtime.
+# The diagnostic runner imports production probes that construct VectorStore
+# directly, so install the canonical runtime before importing that runner.
+from rag_project.runtime import install as _install_runtime
+_install_runtime()
+
 from .deep_diagnostics import DiagnosticReport, PhaseResult, RootCause
 from .runner import PHASES, UnifiedDiagnosticEngine, run_all
 from .architecture_contracts import install as _install_architecture_contract

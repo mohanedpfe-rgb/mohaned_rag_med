@@ -13,13 +13,19 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 def _load_installers():
     from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle
+    from rag_project.runtime_chroma_metadata_fix import install as chroma_metadata
     from rag_project.storage.vector_store_runtime import install as vector_store
     from rag_project.storage.atomic_index_transaction import install as atomic_index_transaction
+    from rag_project.storage.concurrency_index_fix import install as concurrency_index_fix
+    from rag_project.storage.reconcile_parity_fix import install as reconcile_parity_fix
     from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication
     return (
         chroma_lifecycle,
+        chroma_metadata,
         vector_store,
         atomic_index_transaction,
+        concurrency_index_fix,
+        reconcile_parity_fix,
         post_index_publication,
     )
 

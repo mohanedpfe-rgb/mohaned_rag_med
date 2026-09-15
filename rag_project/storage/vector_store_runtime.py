@@ -152,7 +152,7 @@ def _document_index_counts(self: Any, document_id: str, version_id: str | None =
     semantic = _semantic_records(self, document_id, version_id); semantic_ids = self._chunk_id_set([meta for _, meta in semantic]); lexical = _lexical_records(self, document_id, version_id, chunk_ids=semantic_ids if semantic_ids else None); lexical_ids = self._chunk_id_set([meta for _, meta in lexical]); return {"semantic_count": len(semantic), "lexical_count": len(lexical), "semantic_chunk_ids": semantic_ids, "lexical_chunk_ids": lexical_ids, "valid": bool(semantic_ids) and semantic_ids == lexical_ids}
 
 
-def _validate_document_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
+def _validate_document_index(self, document_id: str, version_id: str | None = None) -> dict[str, Any]:
     report = _document_index_counts(self, document_id, version_id); issues: list[str] = []
     if report["semantic_count"] != report["lexical_count"]: issues.append(f"semantic/lexical count mismatch: semantic={report['semantic_count']}, lexical={report['lexical_count']}")
     if report["semantic_chunk_ids"] != report["lexical_chunk_ids"]: issues.append("semantic/lexical index parity failure")
@@ -165,16 +165,32 @@ def _set_version_index_state(self: Any, document_id: str, version_id: str, state
         if counts["semantic_count"] == 0 and counts["lexical_count"] == 0: return
         if counts["semantic_chunk_ids"] != counts["lexical_chunk_ids"]: raise RuntimeError("READY publication contract requires semantic/lexical index parity")
     semantic = _semantic_records(self, document_id, version_id); lexical = _lexical_records(self, document_id, version_id, chunk_ids=counts["semantic_chunk_ids"] or None)
-    for item_id, meta in semantic:
-        meta["index_state"] = normalized; self.collection.update(ids=[item_id], metadatas=[_safe_chroma_metadata(self, meta)])
-    if lexical:
-        database = Path(getattr(self, "lexical_database"))
-        with _database_lock(database):
-            with sqlite3.connect(database) as connection:
-                connection.executemany("UPDATE lexical_documents SET index_state=?, metadata=json_set(metadata, '$.index_state', ?) WHERE id=?", [(normalized, normalized, item_id) for item_id, _ in lexical]); connection.commit()
+    previous_semantic = [(item_id, dict(meta)) for item_id, meta in semantic]
+    updated_semantic: list[str] = []
+    try:
+        for item_id, meta in semantic:
+            meta["index_state"] = normalized
+            self.collection.update(ids=[item_id], metadatas=[_safe_chroma_metadata(self, meta)])
+            updated_semantic.append(item_id)
+        if lexical:
+            database = Path(getattr(self, "lexical_database"))
+            with _database_lock(database):
+                with sqlite3.connect(database) as connection:
+                    connection.executemany("UPDATE lexical_documents SET index_state=?, metadata=json_set(metadata, '$.index_state', ?) WHERE id=?", [(normalized, normalized, item_id) for item_id, _ in lexical]); connection.commit()
+    except Exception as exc:
+        for item_id in reversed(updated_semantic):
+            original_meta = next(meta for original_id, meta in previous_semantic if original_id == item_id)
+            try:
+                self.collection.update(ids=[item_id], metadatas=[_safe_chroma_metadata(self, original_meta)])
+            except Exception as rollback_exc:
+                try:
+                    exc.add_note(f"semantic state rollback failed for {item_id}: {type(rollback_exc).__name__}: {rollback_exc}")
+                except Exception:
+                    pass
+        raise
 
 
-def _delete_version(self: Any, document_id: str, version_id: str) -> None:
+def _delete_version(self, document_id: str, version_id: str) -> None:
     semantic = _semantic_records(self, document_id, version_id); chunk_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}; lexical = _lexical_records(self, document_id, version_id, chunk_ids=chunk_ids if chunk_ids else None); ids = [item_id for item_id, _ in semantic]; last_error: Exception | None = None
     for attempt in range(2):
         try:
