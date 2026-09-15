@@ -84,13 +84,11 @@ def create_rag_system(settings: Settings | None = None, *, runtime_prepared: boo
         system = MedEvidenceProductionRAGSystem(_normalize_runtime_settings(settings))
         system = harden_system(system)
         system = install_runtime_adapters(system)
-        try:
-            system.startup_quality = run_quality_gate(system, repair_drift=True)
-            if not system.startup_quality.get("ready", False):
-                system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
-        except Exception as exc:
-            system.startup_quality = {"ready": False, "error": type(exc).__name__}
-            system.logger.exception("Runtime quality gate failed")
+        # Startup certification is a construction invariant. Do not convert a
+        # quality-gate exception into a usable-looking but unverified system.
+        system.startup_quality = run_quality_gate(system, repair_drift=True)
+        if not system.startup_quality.get("ready", False):
+            system.logger.warning("Runtime quality gate reported a non-ready state: %s", system.startup_quality)
         return system
 
 
