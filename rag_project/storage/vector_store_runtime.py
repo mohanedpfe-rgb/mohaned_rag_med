@@ -159,6 +159,11 @@ def _validate_document_index(self, document_id: str, version_id: str | None = No
     return {"document_id": document_id, "count": report["semantic_count"], "semantic_count": report["semantic_count"], "lexical_count": report["lexical_count"], "valid": not issues and bool(report["semantic_chunk_ids"]), "issues": issues}
 
 
+def _verify_index(self: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
+    """Backward-compatible verification API used by diagnostics and legacy callers."""
+    return _validate_document_index(self, document_id, version_id)
+
+
 def _set_version_index_state(self: Any, document_id: str, version_id: str, state: str) -> None:
     normalized = str(state).upper(); counts = _document_index_counts(self, document_id, version_id)
     if normalized == "READY":
@@ -190,7 +195,7 @@ def _set_version_index_state(self: Any, document_id: str, version_id: str, state
         raise
 
 
-def _delete_version(self, document_id: str, version_id: str) -> None:
+def _delete_version(self: Any, document_id: str, version_id: str) -> None:
     semantic = _semantic_records(self, document_id, version_id); chunk_ids = {str(meta.get("chunk_id") or meta.get("id") or item_id) for item_id, meta in semantic}; lexical = _lexical_records(self, document_id, version_id, chunk_ids=chunk_ids if chunk_ids else None); ids = [item_id for item_id, _ in semantic]; last_error: Exception | None = None
     for attempt in range(2):
         try:
@@ -211,7 +216,7 @@ def install() -> None:
     with _LOCK:
         if _INSTALLED: return
         from rag_project.storage.vector_store import VectorStore
-        for name, function in (("search", _compatibility_search), ("search_lexical", _lexical_search_base), ("index_health_check", _index_health_check), ("validate_document_index", _validate_document_index), ("set_version_index_state", _set_version_index_state), ("delete_version", _delete_version)):
+        for name, function in (("search", _compatibility_search), ("search_lexical", _lexical_search_base), ("index_health_check", _index_health_check), ("validate_document_index", _validate_document_index), ("verify_index", _verify_index), ("set_version_index_state", _set_version_index_state), ("delete_version", _delete_version)):
             marker = f"_vector_runtime_original_{name}"
             original = getattr(VectorStore, name, None)
             if original is not None and not hasattr(VectorStore, marker): setattr(VectorStore, marker, original)
