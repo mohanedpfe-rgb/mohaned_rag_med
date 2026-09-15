@@ -11,6 +11,12 @@ _install_architecture_contract()
 from . import strict_runtime_contracts as _strict_runtime_contracts
 _strict_runtime_contracts.install()
 
+# Production storage hardening is explicitly owned by rag_project.runtime.
+# Diagnostic phases construct VectorStore directly, so bootstrap the same
+# canonical runtime before those production storage objects are exercised.
+from rag_project.runtime import install as _install_runtime
+_install_runtime()
+
 # Phase 12 is intentionally hardened at runtime by full17_hardening, but the
 # hardened callable remains the exported implementation of the authoritative
 # production_diagnostic_probes contract. Preserve that ownership identity for
