@@ -254,6 +254,12 @@ class PDFExtractor:
                 extraction.metadata["extraction_method"] = extraction.extraction_method
                 extraction.metadata["ocr_status"] = extraction.ocr_status
                 extraction.metadata["quality_score"] = extraction.quality_score
+
+                # Skip pages where OCR was required but failed - they contain no usable text
+                if extraction.ocr_required and extraction.ocr_status == "failed":
+                    logger.warning("Skipping page %s: OCR required but failed (error: %s)", physical_page, extraction.metadata.get("ocr_error", "unknown"))
+                    continue
+
                 if self.state_store:
                     self.state_store.record_page(extraction, cache_reference=EXTRACTION_CACHE_VERSION)
                     self.state_store.update_document(document_id, current_stage="EXTRACTING", current_page=physical_page, total_pages=page_count)

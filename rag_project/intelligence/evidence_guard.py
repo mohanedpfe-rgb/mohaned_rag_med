@@ -177,7 +177,7 @@ def semantic_support(claim, evidence):
     shared = ct & et
     if len(shared) <= 2 and (ct - shared) and (et - shared): return 0.0
     coverage = len(shared) / len(ct)
-    if coverage < 0.50: return 0.0
+    if coverage < 0.40: return 0.0
     char = keyword_overlap_score(nclaim, nevidence); jac = len(shared) / max(1, len(ct | et)); polarity_penalty = 0.35 if _polarity(nclaim) != _polarity(nevidence) else 0
     return max(0.0, min(1.0, 0.50 * coverage + 0.25 * jac + 0.25 * char - polarity_penalty))
 
@@ -219,8 +219,8 @@ def verify_claims(answer, evidence_blocks: Sequence[str], source_ids: Sequence[s
         numeric_bridge = max((semantic_support(_remove_measurements(claim), _remove_measurements(block)) for block in cited_blocks), default=0.0) if num["checked"] and not num["mismatch"] else 0.0
         if contra: status, reason = "CONTRADICTED", "A source conflicts with the claim polarity or safety meaning."
         elif num["mismatch"]: status, reason = "NUMERIC_MISMATCH", "The stated measurement is not supported by a compatible value in the cited evidence."
-        elif best >= 0.62 or numeric_bridge >= 0.35: status, reason = "SUPPORTED", "Strong evidence support."
-        elif best >= 0.38: status, reason = "PARTIAL", "Partial evidence support."
+        elif best >= 0.52 or numeric_bridge >= 0.30: status, reason = "SUPPORTED", "Strong evidence support."
+        elif best >= 0.28: status, reason = "PARTIAL", "Partial evidence support."
         elif best > 0.05: status, reason = "WEAK", "Weak evidence overlap."
         elif not support_blocks and re.search(r"\[S\d+\]", claim, flags=re.I): status, reason = "UNSUPPORTED", "The cited evidence source does not exist in the supplied evidence set."
         else: status, reason = "UNSUPPORTED", "No meaningful evidence support."

@@ -166,9 +166,13 @@ class SemanticChunker:
                 elif document_chapter:
                     chapter = document_chapter
                 section = hierarchy.get("subsection") or hierarchy.get("section") or fallback
-                key = f"{page_no}|{chapter or ''}|{section or '__page__'}"
-                parent_id = f"{page.document_id}:p{page_no}:parent:{self._stable_id(key)}"
-                section_id = f"{page.document_id}:p{page_no}:section:{self._stable_id(key)}"
+                
+                # Use chapter/section hierarchy only, NOT page number
+                # This ensures the same logical section gets the same ID across pages
+                section_hierarchy_key = f"{chapter or ''}|{section or '__page__'}"
+                parent_id = f"{page.document_id}:parent:{self._stable_id(section_hierarchy_key)}"
+                section_id = f"{page.document_id}:section:{self._stable_id(section_hierarchy_key)}"
+                
                 # A chapter spans pages; page number belongs to the section
                 # and parent identities, not to the chapter identity.
                 chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter or document_chapter or '__document__')}"
@@ -187,9 +191,9 @@ class SemanticChunker:
                 prose,
                 None,
                 fallback,
-                f"{page.document_id}:p{page_no}:parent:{self._stable_id(str(page_no))}",
-                f"{page.document_id}:p{page_no}:section:{self._stable_id(str(page_no))}",
-                f"{page.document_id}:p{page_no}:chapter:{self._stable_id('__document__')}",
+                f"{page.document_id}:parent:{self._stable_id(fallback or '__page__')}",
+                f"{page.document_id}:section:{self._stable_id(fallback or '__page__')}",
+                f"{page.document_id}:chapter:{self._stable_id('__document__')}",
             )
             anchor_parent, anchor_section, anchor_chapter = anchor[3], anchor[4], anchor[5]
             anchor_chapter_title, anchor_section_title = anchor[1], anchor[2]

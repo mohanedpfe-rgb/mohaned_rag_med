@@ -185,8 +185,10 @@ def _invalidate_cache_on_corpus_change(system: Any) -> None:
     cache_db = root / "data" / "med_evidence_cache.sqlite3"
     if previous is None or marker != previous:
         try:
-            from rag_project.intelligence.semantic_cache import SemanticRetrievalCache
-            SemanticRetrievalCache(cache_db).delete_all()
+            from rag_project.intelligence.semantic_cache import SemanticRetrievalCache, create_for_system
+            # Use create_for_system to get the correct namespace derived from embedding identity
+            cache = create_for_system(system, db_path=cache_db)
+            cache.delete_all()
         except Exception:
             pass
         setattr(system, "_answer_service_corpus_generation", marker)
