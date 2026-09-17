@@ -15,6 +15,9 @@ def test_ingestion__ready_requires_full_page_completion_and_exact_content_hash(c
         "HbA1c is used to assess glycemic control.",
     ])
 
+    # Calculate hash before ingestion since file gets moved
+    original_hash = hashlib.sha256(pdf.read_bytes()).hexdigest()
+
     result = clean_system.ingest_file(pdf)
     assert str(result.get("status") or "").upper() == "READY"
     document_id = str(result.get("document_id") or result.get("id") or "")
@@ -27,7 +30,7 @@ def test_ingestion__ready_requires_full_page_completion_and_exact_content_hash(c
     assert int(record.get("total_pages") or 0) == 2
     assert int(record.get("current_page") or 0) == int(record.get("total_pages") or 0)
     assert record.get("error") in (None, "")
-    assert str(record.get("content_hash")) == hashlib.sha256(pdf.read_bytes()).hexdigest()
+    assert str(record.get("content_hash")) == original_hash
 
 
 @pytest.mark.high_level

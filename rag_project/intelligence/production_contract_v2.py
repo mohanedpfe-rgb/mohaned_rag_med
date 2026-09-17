@@ -25,7 +25,7 @@ _HARD_CUES = (
     "مقارنة", "لماذا", "كيف", "جرعة", "علاج", "تشخيص",
 )
 _FOLLOWUP_CUES = re.compile(
-    r"(?:^|\s)(?:it|this|that|they|them|those|these|what about|how about|the latter|the former|"
+    r"(?:^|\s)(?:it|its|this|that|they|them|those|these|what about|how about|the latter|the former|"
     r"and this|and that|ça|cela|celui|celle|et le|et la|puis|et ça|هذا|هذه|ذلك|تلك|ثم|و)(?:$|\s|[?.!,;:])",
     re.I | re.UNICODE,
 )
@@ -114,7 +114,7 @@ def _is_followup(question: str, history: Sequence[tuple[str, str]]) -> bool:
         return False
     if _FOLLOWUP_CUES.search(text):
         return True
-    return bool(re.search(r"\b(it|this|that|them|they|ça|cela|هذا|هذه|ذلك|تلك)\b", text, re.I | re.UNICODE))
+    return bool(re.search(r"\b(it|its|this|that|them|they|ça|cela|هذا|هذه|ذلك|تلك)\b", text, re.I | re.UNICODE))
 
 
 def _strict_canonicalize(question: str, history: Sequence[tuple[str, str]]) -> tuple[str, bool]:
@@ -138,7 +138,11 @@ def _strict_canonicalize(question: str, history: Sequence[tuple[str, str]]) -> t
     if unique and any(anchor_text in cleaned.casefold() for anchor_text in unique):
         return cleaned[:3500], True
     if unique:
-        return _clean(f"{cleaned} {' '.join(unique)}")[:3500], True
+        # Trailing punctuation must be dropped before appending anchors, or the
+        # anchor lands after a sentence boundary and the plan splits it into an
+        # extra subquery (inflating complexity past the extractive threshold).
+        base = re.sub(r"[?.!,;:\s]+$", "", cleaned)
+        return _clean(f"{base} {' '.join(unique)}")[:3500], True
     if anchor.casefold() in cleaned.casefold():
         return cleaned[:3500], True
     return _clean(f"{anchor} {cleaned}")[:3500], True

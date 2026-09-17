@@ -1,3 +1,0 @@
-# Deterministic installation entry point for local development and CI.
-# The generated lock contains exact versions and hashes.
--r requirements.lock

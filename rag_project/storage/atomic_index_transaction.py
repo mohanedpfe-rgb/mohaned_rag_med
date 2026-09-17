@@ -38,7 +38,9 @@ def _upsert_lexical_on_connection(
 ) -> None:
     rows = []
     for item_id, document, metadata in zip(ids, documents, metadatas, strict=True):
-        logical_id = str(metadata.get("chunk_id") or item_id)
+        # Physical lexical identity must include the version-specific semantic
+        # record id; logical chunk ids are reused across document revisions.
+        logical_id = str(item_id)
         rows.append(
             (
                 logical_id,
@@ -81,7 +83,7 @@ def _install_lexical_transaction_bridge(VectorStore: type[Any]) -> None:
 
         rows = []
         for item_id, document, metadata in zip(ids, documents, metadatas, strict=True):
-            logical_id = str(metadata.get("chunk_id") or item_id)
+            logical_id = str(item_id)
             rows.append(
                 (
                     logical_id,

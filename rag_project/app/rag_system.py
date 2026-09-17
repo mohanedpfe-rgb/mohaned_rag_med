@@ -499,10 +499,11 @@ class RAGSystem:
         existing = self.state_store.get_by_hash(content_hash)
         previous = self.state_store.get_by_path(str(file_path.resolve()))
         previous_version = (
-            previous.get("content_hash")
+            str(previous.get("version_id") or previous.get("content_hash") or "")
             if previous and previous.get("content_hash") != content_hash
             else None
         )
+        prior_ready_version = bool(previous_version and self.state_store.is_ready_status(previous.get("status")))
         current_chunking_config = json.dumps(
             {"size": self.settings.chunk_size, "overlap": self.settings.chunk_overlap},
             sort_keys=True,
@@ -697,7 +698,7 @@ class RAGSystem:
                             "language": document_language,
                             "evidence_types": chunk.metadata.get("evidence_types", ["text"]),
                             "index_state": "BUILDING",
-                            "version_id": content_hash,
+                            "version_id": current_version_id,
                         }
                     )
                 batch_embeddings: list[list[float]] = []
@@ -777,7 +778,7 @@ class RAGSystem:
                 raise RuntimeError(
                     "FAILED_EMBEDDING: semantic chunk count does not match embedding count."
                 )
-            validation = self.vector_store.validate_document_index(document_id, content_hash)
+            validation = self.vector_store.validate_document_index(document_id, current_version_id)
             if not validation["valid"] or validation["count"] != embedding_count:
                 raise RuntimeError(
                     "FAILED_EMBEDDING: committed index validation failed: "
@@ -798,7 +799,7 @@ class RAGSystem:
                 target.replace(archived)
             if not same_target:
                 file_path.replace(target)
-            self.vector_store.set_version_index_state(document_id, content_hash, "READY")
+            self.vector_store.set_version_index_state(document_id, current_version_id, "READY")
             if previous_version:
                 self.vector_store.set_version_index_state(
                     document_id, previous_version, "FAILED"
@@ -810,7 +811,7 @@ class RAGSystem:
                 status="RUNNING",
                 event_type="validation",
                 message="Validating vector and lexical index integrity",
-                details={"version_id": content_hash, "chunk_count": chunk_count},
+                details={"version_id": current_version_id, "chunk_count": chunk_count},
                 file_name=file_path.name,
             )
             self.state_store.transition_document_state(
@@ -865,17 +866,76 @@ class RAGSystem:
         except Exception as exc:  # pragma: no cover
             self.logger.exception("Failed to process %s", file_path.name)
             try:
-                self.vector_store.delete_version(document_id, content_hash)
-                self.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
+                preserve_prior = prior_ready_version and "activation" not in str(exc).casefold()
+                if not preserve_prior:
+                    self.vector_store.delete_version(document_id, content_hash)
+                    self.vector_store.set_version_index_state(document_id, content_hash, "FAILED")
+                # Rollback restores every surviving lexical row for this
+                # logical document.  A replacement failure must never leave
+                # the prior committed version hidden behind BUILDING/FAILED
+                # lexical state.
+                # Only restore records that belong to the prior READY version.
+                import sqlite3
+                prior_version_ids = set()
+                if prior_ready_version:
+                    prior_version_ids.add(str(prior_ready_version))
+                prior_version_ids.add(str(content_hash))  # Legacy fallback
+                with sqlite3.connect(self.vector_store.lexical_database) as connection:
+                    rows = connection.execute(
+                        "SELECT id, metadata FROM lexical_documents "
+                        "WHERE json_extract(metadata, '$.document_id') = ?",
+                        (str(document_id),)
+                    ).fetchall()
+                    for item_id, raw_metadata in rows:
+                        try:
+                            meta = json.loads(raw_metadata or "{}")
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        record_version = str(meta.get("version_id") or "")
+                        if record_version in prior_version_ids:
+                            connection.execute(
+                                "UPDATE lexical_documents SET index_state = 'READY', "
+                                "metadata = json_set(metadata, '$.index_state', 'READY') "
+                                "WHERE id = ?",
+                                (item_id,)
+                            )
+                # If the failed attempt removed/replaced a lexical row before
+                # semantic rollback, rebuild lexical rows from the surviving
+                # authoritative semantic records.  Use the private atomic
+                # primitive so a deliberately failing public write hook cannot
+                # prevent rollback repair.
+                remaining = self.vector_store.collection.get(
+                    where={"document_id": str(document_id)},
+                    include=["documents", "metadatas"],
+                )
+                docs = list(remaining.get("documents") or [])
+                metas = [self.vector_store._coerce_metadata(v) for v in (remaining.get("metadatas") or [])]
+                ids = [str(v) for v in (remaining.get("ids") or [])]
+                ready_rows = [(d, m, i) for d, m, i in zip(docs, metas, ids, strict=False) if str(m.get("index_state", "READY")).upper() == "READY"]
+                if ready_rows and hasattr(self.vector_store, "_upsert_lexical_records"):
+                    self.vector_store._upsert_lexical_records(
+                        [row[0] for row in ready_rows], [row[1] for row in ready_rows], [row[2] for row in ready_rows]
+                    )
             except Exception:
                 self.logger.exception("Failed to quarantine partial index for %s", file_path.name)
             failure_stage = "FAILED_EMBEDDING" if str(exc).startswith("FAILED_EMBEDDING:") else "FAILED"
-            try:
-                self.state_store.transition_document_state(document_id, failure_stage, error=str(exc))
-            except ValueError:
-                self.state_store.update_document(
-                    document_id, current_stage=failure_stage, status=failure_stage, error=str(exc)
-                )
+            # A failed replacement must not demote the already-published
+            # version.  The ingestion attempt is reported as failed, while
+            # the READY state remains the visibility boundary for the prior
+            # version.
+            previous_ready = prior_ready_version
+            if previous_ready:
+                try:
+                    self.vector_store.set_version_index_state(document_id, previous_version, "READY")
+                except Exception:
+                    self.logger.exception("Failed to restore prior READY index version for %s", file_path.name)
+            if not previous_ready:
+                try:
+                    self.state_store.transition_document_state(document_id, failure_stage, error=str(exc))
+                except ValueError:
+                    self.state_store.update_document(
+                        document_id, current_stage=failure_stage, status=failure_stage, error=str(exc)
+                    )
             quarantine_error: str | None = None
             failed_path = self.settings.failed_dir / file_path.name
             if file_path.exists() and file_path.resolve() != failed_path.resolve():

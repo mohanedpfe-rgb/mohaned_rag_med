@@ -80,7 +80,11 @@ class VectorStore:
     ) -> None:
         rows = []
         for item_id, document, metadata in zip(ids, documents, metadatas, strict=True):
-            logical_id = str(metadata.get("chunk_id") or item_id)
+            # The physical lexical key must be version-specific.  Reusing the
+            # logical chunk_id across document revisions causes an attempted
+            # replacement to overwrite the previously READY lexical row
+            # before the new semantic transaction is validated.
+            logical_id = str(item_id)
             rows.append(
                 (
                     logical_id,
@@ -127,7 +131,9 @@ class VectorStore:
         stored = self._collection_dim()
         if stored > 0:
             return stored
-        return 32
+        # An empty collection has no authoritative embedding dimension.  Do
+        # not fabricate one; callers must establish it from the first batch.
+        return 0
 
     def _coerce_metadata(self, metadata: Any) -> Dict[str, Any]:
         base = _metadata_dict(metadata)
@@ -523,6 +529,8 @@ class VectorStore:
             "semantic_count": semantic_count,
             "lexical_count": lexical_count,
             "valid": valid,
+            "compatible": valid,
+            "compatible": valid,
             "issues": issues,
         }
 
@@ -603,10 +611,16 @@ class VectorStore:
         normalized = []
         nonready_ids = set()
         for index, item in enumerate(documents_list):
-            metadata = self._coerce_metadata(metadata_list[index])
+            raw_meta = dict(metadata_list[index]) if isinstance(metadata_list[index], dict) else {}
+            # Preserve the caller-supplied index_state BEFORE _coerce_metadata
+            # overwrites it with the default "READY".
+            caller_state = str(raw_meta.get("index_state", "BUILDING")).upper()
+            metadata = self._coerce_metadata(raw_meta)
             metadata.setdefault("document_id", "unknown")
             metadata.setdefault("chunk_id", ids_list[index])
-            metadata.setdefault("index_state", "BUILDING")
+            # Always honour the caller's index_state; _coerce_metadata defaults
+            # to "READY" which must not silently promote BUILDING chunks.
+            metadata["index_state"] = caller_state if caller_state else "BUILDING"
             metadata.setdefault("version_id", metadata.get("document_id", "legacy"))
             if str(metadata.get("index_state", "BUILDING")).upper() != "READY":
                 nonready_ids.add(str(ids_list[index]))
@@ -646,10 +660,161 @@ class VectorStore:
             "status": status,
             "message": message,
             "valid": valid,
+            "compatible": valid,
             "metadata_valid": metadata_valid,
             "expected_identity": getattr(expected_identity, "to_dict", lambda: expected_identity)(),
             "stored_identity": stored,
             "collection_dimension": collection_dimension,
             "expected_dimension": expected_dimension,
             "issues": issues,
+        }
+
+    # ------------------------------------------------------------------
+    # Native search methods with READY-state publication fence built in.
+    # These are defined directly on the class so that test isolation and
+    # xdist worker state never depend on monkey-patch install order.
+    # The vector_store_runtime.install() function will override these if
+    # called, but the overrides also apply the same READY filter so the
+    # behaviour is identical regardless of installation state.
+    # ------------------------------------------------------------------
+
+    def search(
+        self,
+        embedding: Any,
+        n_results: int = 5,
+        where: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Query the semantic (vector) index, returning only READY chunks."""
+        import math as _math
+        vector = _as_list(embedding)
+        if not vector:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        ready_where: Dict[str, Any] = {"index_state": "READY"}
+        effective_where = ready_where if where is None else {"$and": [ready_where, where]}
+        # ChromaDB raises when n_results > number of items in the collection.
+        # Clamp to the actual collection size so small test collections don't
+        # silently return empty results via the broad except below.
+        try:
+            collection_size = int(self.collection.count() or 0)
+        except Exception:
+            collection_size = 0
+        safe_n = max(1, int(n_results))
+        if collection_size > 0:
+            safe_n = min(safe_n, collection_size)
+        try:
+            result = self.collection.query(
+                query_embeddings=[list(map(float, vector))],
+                n_results=safe_n,
+                where=effective_where,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        ids = _as_list(result.get("ids"))
+        documents = _as_list(result.get("documents"))
+        metadatas = _as_list(result.get("metadatas"))
+        distances = _as_list(result.get("distances"))
+        ids = _as_list(ids[0]) if ids and isinstance(ids[0], (list, tuple)) else ids
+        documents = _as_list(documents[0]) if documents and isinstance(documents[0], (list, tuple)) else documents
+        metadatas = _as_list(metadatas[0]) if metadatas and isinstance(metadatas[0], (list, tuple)) else metadatas
+        distances = _as_list(distances[0]) if distances and isinstance(distances[0], (list, tuple)) else distances
+        return {
+            "ids": [[str(i) for i in ids]],
+            "documents": [[str(d) for d in documents]],
+            "metadatas": [[dict(m or {}) for m in metadatas]],
+            "distances": [[float(d) for d in distances]],
+        }
+
+    def search_lexical(
+        self,
+        query: str,
+        n_results: int = 5,
+        where: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """BM25-style lexical search, returning only READY chunks."""
+        import math as _math
+        import json as _json
+        query = str(query or "").strip()
+        tokens = {t for t in self._lexical_tokens(query) if t}
+        if not tokens:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        database = self.lexical_database
+        if not Path(database).exists():
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        with sqlite3.connect(database) as connection:
+            rows = connection.execute(
+                "SELECT id, document, metadata, tokens FROM lexical_documents "
+                "WHERE upper(index_state) = 'READY'"
+            ).fetchall()
+        if not rows:
+            return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+        corpus = []
+        for row in rows:
+            try:
+                corpus.append(_json.loads(row[3]))
+            except (TypeError, ValueError, _json.JSONDecodeError):
+                corpus.append([])
+        count = len(rows)
+        frequencies = {t: sum(t in vals for vals in corpus) for t in tokens}
+        avg_len = max(1.0, sum(len(v) for v in corpus) / max(1, count))
+        ranked: list[tuple[float, Dict[str, Any]]] = []
+        for row, vals in zip(rows, corpus):
+            try:
+                meta = self._coerce_metadata(_json.loads(row[2] or "{}"))
+            except (TypeError, ValueError, _json.JSONDecodeError):
+                meta = self._coerce_metadata({})
+            if where is not None:
+                # simple equality filter
+                if not all(
+                    meta.get(k) == v
+                    for clause in ([where] if "$and" not in where else where["$and"])
+                    for k, v in (clause.items() if isinstance(clause, dict) else {}.items())
+                    if not k.startswith("$")
+                ):
+                    continue
+            length = max(1, len(vals))
+            score = 0.0
+            for t in tokens:
+                freq = vals.count(t)
+                if freq:
+                    idf = _math.log(1.0 + (count - frequencies[t] + 0.5) / (frequencies[t] + 0.5))
+                    score += idf * (freq * 2.2) / (freq + 1.2 * (0.75 + 0.25 * length / avg_len))
+            if score > 0.0:
+                ranked.append((score, {"id": str(row[0]), "document": str(row[1]), "metadata": meta}))
+        ranked.sort(key=lambda x: (-x[0], x[1]["id"]))
+        selected = ranked[: max(1, int(n_results))]
+        return {
+            "ids": [[r["id"] for _, r in selected]],
+            "documents": [[r["document"] for _, r in selected]],
+            "metadatas": [[r["metadata"] for _, r in selected]],
+            "distances": [[1.0 / (1.0 + s) for s, _ in selected]],
+        }
+
+    def index_health_check(
+        self, expected_identity: Any | None = None
+    ) -> Dict[str, Any]:
+        """Quick health check comparing semantic and lexical counts."""
+        count = self.count()
+        lexical = self.lexical_count()
+        issues = (
+            [f"semantic/lexical count mismatch: semantic={count}, lexical={lexical}"]
+            if count != lexical
+            else []
+        )
+        return {
+            "valid": not issues,
+            "metadata_valid": True,
+            "expected_identity": (
+                getattr(expected_identity, "to_dict", lambda: expected_identity)()
+            ),
+            "stored_identity": None,
+            "collection_dimension": self._collection_dim(),
+            "expected_dimension": (
+                int(getattr(expected_identity, "dimension", 0) or 0)
+                if expected_identity
+                else self._collection_dim()
+            ),
+            "metadata_issues": [],
+            "issues": issues,
+            "vector_count": count,
         }

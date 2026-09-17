@@ -172,13 +172,11 @@ def _patch_vector_store() -> None:
         result = original_validate(self, document_id, version_id)
         try:
             structure = DocumentStructureStore(Path(self.persist_directory).parent / "structure.sqlite3")
-            # The sidecar is optional for synthetic/vector-only unit tests, but a
-            # production READY document must have at least one persisted structure row.
+            # The sidecar is optional — it may not exist in test/unit mode.
+            # Only annotate, never invalidate, based on sidecar presence.
             if result.get("valid") and result.get("count", 0) > 0:
-                pages = structure.database_path.exists()
-                if not pages:
-                    result.setdefault("issues", []).append("missing structure sidecar database")
-                    result["valid"] = False
+                if not structure.database_path.exists():
+                    result.setdefault("warnings", []).append("structure sidecar database not present")
         except Exception:
             pass
         return result

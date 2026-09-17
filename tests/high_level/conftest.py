@@ -239,6 +239,40 @@ def reset_shared_high_level_state(request: pytest.FixtureRequest):
         system.llm = default_llm
         system._med_selected_hits = []
         system._high_level_test_marker = None
+        # Clear the semantic retrieval cache so stale cached answers from
+        # previous tests (or previous pytest runs) never pollute path routing.
+        try:
+            import sqlite3 as _sqlite3
+            from pathlib import Path as _Path
+            # Try via the MultiTierRetriever.cache attribute on the engine
+            _runtime = getattr(system, "runtime", system)
+            _engine = getattr(_runtime, "_engine", None) or getattr(_runtime, "engine", None)
+            _cache = (
+                getattr(_engine, "retrieval", None) and getattr(_engine.retrieval, "cache", None)
+            ) or (
+                getattr(_runtime, "retrieval", None) and getattr(_runtime.retrieval, "cache", None)
+            )
+            if _cache is not None and hasattr(_cache, "db_path"):
+                try:
+                    with _sqlite3.connect(_cache.db_path) as _conn:
+                        _conn.execute("DELETE FROM retrieval_cache")
+                        _conn.commit()
+                except Exception:
+                    pass
+            else:
+                # Fallback: clear the well-known cache file directly
+                settings = getattr(_runtime, "settings", None)
+                if settings is not None:
+                    _cache_path = _Path(getattr(settings, "project_root", _Path.cwd())) / "data" / "med_evidence_cache.sqlite3"
+                    if _cache_path.exists():
+                        try:
+                            with _sqlite3.connect(_cache_path) as _conn:
+                                _conn.execute("DELETE FROM retrieval_cache")
+                                _conn.commit()
+                        except Exception:
+                            pass
+        except Exception:
+            pass
     yield
 
 

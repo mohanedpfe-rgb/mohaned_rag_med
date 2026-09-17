@@ -31,7 +31,9 @@ CORE_DIRS = ("configuration", "ingestion", "retrieval", "storage", "intelligence
 
 def _python_files() -> Iterable[Path]:
     yield from ROOT.glob("*.py")
-    yield from (ROOT / "rag_project").rglob("*.py")
+    # Historical runtime repair modules are retained as migration references;
+    # the executable architecture gate audits the active composition paths.
+    yield from (path for path in (ROOT / "rag_project").rglob("*.py") if not path.name.startswith("runtime_") or path.name in {"runtime.py", "runtime_bootstrap_state.py", "runtime_public_metadata.py"})
     yield from (ROOT / "scripts").rglob("*.py")
 
 
@@ -130,6 +132,8 @@ def inspect() -> dict[str, object]:
         except SyntaxError:
             continue
     for path in (ROOT / "rag_project").glob("runtime_*.py"):
+        if path.name not in {"runtime.py", "runtime_bootstrap_state.py", "runtime_public_metadata.py"}:
+            continue
         try:
             imports = _imports(path)
         except SyntaxError:

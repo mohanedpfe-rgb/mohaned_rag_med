@@ -472,7 +472,7 @@ def test_runtime_contract_declares_single_authority():
     contract = runtime_contract()
     assert contract["composition_root"] == "rag_project.application.create_rag_system"
     assert contract["canonical_service"] == CANONICAL_SERVICE
-    assert contract["canonical_ingestion"].endswith("robust_ingest_file")
+    assert contract["canonical_ingestion"] == "rag_project.ingestion.versioned_ingestor.ingest_version_safely"
     assert contract["answer_pipeline_authority"] == ANSWER_PIPELINE_AUTHORITY
     assert contract["answer_pipeline_execution"] == ANSWER_PIPELINE_AUTHORITY
     assert contract["answer_monkey_patch"] is False
@@ -808,7 +808,7 @@ def test_query_plans_are_bounded(query):
 
 def test_canonical_constants_match():
     assert ANSWER_AUTHORITY == ANSWER_PIPELINE_AUTHORITY
-    assert CANONICAL_SERVICE == "rag_project.app.production_rag.ProductionRAGSystem"
+    assert CANONICAL_SERVICE == "rag_project.application.MedEvidenceProductionRAGSystem"
 
 
 def test_release_gate_requires_medical_safety():

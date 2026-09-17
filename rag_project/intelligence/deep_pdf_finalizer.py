@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from functools import wraps
 import hashlib
 import json
 import os
@@ -528,7 +529,11 @@ def _patch_retrieval() -> None:
     original = HybridRetriever.retrieve
 
     def retrieve(self, query: str, top_k: int = 6, where=None):
-        hits = list(original(self, query, top_k=max(int(top_k) * 4, int(top_k)), where=where) or [])
+        try:
+            safe_top_k = max(1, min(int(top_k), 100))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("top_k must be an integer") from exc
+        hits = list(original(self, query, top_k=max(safe_top_k * 4, safe_top_k), where=where) or [])
         lowered = str(query or "").casefold()
         for hit in hits:
             meta = hit.metadata or {}
@@ -548,7 +553,7 @@ def _patch_retrieval() -> None:
             hit.score = float(hit.score) + bonus
             hit.metadata["structural_bonus"] = round(bonus, 6)
         hits.sort(key=lambda item: item.score, reverse=True)
-        return hits[: max(1, int(top_k))]
+        return hits[: max(1, safe_top_k)]
 
     HybridRetriever.retrieve = retrieve
     HybridRetriever._final_pdf_patched = True
@@ -578,8 +583,13 @@ def _clear_structure_before_rebuild() -> None:
         return
     original = robust_ingestor.robust_ingest_file
 
+    @wraps(original)
     def wrapped(system, pdf_path):
         try:
+            # Guard: only attempt hashing for actual PDF files so non-PDF paths
+            # are rejected by the original ingestor without touching _hash_file.
+            if Path(pdf_path).suffix.lower() != ".pdf" or not Path(pdf_path).is_file():
+                return original(system, pdf_path)
             content_hash = system._hash_file(Path(pdf_path))
             existing = system.state_store.get_by_hash(content_hash)
             previous = system.state_store.get_by_path(str(Path(pdf_path).resolve()))

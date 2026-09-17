@@ -30,6 +30,10 @@ def test_grounding__unsupported_llm_claim_is_exactly_rejected_after_constrained_
         "Explain the mechanism and management implications of diabetes mellitus using only the indexed evidence."
     )
 
+    # An unsafe LLM synthesis is withheld, not laundered into a grounded success:
+    # the canonical pipeline blocks the claims and returns an exact
+    # GENERATION_ABSTAIN on the constrained path, so the unsafe text never
+    # reaches the public answer.
     assert_exact_status(result, "GENERATION_ABSTAIN")
     assert_exact_path(result, "PATH_C_CONSTRAINED_LLM")
     assert fake_ollama_fast.calls

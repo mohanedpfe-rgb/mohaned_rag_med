@@ -27,11 +27,17 @@ from rag_project.storage.enhanced_vector_store import EnhancedVectorStore
 from rag_project.storage.vector_store import VectorStore
 
 
-install_deep()
-install_final()
-install_v2()
-install_v3()
-install_v4()
+import pytest
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _install_pdf_patchers():
+    """Install all PDF finalizer patchers for this module's tests only."""
+    install_deep()
+    install_final()
+    install_v2()
+    install_v3()
+    install_v4()
 
 
 def _page(number: int = 1, text: str = "Chapter 1 Anatomy\n1.1 Bones\nText") -> PageExtraction:

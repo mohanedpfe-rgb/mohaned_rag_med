@@ -197,6 +197,40 @@ def _patch_chunker() -> None:
                 prose = prose.replace(f"[TABLE]\n{str(table_text).strip()}", "")
             prose = prose.strip()
 
+            # Compute evidence_types matching the base SemanticChunker logic
+            _image_count = int(getattr(page, "image_count", 0) or 0)
+            _table_count = int(getattr(page, "table_count", 0) or 0)
+            _figure_ids = list(getattr(page, "figure_ids", []) or [])
+            _captions = list(getattr(page, "figure_captions", []) or [])
+            _table_ids = list(getattr(page, "table_ids", []) or [])
+            _evidence = {"text"}
+            if bool(getattr(page, "has_images", False)) or _image_count > 0 or _figure_ids or _captions:
+                _evidence.add("figure")
+            if _table_count > 0 or _table_ids or table_texts:
+                _evidence.add("table")
+            _evidence_types = [name for name in ("figure", "table", "text") if name in _evidence]
+
+            _page_no_str = str(page.page_number or 1)
+
+            def _normalize_section_id(raw_id, doc_id=document_id, pn=page.page_number or 1):
+                """Normalize section_id to base SemanticChunker format: {doc_id}:p{page_no}:section:{hash}"""
+                if raw_id is None:
+                    return None
+                if str(raw_id).startswith(f"{doc_id}:p{pn}:section:"):
+                    return raw_id
+                # Keep the hash part, prepend the base format prefix
+                hash_part = str(raw_id).split(":")[-1] if ":" in str(raw_id) else str(raw_id)
+                return f"{doc_id}:p{pn}:section:{hash_part}"
+
+            def _normalize_parent_id(raw_id, doc_id=document_id, pn=page.page_number or 1):
+                """Normalize parent_id to base SemanticChunker format: {doc_id}:p{page_no}:parent:{hash}"""
+                if raw_id is None:
+                    return None
+                if str(raw_id).startswith(f"{doc_id}:p{pn}:"):
+                    return raw_id
+                hash_part = str(raw_id).split(":")[-1] if ":" in str(raw_id) else str(raw_id)
+                return f"{doc_id}:p{pn}:parent:{hash_part}"
+
             segments = tracker.split_page(page.page_number or 1, prose)
             if not segments and prose:
                 segments = [(prose, tracker.snapshot(page.page_number or 1), False)]
@@ -221,25 +255,26 @@ def _patch_chunker() -> None:
                         f"page={page.page_number or 1}; quality={float(page.quality_score or 0.0):.4f}; "
                         f"ocr={page.ocr_status or 'not_required'}]"
                     )
-                    searchable = f"{structure_header}\n{child_text}"
+                    _prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
+                    searchable = structure_header + (f"\n[{_prefix}]\n" if _prefix else "\n") + child_text
                     metadata = {
                         "source_pages": [page.page_number or 1],
                         "page_numbers": [page.page_number or 1],
-                        "evidence_types": ["text"] + (["table"] if table_texts else []) + (["figure"] if page.figure_captions or page.figure_ids else []),
+                        "evidence_types": _evidence_types,
                         "chapter": chapter,
                         "chapter_id": snapshot.chapter_id,
                         "section": section,
-                        "section_id": snapshot.section_id,
-                        "global_section_id": snapshot.section_id,
-                        "parent_id": snapshot.parent_id,
+                        "section_id": _normalize_section_id(snapshot.section_id),
+                        "global_section_id": _normalize_section_id(snapshot.section_id),
+                        "parent_id": _normalize_parent_id(snapshot.parent_id),
                         "hierarchy_path": list(hierarchy),
                         "child_index": child_index,
                         "normalized_text": enriched["normalized_text"],
                         "entities": enriched["entities"],
                         "headings": enriched["headings"],
                         "number_forms": enriched["number_forms"],
-                        "table_id": None,
-                        "figure_id": None,
+                        "table_id": _table_ids[0] if _table_ids else None,
+                        "figure_id": _figure_ids[0] if _figure_ids else None,
                         "document_id": document_id,
                         "file_name": page.file_name,
                         "page_type": page.page_type,
@@ -256,10 +291,10 @@ def _patch_chunker() -> None:
                         page_numbers=[page.page_number or 1],
                         metadata=metadata,
                         representation_type="canonical",
-                        parent_id=snapshot.parent_id,
-                        section_id=snapshot.section_id,
-                        table_id=None,
-                        figure_id=None,
+                        parent_id=_normalize_parent_id(snapshot.parent_id),
+                        section_id=_normalize_section_id(snapshot.section_id),
+                        table_id=_table_ids[0] if _table_ids else None,
+                        figure_id=_figure_ids[0] if _figure_ids else None,
                         normalized_text=enriched["normalized_text"],
                     ))
 
@@ -278,9 +313,9 @@ def _patch_chunker() -> None:
                     "chapter": page_snapshot.chapter,
                     "chapter_id": page_snapshot.chapter_id,
                     "section": page_snapshot.section,
-                    "section_id": page_snapshot.section_id or page_snapshot.parent_id,
-                    "global_section_id": page_snapshot.section_id or page_snapshot.parent_id,
-                    "parent_id": page_snapshot.parent_id,
+                    "section_id": _normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
+                    "global_section_id": _normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
+                    "parent_id": _normalize_parent_id(page_snapshot.parent_id),
                     "hierarchy_path": list(page_snapshot.hierarchy_path),
                     "child_index": table_index,
                     "normalized_text": enriched["normalized_text"],
@@ -305,8 +340,8 @@ def _patch_chunker() -> None:
                     page_numbers=[page.page_number or 1],
                     metadata=metadata,
                     representation_type="table",
-                    parent_id=page_snapshot.parent_id,
-                    section_id=page_snapshot.section_id or page_snapshot.parent_id,
+                    parent_id=_normalize_parent_id(page_snapshot.parent_id),
+                    section_id=_normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
                     table_id=table_id,
                     figure_id=None,
                     normalized_text=enriched["normalized_text"],
@@ -328,9 +363,9 @@ def _patch_chunker() -> None:
                     "chapter": page_snapshot.chapter,
                     "chapter_id": page_snapshot.chapter_id,
                     "section": page_snapshot.section,
-                    "section_id": page_snapshot.section_id or page_snapshot.parent_id,
-                    "global_section_id": page_snapshot.section_id or page_snapshot.parent_id,
-                    "parent_id": page_snapshot.parent_id,
+                    "section_id": _normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
+                    "global_section_id": _normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
+                    "parent_id": _normalize_parent_id(page_snapshot.parent_id),
                     "hierarchy_path": list(page_snapshot.hierarchy_path),
                     "child_index": figure_index,
                     "normalized_text": enriched["normalized_text"],
@@ -355,8 +390,8 @@ def _patch_chunker() -> None:
                     page_numbers=[page.page_number or 1],
                     metadata=metadata,
                     representation_type="figure_caption",
-                    parent_id=page_snapshot.parent_id,
-                    section_id=page_snapshot.section_id or page_snapshot.parent_id,
+                    parent_id=_normalize_parent_id(page_snapshot.parent_id),
+                    section_id=_normalize_section_id(page_snapshot.section_id or page_snapshot.parent_id),
                     table_id=None,
                     figure_id=figure_id,
                     normalized_text=enriched["normalized_text"],
@@ -490,9 +525,22 @@ def _patch_vector_store() -> None:
         remove_ids: list[str] = []
         for item_id, raw in zip(records.get("ids", []), records.get("metadatas", []), strict=False):
             meta = self._coerce_metadata(raw)
-            same_version = str(meta.get("version_id") or "") == str(_ACTIVE_VERSION.get() or "") or str(meta.get("content_hash") or "") == str(version_id) or str(meta.get("version_id") or "") == str(version_id)
-            if same_version and (active_build is None or str(meta.get("build_id") or "") == str(active_build) or str(meta.get("index_state") or "").upper() == "BUILDING"):
-                remove_ids.append(str(item_id))
+            meta_version = str(meta.get("version_id") or "")
+            meta_content_hash = str(meta.get("content_hash") or "")
+            requested = str(version_id)
+            # Match by version_id or content_hash
+            same_version = meta_version == requested or meta_content_hash == requested
+            if active_build is None:
+                # Outside active build: delete all records matching version
+                if same_version:
+                    remove_ids.append(str(item_id))
+            else:
+                # Inside active build: only delete records from the same build or BUILDING state
+                meta_build_id = str(meta.get("build_id") or "")
+                same_build = meta_build_id == active_build
+                is_building = str(meta.get("index_state") or "").upper() == "BUILDING"
+                if same_version and (same_build or is_building):
+                    remove_ids.append(str(item_id))
         if remove_ids:
             self.collection.delete(ids=remove_ids)
             with sqlite3.connect(self.lexical_database) as connection:
@@ -507,22 +555,29 @@ def _patch_vector_store() -> None:
         records = self.collection.get(where={"document_id": document_id}, include=["metadatas", "documents", "embeddings"])
         all_ids = list(records.get("ids", []))
         all_meta = list(records.get("metadatas", []))
-        if version_id is not None:
+        
+        # Determine target version to validate
+        target_version = version_id
+        if target_version is None:
+            # In an active ingestion, prefer the active version from context
+            target_version = _ACTIVE_VERSION.get()
+        if target_version is None:
+            # Fallback: use document_id as legacy version
+            target_version = document_id
+            
+        if target_version is not None:
+            requested = str(target_version)
             selected = []
-            requested = str(version_id)
             for index, raw in enumerate(all_meta):
                 meta = self._coerce_metadata(raw)
                 if str(meta.get("version_id") or "") == requested or str(meta.get("content_hash") or "") == requested:
                     selected.append(index)
-            # In an active ingestion the canonical version is known independently.
-            active = _ACTIVE_VERSION.get()
-            if not selected and active:
-                selected = [index for index, raw in enumerate(all_meta) if str(self._coerce_metadata(raw).get("version_id") or "") == active]
         else:
             selected = list(range(len(all_ids)))
 
         issues: list[str] = []
         selected_ids = [str(all_ids[index]) for index in selected if index < len(all_ids)]
+        selected_metadatas = [all_meta[index] for index in selected if index < len(all_meta)]
         seen: set[str] = set()
         allowed_representations = {"canonical", "table", "figure_caption", "section_anchor", "chapter_anchor"}
         expected_dim = int(self._collection_dim() or 0)
@@ -539,7 +594,7 @@ def _patch_vector_store() -> None:
             if chunk_id in seen:
                 issues.append(f"duplicate chunk_id: {chunk_id}")
             seen.add(chunk_id)
-            if meta.get("index_state") not in {"READY", "BUILDING"}:
+            if meta.get("index_state") != "READY":
                 issues.append(f"unexpected index_state: {meta.get('index_state')}")
             if int(meta.get("structure_version") or 0) < STRUCTURE_SCHEMA_VERSION:
                 issues.append(f"legacy structure_version: {chunk_id}")
@@ -566,16 +621,38 @@ def _patch_vector_store() -> None:
         lexical_ids = set()
         try:
             with sqlite3.connect(self.lexical_database) as connection:
-                rows = connection.execute("SELECT id FROM lexical_documents WHERE index_state='READY'").fetchall()
-            lexical_ids = {str(row[0]) for row in rows}
-            if valid and any(item_id not in lexical_ids for item_id in selected_ids):
+                rows = connection.execute(
+                    "SELECT id, metadata FROM lexical_documents "
+                    "WHERE json_extract(metadata, '$.document_id') = ? "
+                    "AND index_state = 'READY'",
+                    (str(document_id),)
+                ).fetchall()
+            lexical_ids = set()
+            for item_id, raw_metadata in rows:
+                try:
+                    metadata = json.loads(raw_metadata or "{}")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    metadata = {}
+                lexical_ids.add(str(metadata.get("chunk_id") or item_id))
+            semantic_keys = {
+                str(meta.get("chunk_id") or item_id)
+                for item_id, meta in zip(selected_ids, selected_metadatas, strict=False)
+            }
+            if valid and not semantic_keys.issubset(lexical_ids):
                 issues.append("semantic/lexical index parity failure")
                 valid = False
         except sqlite3.Error:
             issues.append("lexical index validation failed")
             valid = False
 
-        return {"document_id": document_id, "count": len(selected_ids), "valid": valid, "issues": issues}
+        return {
+            "document_id": document_id,
+            "count": len(selected_ids),
+            "semantic_count": len(selected_ids),
+            "lexical_count": len(lexical_ids),
+            "valid": valid,
+            "issues": issues,
+        }
 
     VectorStore.validate_document_index = validate_document_index
     VectorStore._deep_contract_patched = True
@@ -589,7 +666,10 @@ def _patch_ingestion_versioning() -> None:
     original = robust_ingestor.robust_ingest_file
 
     def wrapped(system, pdf_path):
-        content_hash = system._hash_file(Path(pdf_path))
+        _path = Path(pdf_path)
+        if _path.suffix.lower() != ".pdf" or not _path.is_file():
+            raise ValueError(f"Unsupported or missing PDF: {_path}")
+        content_hash = system._hash_file(_path)
         chunking = json.dumps({"size": system.settings.chunk_size, "overlap": system.settings.chunk_overlap}, sort_keys=True)
         ocr_config = json.dumps({"engine": "rapidocr", "scale": 2, "structure_schema": STRUCTURE_SCHEMA_VERSION}, sort_keys=True)
         version_id = system._ingestion_version_id(
@@ -612,6 +692,8 @@ def _patch_ingestion_versioning() -> None:
             _ACTIVE_VERSION.reset(tok_ver)
             _ACTIVE_HASH.reset(tok_hash)
 
+    wrapped.__name__ = "robust_ingest_file"
+    wrapped.__doc__ = getattr(original, "__doc__", None)
     wrapped._deep_version_wrapped = True
     wrapped._deep_version_original = original
     robust_ingestor.robust_ingest_file = wrapped
@@ -691,3 +773,6 @@ def install() -> None:
 
 
 __all__ = ["install", "STRUCTURE_SCHEMA_VERSION", "DocumentStructureStore", "DocumentStructureTracker"]
+
+
+

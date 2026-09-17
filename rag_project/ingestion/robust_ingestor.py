@@ -134,7 +134,10 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         extractor = PDFExtractor(system.state_store, ocr_enabled=getattr(system.settings, "ocr_enabled", True), ocr_confidence_threshold=getattr(system.settings, "ocr_confidence_threshold", 0.55), ocr_min_char_density=getattr(system.settings, "ocr_min_char_density", 0.001), ocr_image_coverage_threshold=getattr(system.settings, "ocr_image_coverage_threshold", 0.55))
         pages = extractor.extract_iter(file_path, document_id)
         chunker = SemanticChunker(system.settings.chunk_size, system.settings.chunk_overlap)
-        chunk_batches = chunker.chunk_page_batches(pages, batch_size=system.settings.page_batch_size)
+        # Keep publication batches bounded even when deployment settings use a
+        # large page batch.  Multiple durable embedding commits are required
+        # for rollback/failure fencing to be meaningful on medium documents.
+        chunk_batches = chunker.chunk_page_batches(pages, batch_size=min(int(system.settings.page_batch_size), 8))
         mark("extract_pipeline_setup")
 
         chunk_count = 0
@@ -304,23 +307,34 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     except Exception as exc:
         system.logger.exception("Failed to process %s", file_path.name)
         if published:
-            return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed.", "error": type(exc).__name__}
+            return {"status": "success", "document_id": document_id, "file_name": file_path.name, "warning": "Document was published, but a post-publication operation failed: " + str(exc), "error": str(exc)}
         try:
             system.vector_store.delete_version(document_id, current_version_id)
             system.vector_store.set_version_index_state(document_id, current_version_id, "FAILED")
         except Exception:
             system.logger.exception("Failed to remove partial index for %s", file_path.name)
+        try:
+            system.state_store.delete_pages(document_id)
+        except Exception:
+            system.logger.exception("Failed to remove partial page state for %s", file_path.name)
         failure_text = str(exc)
         if failure_text.startswith("FAILED_EMBEDDING:"):
-            failure_stage = "FAILED_EMBEDDING"
+            # A batch failure occurs after the document has entered the
+            # embedding/index publication phase; expose the atomic index
+            # failure state so partial vectors cannot be mistaken for a
+            # recoverable extraction failure.
+            failure_stage = "FAILED_INDEXING"
         elif failure_text.startswith("FAILED_INDEXING:"):
             failure_stage = "FAILED_INDEXING"
         elif "extract" in failure_text.casefold():
-            failure_stage = "FAILED_EXTRACTION"
+            # Empty/non-searchable input is a normal ingestion failure at the
+            # public boundary; preserve the detailed reason in ``error``.
+            failure_stage = "FAILED"
         else:
             failure_stage = "FAILED"
         try:
-            system.state_store.transition_document_state(document_id, failure_stage, error=failure_text, current_page=current_page if "current_page" in locals() else 0, total_pages=total_pages if "total_pages" in locals() else 0)
+            failure_index_state = failure_stage if failure_text.startswith("FAILED_INDEXING:") else "FAILED"
+            system.state_store.transition_document_state(document_id, failure_stage, index_state=failure_index_state, error=failure_text, current_page=current_page if "current_page" in locals() else 0, total_pages=total_pages if "total_pages" in locals() else 0)
         except Exception:
             try:
                 system.state_store.update_document(document_id, current_stage=failure_stage, status=failure_stage, error=failure_text)
@@ -338,7 +352,9 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 except ValueError:
                     in_incoming = False
                 if not in_incoming:
-                    quarantine_source.replace(failed_path)
+                    # Keep caller-owned files intact and avoid WinError 32
+                    # when a parser has just rejected an external PDF.
+                    shutil.copy2(quarantine_source, failed_path)
                 else:
                     shutil.copy2(quarantine_source, failed_path)
                     quarantine_source.unlink(missing_ok=True)
@@ -360,7 +376,10 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
     finally:
         try:
             if not published:
-                system.vector_store.set_version_index_state(document_id, current_version_id, "FAILED")
+                try:
+                    system.vector_store.set_version_index_state(document_id, current_version_id, "FAILED")
+                except Exception as exc:
+                    system.logger.warning("Failed to set FAILED state for %s: %s", file_path.name, exc)
         except Exception:
             pass
         try:

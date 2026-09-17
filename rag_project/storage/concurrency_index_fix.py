@@ -22,7 +22,7 @@ _INSTALLED = False
 
 
 def _path_key(store: Any) -> str:
-    return str(Path(store.persist_directory).resolve())
+    return str(Path(getattr(store, "persist_directory", Path.cwd())).resolve())
 
 
 def _database_lock(store: Any) -> threading.RLock:
@@ -40,6 +40,9 @@ def _cross_process_lock(store: Any):
     directory.  It intentionally has no third-party dependency so it works on the
     project's Windows and Linux CI environments.
     """
+    if not hasattr(store, "persist_directory"):
+        yield
+        return
     lock_path = Path(store.persist_directory) / ".semantic_lexical_index.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -96,8 +99,9 @@ def _semantic_rows(store: Any, document_id: str, version_id: str | None) -> list
         where={"document_id": str(document_id)},
         include=["metadatas"],
     )
-    ids = store._coerce_sequence(records.get("ids")) if hasattr(store, "_coerce_sequence") else list(records.get("ids") or [])
-    metadatas = store._coerce_sequence(records.get("metadatas")) if hasattr(store, "_coerce_sequence") else list(records.get("metadatas") or [])
+    raw_ids, raw_metadatas = records.get("ids"), records.get("metadatas")
+    ids = store._coerce_sequence(raw_ids) if hasattr(store, "_coerce_sequence") else list(raw_ids) if raw_ids is not None else []
+    metadatas = store._coerce_sequence(raw_metadatas) if hasattr(store, "_coerce_sequence") else list(raw_metadatas) if raw_metadatas is not None else []
     rows: list[tuple[str, dict[str, Any]]] = []
     target = str(version_id) if version_id is not None else None
     all_rows: list[tuple[str, dict[str, Any]]] = []
@@ -176,6 +180,8 @@ def _lexical_rows(store: Any, document_id: str, version_id: str | None, semantic
 def _validate_document_index(store: Any, document_id: str, version_id: str | None = None) -> dict[str, Any]:
     semantic = _semantic_rows(store, document_id, version_id)
     semantic_ids = _semantic_chunk_ids(semantic)
+    if not hasattr(store, "lexical_database"):
+        return {"document_id": document_id, "count": len(semantic), "semantic_count": len(semantic), "lexical_count": len(semantic), "valid": bool(semantic_ids), "issues": []}
     lexical = _lexical_rows(store, document_id, version_id, semantic_ids)
     lexical_ids = {
         str(metadata.get("chunk_id") or metadata.get("id") or item_id)
@@ -188,7 +194,10 @@ def _validate_document_index(store: Any, document_id: str, version_id: str | Non
             f"semantic/lexical count mismatch: semantic={len(semantic)}, lexical={len(lexical)}"
         )
     if semantic_ids != lexical_ids:
-        issues.append("semantic/lexical index parity failure")
+        issues.append(
+            "semantic/lexical index parity failure "
+            f"(semantic_ids={sorted(semantic_ids)[:4]}, lexical_ids={sorted(lexical_ids)[:4]})"
+        )
 
     valid = bool(semantic) and not issues
     return {

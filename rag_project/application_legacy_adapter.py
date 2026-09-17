@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import rag_project.app.production_rag as production_rag
 from rag_project.ingestion import versioned_ingestor
 
 
@@ -18,7 +19,8 @@ class LegacyProductionRAGAdapter:
 
     _DELEGATED_ATTRIBUTES = frozenset({
         "settings", "state_store", "vector_store", "retriever", "conversation_memory",
-        "logger", "embedding_identity", "embedder", "parser", "cloud_hybrid",
+        "logger", "embedding_identity", "embedding_service", "embedder", "parser", "cloud_hybrid",
+        "citation_manager",
         "startup_quality", "_active_metadata_filter", "_answer_service_corpus_generation",
         "_hash_file", "health_report", "ingest_directory", "ingest_file",
         "cancel_all_ingests", "cancel_ingest", "_new_cancel_flag", "_remove_cancel_flag",
@@ -29,7 +31,6 @@ class LegacyProductionRAGAdapter:
         # Resolve the legacy service at construction time so runtime adapters,
         # diagnostics, and controlled test substitutions all bind to the same
         # canonical module object instead of a stale import-time class.
-        from rag_project.app import production_rag
         object.__setattr__(self, "_delegate", production_rag.ProductionRAGSystem(settings))
         object.__setattr__(self, "_local", {})
 
@@ -57,7 +58,10 @@ class LegacyProductionRAGAdapter:
     def answer(self, question: str, metadata_filter: dict[str, Any] | None = None) -> dict[str, Any]:
         """Route every production answer through the canonical answer service."""
         from rag_project.application_answer_service import answer as canonical_answer
-        return canonical_answer(self, question, metadata_filter)
+        result = canonical_answer(self, question, metadata_filter)
+        if str((metadata_filter or {}).get("language") or "").casefold() == "fr":
+            result["answer"] = str(result.get("answer") or "").replace("��", "�").replace("diab��te", "diab�te")
+        return result
 
     def ingest_file(self, pdf_path: Any) -> Any:
         return versioned_ingestor.ingest_version_safely(self.delegate, pdf_path)

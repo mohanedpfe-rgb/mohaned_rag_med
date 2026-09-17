@@ -33,7 +33,13 @@ def _unit_mean(vectors: Sequence[Sequence[float]]) -> list[float]:
 
 
 def _clean_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    return {key:value for key,value in metadata.items() if value is not None}
+    # Filter out ChromaDB reserved keys that should not be at document level
+    reserved_keys = {
+        "hnsw:space", "hnsw:ef_construction", "hnsw: M", "hnsw:construction_ef",
+        "hnsw:search_ef", "hnsw:num_threads", "hnsw:allow_replace", "hnsw:allow_delete",
+        "index_role", "collection", "collection_name", "database", "tenant"
+    }
+    return {key: value for key, value in metadata.items() if value is not None and key not in reserved_keys}
 
 
 class EnhancedVectorStore(VectorStore):

@@ -243,10 +243,11 @@ class PDFExtractor:
                                 extraction.text = merged
                                 extraction.blocks = [p.strip() for p in split_paragraphs(merged) if p.strip()]
                                 extraction.ocr_status = "completed"
+                                extraction.extraction_method = "OCR"
                                 extraction.ocr_confidence = confidence
                                 extraction.metadata.update(enrich_text(merged))
                             else:
-                                extraction.ocr_status = "completed"; extraction.ocr_confidence = confidence
+                                extraction.ocr_status = "completed"; extraction.extraction_method = "OCR"; extraction.ocr_confidence = confidence
                         except Exception as exc:
                             extraction.ocr_status = "failed"; extraction.metadata["ocr_error"] = type(exc).__name__
 

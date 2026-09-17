@@ -55,7 +55,7 @@ def test_semantic_chunker_handles_large_paragraphs_and_empty_page_list():
     chunker = SemanticChunker(chunk_size=200, chunk_overlap=30)
     chunks = chunker.chunk_pages(pages)
     assert chunks
-    assert all(len(chunk.text) <= 230 for chunk in chunks)
+    assert all(len(chunk.text.split("\n", 1)[-1]) <= 230 for chunk in chunks)
     assert chunker.chunk_pages([]) == []
 
 

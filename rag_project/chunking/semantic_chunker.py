@@ -129,6 +129,7 @@ class SemanticChunker:
             return []
         splitter = self._child_splitter()
         chunks: list[Chunk] = []
+        document_chapter: str | None = None
 
         for page in pages:
             page_no = int(getattr(page, "page_number", getattr(page, "page_index", 0) + 1) or 1)
@@ -150,16 +151,37 @@ class SemanticChunker:
             page_info = enrich_text(prose)
             fallback = (page_info.get("headings") or [None])[0] or self._section_fallback(prose)
             rows = self._parent_sections(prose) or [(prose, {})]
+            structured_page = any(bool(meta.get(key)) for _, meta in rows for key in ("chapter", "section", "subsection"))
+            page_splitter = splitter if structured_page else RecursiveCharacterTextSplitter(
+                chunk_size=max(1, self.chunk_size - 60),
+                chunk_overlap=min(self.chunk_overlap, max(0, (self.chunk_size - 60) // 2)),
+                separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""],
+            )
 
             canonical_rows: list[tuple[str, str | None, str | None, str, str, str]] = []
             for parent_text, hierarchy in rows:
                 chapter = hierarchy.get("chapter")
+                if chapter:
+                    document_chapter = chapter
+                elif document_chapter:
+                    chapter = document_chapter
                 section = hierarchy.get("subsection") or hierarchy.get("section") or fallback
                 key = f"{page_no}|{chapter or ''}|{section or '__page__'}"
                 parent_id = f"{page.document_id}:p{page_no}:parent:{self._stable_id(key)}"
                 section_id = f"{page.document_id}:p{page_no}:section:{self._stable_id(key)}"
-                chapter_id = f"{page.document_id}:p{page_no}:chapter:{self._stable_id(chapter or '__document__')}"
+                # A chapter spans pages; page number belongs to the section
+                # and parent identities, not to the chapter identity.
+                chapter_id = f"{page.document_id}:chapter:{self._stable_id(chapter or document_chapter or '__document__')}"
                 canonical_rows.append((parent_text, chapter, section, parent_id, section_id, chapter_id))
+
+            # Keep a standalone chapter heading attached to the first real
+            # section so the first canonical chunk carries usable evidence.
+            if len(canonical_rows) > 1:
+                head = canonical_rows[0]
+                if len(head[0].split()) <= 8 and len(head[0].splitlines()) == 1:
+                    nxt = canonical_rows[1]
+                    canonical_rows[1] = (f"{head[0]}\n{nxt[0]}", nxt[1] or head[1], nxt[2], nxt[3], nxt[4], nxt[5])
+                    canonical_rows.pop(0)
 
             anchor = canonical_rows[0] if canonical_rows else (
                 prose,
@@ -174,12 +196,21 @@ class SemanticChunker:
             page_chunk_start = len(chunks)
 
             for parent_text, chapter, section, parent_id, section_id, chapter_id in canonical_rows or [anchor]:
-                children = self._compact_children(splitter.split_text(parent_text)) or ([parent_text.strip()] if parent_text.strip() else [])
+                children = self._compact_children(page_splitter.split_text(parent_text)) or ([parent_text.strip()] if parent_text.strip() else [])
                 hierarchy_path = [anchor_chapter, anchor_section, anchor_parent]
                 for child_index, child in enumerate(children):
                     enriched = enrich_text(child)
+                    # A structural heading can be emitted as its own first
+                    # splitter fragment.  Its searchable representation still
+                    # belongs to the complete parent section, so retain the
+                    # section's normalized evidence for entity/routing use.
+                    if child_index == 0 and len(children) > 1 and self._is_heading_line(child):
+                        enriched = dict(enriched)
+                        enriched["normalized_text"] = enrich_text(parent_text).get("normalized_text", enriched["normalized_text"])
                     prefix = " - ".join(x for x in (f"Chapter: {chapter}" if chapter else "", f"Section: {section}" if section else "") if x)
                     marker = (
+                        f"[RAG-STRUCTURE schema=3; page={page_no}]"
+                        if not structured_page else
                         "[RAG-STRUCTURE schema=3; "
                         f"chapter_id={anchor_chapter}; chapter={chapter or ''}; "
                         f"section_id={anchor_section}; section={section or ''}; "

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import wraps
 from pathlib import Path
 import threading
 
@@ -17,6 +18,7 @@ def install() -> None:
             return
         original = robust_ingestor.robust_ingest_file
 
+        @wraps(original)
         def wrapped(system, pdf_path):
             path = Path(pdf_path).resolve()
             state = getattr(system, "state_store", None)

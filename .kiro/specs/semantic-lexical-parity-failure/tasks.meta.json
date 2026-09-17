@@ -1,0 +1,14 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "All 5 bug condition tests failed as expected (confirming the bug):\n- test_single_document_building_state_chunk_count_1: AssertionError: BUG CONFIRMED: validate_document_index returned valid=False for a correctly-ingested document with BUILDING-state lexical rows. Issues: ['semantic/lexical index parity failure']\n- test_multi_document_cross_contamination: AssertionError: BUG CONFIRMED: Multi-document cross-contamination. Doc A validation incorrectly influenced by Doc B. Issues: ['semantic/lexical index parity failure']\n- test_single_document_building_state_multi_chunk: same issue with 3 chunks\n- test_version_filtered_validation_building_state: same issue with version-filtered call\n- test_property_building_state_any_doc_id_and_chunk_count (PBT): counterexample found, validate_document_index(\"doc-abc\", None) returns {\"valid\": False, \"issues\": [\"semantic/lexical index parity failure\"]} even with matching chunks",
+      "lastRunTimestamp": 1789486222492
+    },
+    "2. Write preservation property tests (BEFORE implementing fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1789486318452
+    }
+  },
+  "executionHistory": {}
+}

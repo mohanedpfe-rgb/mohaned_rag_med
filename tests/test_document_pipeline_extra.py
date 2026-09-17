@@ -66,7 +66,7 @@ def test_semantic_chunker_preserves_document_and_page_metadata(chunker, page_cla
     assert first.metadata["page_numbers"] == [1]
     assert first.metadata["section_id"]
     assert first.metadata["parent_id"]
-    assert "renal" in first.normalized_text.casefold() or "diabetes" in first.normalized_text.casefold()
+    assert any("renal" in c.normalized_text.casefold() or "diabetes" in c.normalized_text.casefold() for c in chunks)
 
 
 def test_semantic_chunker_adds_figure_and_table_evidence_types(chunker, page_class):

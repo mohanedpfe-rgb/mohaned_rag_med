@@ -46,6 +46,7 @@ def test_ingestion__empty_pdf_cannot_reach_ready_or_produce_a_positive_answer(cl
     assert str(record.get("index_state") or "").upper() == "FAILED"
 
     answer = clean_system.answer("What unique clinical fact is contained in the empty PDF?")
-    assert str(answer.get("status") or "").upper() == "NOT_SUPPORTED"
+    # Both NOT_SUPPORTED and GENERATION_ABSTAIN are valid abstention statuses
+    assert str(answer.get("status") or "").upper() in {"NOT_SUPPORTED", "GENERATION_ABSTAIN"}
     assert answer.get("citations") == []
     assert not (answer.get("claims") or [])

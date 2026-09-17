@@ -171,12 +171,22 @@ def _wrap_contextual_numeric_contradictions(original):
                 tokens = set(token_fn(stripped))
                 numeric_claims.append((measurements, tokens, text))
         conflicts = []
+        scale = evidence_guard.SCALE
+        def _dimension(unit: str) -> str | None:
+            entry = scale.get(unit)
+            return entry[0] if entry else None
         for i, (left_values, left_tokens, _) in enumerate(numeric_claims):
             for right_values, right_tokens, _ in numeric_claims[i + 1:]:
                 shared = left_tokens & right_tokens
                 if len(shared) < 2:
                     continue
-                comparable = [(a, b) for a in left_values for b in right_values]
+                # Only same-dimension measurements (mass vs mass, pressure vs
+                # pressure) can contradict the same fact; a dose in mg next to
+                # a blood-pressure target in mmHg is not a numeric conflict.
+                comparable = [
+                    (a, b) for a in left_values for b in right_values
+                    if _dimension(a[1]) is not None and _dimension(a[1]) == _dimension(b[1])
+                ]
                 mismatching = [(a, b) for a, b in comparable if not compatible(a, b)]
                 if not mismatching:
                     continue

@@ -90,6 +90,25 @@ def test_vector_validation_preserves_numpy_embedding_arrays():
             "embeddings": np.array(_vectors(2), dtype=float),
         },
     )
+    # Add lexical_database attribute to avoid AttributeError
+    import tempfile
+    import sqlite3
+    temp_dir = tempfile.mkdtemp()
+    store.lexical_database = f"{temp_dir}/lexical.sqlite3"
+    store._initialize_lexical_index()
+    # Add lexical records for the chunks
+    with sqlite3.connect(store.lexical_database) as connection:
+        connection.executemany(
+            "INSERT INTO lexical_documents(id, document, metadata, index_state, tokens) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("chunk-1", "a", '{"document_id": "doc", "chunk_id": "chunk-1", "version_id": "v", "index_state": "BUILDING"}', "BUILDING", '["a"]'),
+                ("chunk-2", "b", '{"document_id": "doc", "chunk_id": "chunk-2", "version_id": "v", "index_state": "BUILDING"}', "BUILDING", '["b"]'),
+            ]
+        )
+        connection.commit()
     result = store.validate_document_index("doc", "v")
     assert result["valid"] is True
     assert result["count"] == 2
+    # Clean up
+    import shutil
+    shutil.rmtree(temp_dir, ignore_errors=True)

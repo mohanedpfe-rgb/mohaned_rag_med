@@ -90,7 +90,7 @@ def test_runtime_contract_has_no_monkey_patch_authority():
 
     result = runtime_contract()
     assert result['answer_monkey_patch'] is False
-    assert result['answer_pipeline'] == 'explicit_delegation'
+    assert result['answer_pipeline'] == 'med_evidence_pro'
 
 
 def test_top_level_pipeline_exports_expected_public_functions():

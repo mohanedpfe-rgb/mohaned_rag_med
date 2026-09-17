@@ -7,7 +7,7 @@ from typing import Any
 from rag_project.intelligence.semantic_reasoning import understand_query
 
 _COMPARISON = ("compare", "comparison", "difference", "differences", "versus", " vs ", "between", "différence", "comparaison", "مقارنة", "فرق", "بين")
-_NUMERIC = ("dose", "dosage", "mg", "ml", "percent", "percentage", "how many", "how much", "value", "range", "عدد", "جرعة", "ملغ", "نسبة", "قيمة")
+_NUMERIC = ("dose", "dosage", "mg", "ml", "percent", "percentage", "how many", "how much", "value", "range", "target", "numeric", "numerical", "عدد", "جرعة", "ملغ", "نسبة", "قيمة")
 _DEFINITION = ("what is", "define", "definition", "meaning", "qu'est-ce", "définition", "ما هو", "ما هي", "تعريف")
 _RELATION = ("related", "relationship", "relation", "associated", "association", "linked", "lien", "rapport", "علاقة", "مرتبط")
 _NAV = ("where", "which page", "section", "page number", "citation", "source", "où", "quelle page", "أين", "أي صفحة")

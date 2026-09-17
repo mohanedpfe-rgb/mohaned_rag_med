@@ -12,7 +12,10 @@ def _transition_guard(self, document_id, new_stage, **values):
     current = str(record.get("current_stage") or record.get("status") or "").upper()
     target = str(new_stage or "").upper()
     if current in _TERMINAL and target not in _TERMINAL and target not in {"INTERRUPTED", "RECOVERING"}:
-        raise RuntimeError(f"Invalid terminal state regression: {current} -> {target}.")
+        # Keep the exception wording stable: callers use this contract to
+        # distinguish an intentional terminal-state protection from an
+        # unrelated transition failure.
+        raise RuntimeError(f"Terminal document cannot transition: {current} -> {target}.")
     if current in {"READY", "COMPLETED"} and target in {"INTERRUPTED", "RECOVERING"}:
         with self._connect() as connection:
             from rag_project.ingestion.state_store import utc_now

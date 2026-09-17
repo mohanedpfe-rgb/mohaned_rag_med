@@ -175,6 +175,8 @@ class IngestionStateStore:
     def get_by_path(self, file_path: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM documents WHERE file_path = ? ORDER BY modified_at DESC LIMIT 1", (file_path,)).fetchone()
+            if row is None:
+                row = connection.execute("SELECT * FROM documents WHERE file_name = ? ORDER BY modified_at DESC LIMIT 1", (Path(file_path).name,)).fetchone()
         return dict(row) if row else None
 
     def upsert_document(self, values: dict[str, Any]) -> None:
@@ -221,16 +223,42 @@ class IngestionStateStore:
         if "status" in values:
             values["status"] = self.normalize_status(values["status"])
         current = self.get_document(document_id)
+        # Terminal-state monotonicity guard — a READY/COMPLETED document cannot be
+        # downgraded by a bare status change.  An explicit index_state accompanies
+        # every deliberate re-index / cache-invalidation reset, so those are allowed
+        # while a spurious late failure injection (status only) is rejected.
         if current and self.is_ready_status(current.get("status")):
-            requested = str(values.get("status", current.get("status") or "")).upper()
-            if requested not in {"READY", "COMPLETED", "SUPERSEDED"}:
-                raise RuntimeError(f"READY document cannot regress to {requested}.")
+            requested_status = str(values.get("status") or "").upper()
+            if (
+                requested_status
+                and requested_status not in {"READY", "COMPLETED", "SUPERSEDED"}
+                and "index_state" not in values
+            ):
+                raise RuntimeError(
+                    f"Document {document_id!r} cannot regress from "
+                    f"{current.get('status')!r} to {requested_status!r}."
+                )
         if "index_state" not in values and values.get("status") and self.is_ready_status(values.get("status")):
             values["index_state"] = "READY"
         values["modified_at"] = utc_now()
         assignments = ", ".join(f"{key} = ?" for key in values)
         with self._connect() as connection:
             cursor = connection.execute(f"UPDATE documents SET {assignments} WHERE document_id = ?", (*values.values(), document_id))
+            if cursor.rowcount != 1:
+                raise ValueError(f"Document {document_id!r} does not exist.")
+
+    def mark_publication_failed(self, document_id: str, *, error: str) -> None:
+        """Record failure while compensating a previously published version.
+
+        A normal state transition correctly forbids READY -> FAILED.  This is
+        the narrowly-scoped durable compensation path for a publication
+        transaction that has already removed its index and pages.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "UPDATE documents SET status = ?, current_stage = ?, index_state = ?, error = ?, modified_at = ? WHERE document_id = ?",
+                ("FAILED_INDEXING", "FAILED_INDEXING", "FAILED", error, utc_now(), document_id),
+            )
             if cursor.rowcount != 1:
                 raise ValueError(f"Document {document_id!r} does not exist.")
 

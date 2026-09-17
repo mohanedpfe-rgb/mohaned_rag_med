@@ -14,7 +14,7 @@ from rag_project.parsing.pdf_extractor import PDFExtractor
 
 _LOCK = threading.RLock()
 _INSTALLED = False
-_STRUCTURE_HEADER_RE = re.compile(r"\[RAG-STRUCTURE\s+(?:schema=(?P<schema>\d+);\s*)?chapter_id=(?P<chapter_id>[^;\]]*);\s*chapter=(?P<chapter>[^;\]]*);\s*section_id=(?P<section_id>[^;\]]*);\s*section=(?P<section>[^;\]]*);\s*parent_id=(?P<parent_id>[^;\]]*);(?:\s*path=(?P<path>[^;\]]*);)?\s*(?:quality=(?P<quality>[^;\]]*);\s*)?page_type=(?P<page_type>[^;\]]*);\s*(?:ocr_status|ocr)=(?P<ocr_status>[^\]]*)[^\]]*\]", re.I)
+_STRUCTURE_HEADER_RE = re.compile(r"\[RAG-STRUCTURE\s+(?:schema=(?P<schema>\d+);\s*)?chapter_id=(?P<chapter_id>[^;\]]*);\s*chapter=(?P<chapter>[^;\]]*);\s*section_id=(?P<section_id>[^;\]]*);\s*section=(?P<section>[^;\]]*);\s*parent_id=(?P<parent_id>[^;\]]*);(?:\s*path=(?P<path>[^;\]]*);)?\s*(?:quality=(?P<quality>[^;\]]*);\s*)?page_type=(?P<page_type>[^;\]]*);\s*(?:ocr_status|ocr)=(?P<ocr_status>[^;\]]*)[^;\]]*(?:;\s*[^\]]*|)\]", re.I)
 
 
 def _parse_structure_header(text: str) -> dict[str, Any]:

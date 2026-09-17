@@ -64,7 +64,7 @@ def test_llm_citation_validation_does_not_depend_on_shared_system_hit_state():
         cascade._llm = lambda question, evidence, route: "Diabetes is a metabolic disorder. [S2]"
         answer, path, _ = cascade.generate("What is diabetes?", route, compiled)
     finally:
-        AnswerCascade._citation_complete = original_citation
+        AnswerCascade._citation_complete = staticmethod(original_citation)
         AnswerCascade.generate = original_generate
     assert answer.endswith("[S2]") and path == "PATH_C_CONSTRAINED_LLM"
 

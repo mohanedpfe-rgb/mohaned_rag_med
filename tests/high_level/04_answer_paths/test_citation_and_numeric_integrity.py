@@ -26,7 +26,10 @@ def test_successful_answer__every_sentence_has_a_valid_source_marker_on_exact_ex
     assert_exact_status(result, "SUCCESS")
     assert_exact_path(result, "PATH_A_EXTRACTIVE")
     answer = str(result.get("answer") or "").strip()
-    sentences = [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+", answer) if len(part.strip()) >= 18]
+    # Split on newlines or sentence boundaries, but NOT when the period is
+    # immediately followed by a citation marker like "[S1]" — those belong to
+    # the same sentence.
+    sentences = [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+(?!\[S\d)", answer) if len(part.strip()) >= 18]
     assert sentences
     assert all(re.search(r"\[S\d+\]\s*$", sentence, flags=re.I) for sentence in sentences), answer
     assert_citations_valid(result)

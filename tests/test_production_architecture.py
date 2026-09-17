@@ -9,8 +9,8 @@ from rag_project.intelligence.medical_safety import apply_medical_safety_policy,
 
 def test_production_pipeline_is_explicit() -> None:
     contract = runtime_contract()
-    assert contract["service"] == "ProductionRAGSystem"
-    assert contract["answer_pipeline"] == "explicit_delegation"
+    assert contract["service"] == "MedEvidenceProductionRAGSystem"
+    assert contract["answer_pipeline"] == "med_evidence_pro"
     assert contract["answer_monkey_patch"] is False
     assert contract["medical_safety_gate"] is True
     assert callable(ProductionRAGSystem.answer)

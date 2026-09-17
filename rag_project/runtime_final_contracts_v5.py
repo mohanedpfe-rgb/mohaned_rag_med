@@ -36,6 +36,68 @@ def _patch_chroma_hierarchy_modify() -> None:
     Collection.modify = modify
 
 
+def _patch_chroma_hierarchy_upsert() -> None:
+    """Filter out HNSW keys before upserting to hierarchy collection."""
+    try:
+        from chromadb.api.models.Collection import Collection
+    except Exception:
+        return
+    current_upsert = getattr(Collection, "upsert", None)
+    if not callable(current_upsert) or getattr(current_upsert, "_runtime_v5_hierarchy", False):
+        return
+
+    def upsert(self, *args, **kwargs):
+        # Check if this is the hierarchy collection
+        if not str(getattr(self, "name", "")).endswith("_hierarchy"):
+            return current_upsert(self, *args, **kwargs)
+        # Filter out reserved keys from metadatas
+        metadatas = kwargs.get("metadatas")
+        if metadatas:
+            filtered = []
+            for meta in metadatas:
+                if isinstance(meta, dict):
+                    filtered.append({
+                        key: value
+                        for key, value in meta.items()
+                        if not str(key).startswith("hnsw:") and key not in ("index_role", "collection", "collection_name", "database", "tenant")
+                    })
+                else:
+                    filtered.append(meta)
+            kwargs["metadatas"] = filtered
+        return current_upsert(self, *args, **kwargs)
+
+    upsert._runtime_v5_hierarchy = True
+    Collection.upsert = upsert
+
+    # Also patch add method for hierarchy collection
+    current_add = getattr(Collection, "add", None)
+    if not callable(current_add) or getattr(current_add, "_runtime_v5_hierarchy_add", False):
+        return
+
+    def add(self, *args, **kwargs):
+        # Check if this is the hierarchy collection
+        if not str(getattr(self, "name", "")).endswith("_hierarchy"):
+            return current_add(self, *args, **kwargs)
+        # Filter out reserved keys from metadatas
+        metadatas = kwargs.get("metadatas")
+        if metadatas:
+            filtered = []
+            for meta in metadatas:
+                if isinstance(meta, dict):
+                    filtered.append({
+                        key: value
+                        for key, value in meta.items()
+                        if not str(key).startswith("hnsw:") and key not in ("index_role", "collection", "collection_name", "database", "tenant")
+                    })
+                else:
+                    filtered.append(meta)
+            kwargs["metadatas"] = filtered
+        return current_add(self, *args, **kwargs)
+
+    add._runtime_v5_hierarchy_add = True
+    Collection.add = add
+
+
 def _patch_embedding_retries() -> None:
     from rag_project.embeddings.embedding_service import EmbeddingService
 
@@ -404,6 +466,7 @@ def install() -> None:
     if _INSTALLED:
         return
     _patch_chroma_hierarchy_modify()
+    _patch_chroma_hierarchy_upsert()
     _patch_embedding_retries()
     _patch_ocr_status_compat()
     _patch_section_identity()

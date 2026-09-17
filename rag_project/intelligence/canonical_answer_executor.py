@@ -23,7 +23,11 @@ class _ContextRouter:
             "comparison": "comparison",
             "table": "table",
             "mechanism": "mechanism",
+            "figure": "table",
+            "figure_lookup": "table",
         }.get(intent)
+        if template is None and (self.context.needs_figure or self.context.needs_table):
+            template = "table"
         return RouteMetadata(
             intent=intent,
             complexity=complexity,

@@ -94,11 +94,8 @@ class PublicationTransaction:
         except Exception as exc:
             self.warnings.append(f"new_version_pages:{type(exc).__name__}")
         try:
-            self.system.state_store.update_document(
+            self.system.state_store.mark_publication_failed(
                 self.document_id,
-                status="FAILED_INDEXING",
-                current_stage="FAILED_INDEXING",
-                index_state="FAILED",
                 error="Publication transaction failed before completion.",
             )
         except Exception as exc:

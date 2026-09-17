@@ -297,12 +297,16 @@ def _metric(result: dict[str, Any], *keys: str) -> Any:
 
 
 def _evidence(result: dict[str, Any]) -> list[Any]:
-    value = result.get("evidence")
-    if value is None:
-        value = result.get("hits")
-    if value is None:
-        value = result.get("citations")
-    return list(value) if isinstance(value, (list, tuple)) else []
+    # Return evidence in priority order: citations, hits, then evidence
+    # citations and hits are lists of RetrievalHit or similar objects
+    # evidence is a dict with structured data (claims, compressed, etc.)
+    for key in ("citations", "hits"):
+        value = result.get(key)
+        if isinstance(value, (list, tuple)):
+            return list(value)
+    # If evidence is a dict with structured data, return empty list
+    # The evidence dict contains claims, not individual evidence records
+    return []
 
 
 def _evidence_row(item: Any, index: int) -> tuple[str, str, Any, str]:
@@ -706,7 +710,7 @@ def ask_page(system) -> None:
     st.markdown('</div>', unsafe_allow_html=True)
     answer = str(answer_result.get("answer") or "")
     evidence = _evidence(answer_result)
-    grounded = not bool(answer_result.get("abstained")) and str(answer_result.get("status", "")).upper() not in {"ABSTAIN", "SYSTEM_NOT_READY"}
+    grounded = not bool(answer_result.get("abstained")) and str(answer_result.get("status", "")).upper() not in {"ABSTAIN", "GENERATION_ABSTAIN", "SYSTEM_NOT_READY", "NOT_SUPPORTED"}
     left, right = st.columns([1.28, .72])
     with left:
         st.markdown(f'<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Answer</div><div class="sectionsub">{("Grounded response" if grounded else "Abstention / caution")} · {len(evidence)} evidence item(s)</div></div>{_status("GROUNDED" if grounded else "ABSTAIN")}</div>', unsafe_allow_html=True)

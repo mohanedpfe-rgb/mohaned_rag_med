@@ -97,6 +97,8 @@ EXPECTED = {
 }
 
 ROOT_TESTS = {
+    "test_diag8.py",
+    "test_diag9.py",
     "test_gold_regression.py",
     "test_pdf_system_behavior.py",
     "test_suite_structure.py",

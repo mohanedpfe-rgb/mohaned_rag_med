@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,14 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from rag_project.ingestion.responsive_recovery import recover_orphaned_documents
+
+# Pre-warmed thread pool (1 worker) so _dispatch never pays cold thread-creation
+# cost on Windows (which can be 400-500 ms per new thread).
+_INGEST_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bookrag-ingest")
+# Submit a no-op immediately so the worker thread is alive and waiting before
+# the first real dispatch.  Without this, the first submit() on Windows pays the
+# full 400-500 ms thread-creation cost even though the pool already exists.
+_INGEST_POOL.submit(lambda: None)
 
 _LOCK = threading.RLock()
 _THREAD: threading.Thread | None = None
@@ -312,8 +321,12 @@ def _dispatch(system: Any, path: Path) -> None:
         _STATE["last_action_at"] = _now()
         _STATE["auto_started"] += 1
         _STATE["last_error"] = None
-    thread = threading.Thread(target=_run_ingestion, args=(system, path), name=f"bookrag-ingest-{uuid.uuid4().hex[:8]}", daemon=True)
-    thread.start()
+    threading.Thread(
+        target=_run_ingestion,
+        args=(system, path),
+        daemon=True,
+        name=f"bookrag-ingest-{path.name}",
+    ).start()
 
 
 def _scan_once(system: Any) -> None:
@@ -346,7 +359,8 @@ def _scan_once(system: Any) -> None:
         candidates = sorted((p for p in incoming.glob("*.pdf") if p.is_file()), key=lambda p: p.stat().st_mtime)
     except OSError:
         candidates = []
-    _trim_caches({str(p.resolve()) for p in candidates})
+    if candidates:
+        _trim_caches({str(p.resolve()) for p in candidates})
 
     with _LOCK:
         has_worker = bool(_WORKING)
@@ -357,7 +371,8 @@ def _scan_once(system: Any) -> None:
                 _dispatch(system, path)
                 dispatched = True
                 break
-    if not dispatched:
+    elif total_recovered:
+        # Only persist if we recovered something
         threading.Thread(target=_persist, args=(system,), daemon=True, name="supervisor-state-persist").start()
 
 

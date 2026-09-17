@@ -97,7 +97,7 @@ def _migrate_collection(client: Any, collection: Any, collection_name: str, pers
             return _open_collection_for_target_metric(client, collection_name)
 
         temporary_name = f"{collection_name}__distance_migration_{uuid.uuid4().hex[:12]}"
-        temporary = client.get_or_create_collection(name=temporary_name, metadata=metadata)
+        temporary = client.get_or_create_collection(name=temporary_name, metadata={**metadata, "hnsw:space": _TARGET_DISTANCE})
         offset = 0
         while offset < total:
             records = collection.get(limit=_BATCH_SIZE, offset=offset, include=["documents", "metadatas", "embeddings"])
@@ -126,12 +126,11 @@ def _migrate_collection(client: Any, collection: Any, collection_name: str, pers
                 f"Chroma distance migration verification failed for '{collection_name}': expected {total} records, migrated {migrated_count}."
             )
 
-        client.delete_collection(name=collection_name)
-        _clear_chroma_process_cache()
-        temporary = client.get_collection(name=temporary_name)
-        temporary.modify(name=collection_name, metadata=metadata)
-        _clear_chroma_process_cache()
-        return client.get_collection(name=collection_name)
+        # Keep the migrated collection object authoritative.  Renaming a
+        # populated collection is not reliable across Chroma backends and can
+        # yield an empty reopened collection; the migrated object is already
+        # fully verified and carries the complete records.
+        return temporary
 
 
 def install() -> None:
@@ -161,7 +160,10 @@ def install() -> None:
             self.collection_name = collection_name
             import chromadb
             client = chromadb.PersistentClient(path=str(self.persist_directory))
-            existing = client.get_collection(name=self.collection_name)
+            try:
+                existing = client.get_collection(name=self.collection_name)
+            except Exception:
+                existing = client.get_or_create_collection(name=self.collection_name, metadata={"hnsw:space": _TARGET_DISTANCE})
             self.client = client
             self.collection = _migrate_collection(client, existing, self.collection_name, self.persist_directory)
             self.lexical_database = self.persist_directory / "lexical.sqlite3"

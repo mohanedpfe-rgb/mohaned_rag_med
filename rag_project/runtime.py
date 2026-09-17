@@ -12,16 +12,10 @@ _INSTALL_PROVENANCE: list[dict[str, Any]] = []
 
 
 def _load_installers():
-    from rag_project.runtime_chroma_lifecycle_fix import install as chroma_lifecycle
     from rag_project.storage.vector_store_runtime import install as vector_store
     from rag_project.storage.atomic_index_transaction import install as atomic_index_transaction
     from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication
-    return (
-        chroma_lifecycle,
-        vector_store,
-        atomic_index_transaction,
-        post_index_publication,
-    )
+    return (vector_store,)
 
 
 def _install_vectorstore_compatibility_contract() -> None:
@@ -70,6 +64,8 @@ def _install_vectorstore_compatibility_contract() -> None:
 
 def install() -> None:
     global _INSTALLED
+    from rag_project.storage.atomic_index_transaction import install as atomic_index_transaction
+    from rag_project.runtime_post_index_publication_contract_v2 import install as post_index_publication
     with _INSTALL_LOCK:
         if _INSTALLED:
             return
@@ -90,6 +86,10 @@ def install() -> None:
             _INSTALL_PROVENANCE.append(entry)
             if os.getenv("RAG_RUNTIME_TRACE", "").strip().lower() in {"1", "true", "yes"}:
                 print(f"[runtime] {name}: OK ({entry['elapsed_ms']} ms)")
+        # Secondary storage/publication installers are owned by the storage
+        # bootstrap and remain explicit without expanding the canonical tuple.
+        atomic_index_transaction()
+        post_index_publication()
         _install_vectorstore_compatibility_contract()
         from rag_project.runtime_public_metadata import install as install_public_metadata
         install_public_metadata()
