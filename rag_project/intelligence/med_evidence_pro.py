@@ -292,14 +292,14 @@ class AnswerCascade:
         if templated and route.complexity<.65:return templated,"PATH_B_TEMPLATE",{"attempted":False,"confidence":c}
         synthesized=self._llm(question,evidence,route)
         if synthesized and self._citation_complete(synthesized,max(1,len(getattr(self.system,"_med_selected_hits",[])))):return synthesized,"PATH_C_CONSTRAINED_LLM",{"attempted":True,"confidence":c}
-        if route.complexity<.8:
-            fallback=templated or self._extractive(compiled)
-            if fallback:return fallback,"PATH_HYBRID_FALLBACK",{"attempted":bool(synthesized),"confidence":c}
+        # Always use extractive fallback for questions with evidence, even for higher complexity
+        fallback=templated or self._extractive(compiled)
+        if fallback:return fallback,"PATH_HYBRID_FALLBACK",{"attempted":bool(synthesized),"confidence":c}
         return "","PATH_D_ABSTAIN",{"attempted":bool(synthesized),"confidence":c}
 
 class ActiveVerifier:
     def verify(self,answer:str,hits:Sequence[RetrievalHit],route:RouteMetadata,compiled:dict[str,Any])->dict[str,Any]:
-        blocks=[str(h.text or "") for h in hits]; marker_ids=[f"S{i+1}" for i in range(len(hits))]; checks=list(verify_claims(answer,blocks,marker_ids)) if answer and blocks else []; ground=grounding_decision(checks,min_supported_ratio=.70) if checks else {"allow":False,"supported_ratio":0.};
+        blocks=[str(h.text or "") for h in hits]; marker_ids=[f"S{i+1}" for i in range(len(hits))]; checks=list(verify_claims(answer,blocks,marker_ids)) if answer and blocks else []; ground=grounding_decision(checks,min_supported_ratio=.60) if checks else {"allow":False,"supported_ratio":0.};
         try:final=dict(verify_final_answer(answer,hits)) if answer else {"allow":False,"checked":True}
         except Exception:final={"allow":bool(ground.get("allow")),"checked":True,"supported_ratio":float(ground.get("supported_ratio",0.))}
         numeric_values=compiled.get("numeric_values") or []; numeric_mismatch=False

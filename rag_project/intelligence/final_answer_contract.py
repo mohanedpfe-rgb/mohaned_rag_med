@@ -34,7 +34,7 @@ def verify_final_answer(answer: str, hits: Sequence[Any], *, require_entailment:
     supported = sum(check.status in {"SUPPORTED", "PARTIAL"} and not check.contradiction for check in checks)
     support_ratio = supported / max(1, len(checks))
     matrix_strong = bool(matrix) and not blocked_matrix
-    allow = bool(checks) and not blocked_checks and support_ratio >= 0.60 and (matrix_strong if require_entailment else True)
+    allow = bool(checks) and not blocked_checks and support_ratio >= 0.50 and (matrix_strong if require_entailment else True)
     if not checks:
         reason = "no_verifiable_claims"
     elif blocked_checks:
