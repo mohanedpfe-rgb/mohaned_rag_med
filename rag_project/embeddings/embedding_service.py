@@ -359,6 +359,14 @@ class EmbeddingService:
                 self._ollama_available = False
                 if attempt + 1 < attempts:
                     time.sleep(min(1.5, 0.4 * (2**attempt)))
+        
+        # Final fallback: try local transformers if available
+        if self.prefer_local_transformers:
+            try:
+                return self._transformers_embed_batch(texts)
+            except Exception as local_exc:
+                self.last_error = f"Both Ollama and local transformers failed: {type(local_exc).__name__}"
+        
         raise RuntimeError(
             f"Ollama embedding service failed after {attempts} attempts for model {self.model!r}: {last_error}"
         ) from last_error
@@ -438,7 +446,26 @@ class EmbeddingService:
                 self._query_cache.move_to_end(key)
                 return cached
             self._query_cache.pop(key, None)
-        vectors = self.embed_texts([clean_query])
+        
+        try:
+            vectors = self.embed_texts([clean_query])
+        except Exception as exc:
+            # Enhanced fallback: try local transformers if primary method fails
+            if self.prefer_local_transformers:
+                try:
+                    vectors = self._transformers_embed_batch([clean_query])
+                except Exception as local_exc:
+                    raise RuntimeError(f"Primary embedding failed and local fallback also failed: {exc}") from local_exc
+            else:
+                # Emergency fallback: enable local transformers temporarily for failed queries
+                try:
+                    self.prefer_local_transformers = True
+                    vectors = self._transformers_embed_batch([clean_query])
+                    self.prefer_local_transformers = False  # Reset to original setting
+                except Exception as emergency_exc:
+                    self.prefer_local_transformers = False  # Ensure reset
+                    raise RuntimeError(f"Primary embedding failed and emergency fallback also failed: {exc}") from emergency_exc
+        
         if not vectors:
             raise RuntimeError("No embedding was produced for the query.")
         vector = list(vectors[0])

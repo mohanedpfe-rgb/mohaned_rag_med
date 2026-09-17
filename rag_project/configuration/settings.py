@@ -41,7 +41,7 @@ class Settings:
     embedding_test_mode: bool = False
     lexical_mode: str = "hybrid"
     vector_weight: float = 0.7
-    context_token_budget: int = 3200
+    context_token_budget: int = 5120  # Increased from 3200 to 5120 for better context
     neighbor_expansion: bool = True
     max_workers: int = 2
     max_memory_target: int = 1024

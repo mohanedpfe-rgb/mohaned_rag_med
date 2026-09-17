@@ -154,7 +154,23 @@ class HybridRetriever:
                     except (RuntimeError, ValueError, TypeError) as exc: vector_error = exc
         vector_ids, vector_documents, vector_metadatas, vector_distances = self._unpack_results(vector_results)
         lexical_ids, lexical_documents, lexical_metadatas, lexical_distances = self._unpack_results(lexical_results)
-        if not vector_ids and not lexical_ids: return []
+        
+        # Enhanced fallback: if both searches failed, try desperate measures
+        if not vector_ids and not lexical_ids:
+            # Try pure lexical search with simplified query as last resort
+            if configured_mode != "lexical":
+                try:
+                    simplified_query = " ".join(meaningful_tokens(original_query)[:5])  # Use first 5 meaningful tokens
+                    lexical_fallback = self._lexical(simplified_query, top_k, where)
+                    fallback_ids, fallback_docs, fallback_metas, fallback_dists = self._unpack_results(lexical_fallback)
+                    if fallback_ids:
+                        lexical_ids, lexical_documents, lexical_metadatas, lexical_distances = fallback_ids, fallback_docs, fallback_metas, fallback_dists
+                except Exception as fallback_exc:
+                    pass  # If even fallback fails, return empty
+            
+            if not vector_ids and not lexical_ids:
+                return []  # Still no results after fallback attempts
+        
         hits_by_id: dict[str, RetrievalHit] = {}
         vector_document_count = min(len(vector_ids), len(vector_documents))
         for index in range(vector_document_count):

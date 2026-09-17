@@ -146,7 +146,18 @@ class OllamaLLMClient:
             data = self._generate_raw(prompt, system_prompt, temperature)
         except Exception as exc:
             self._record_failure(exc)
-            raise
+            # Enhanced fallback: try with reduced timeout on first failure
+            if "timeout" in str(exc).lower() and self.request_timeout_seconds > 10:
+                try:
+                    original_timeout = self.request_timeout_seconds
+                    self.request_timeout_seconds = max(10.0, original_timeout / 2)
+                    data = self._generate_raw(prompt, system_prompt, temperature)
+                    self.request_timeout_seconds = original_timeout  # Restore original timeout
+                except Exception as fallback_exc:
+                    self.request_timeout_seconds = original_timeout  # Restore original timeout
+                    raise fallback_exc from exc
+            else:
+                raise
         return self._content(data)
 
     def generate_json(self, prompt: str, system_prompt: str | None = None, temperature: float = 0.0, max_tokens: int = 180) -> str:

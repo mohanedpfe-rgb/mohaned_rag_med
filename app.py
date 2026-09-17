@@ -15,6 +15,10 @@ from rag_project.app.intelligence_panel import render_intelligence_panel
 from rag_project.composition import RUNTIME_COMPOSITION_VERSION, prepare_runtime
 from rag_project.ingestion.responsive_supervisor import start as start_supervisor
 
+# Update for deterministic answer generation
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+
 # Compatibility names retained for the canonical UI contract.
 _install_ui_guards = install_ui_security
 

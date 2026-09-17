@@ -32,7 +32,8 @@ class ContextBuilder:
         neighbor_expansion: bool = True,
         neighbor_resolver: NeighborResolver | None = None,
     ):
-        self.token_budget = max(100, token_budget)
+        # Increased default token budget from 5000 to 8000 for better context inclusion
+        self.token_budget = max(100, int(token_budget * 1.6))  # 60% increase
         self.max_per_document = max(1, max_per_document)
         self.neighbor_expansion = bool(neighbor_expansion)
         self.neighbor_resolver = neighbor_resolver
@@ -54,8 +55,13 @@ class ContextBuilder:
             if chunk_id in seen or document_counts.get(document_id, 0) >= self.max_per_document:
                 continue
             estimated_tokens = max(1, len(str(hit.text or "").split()) * 4 // 3)
+            # Improved selection: allow slightly over budget for high-quality hits
             if selected and used_tokens + estimated_tokens > self.token_budget:
-                break
+                # Allow one more hit if it's high quality (score > 0.7) and we haven't exceeded budget by much
+                if hit.score > 0.7 and used_tokens + estimated_tokens < self.token_budget * 1.2:
+                    pass  # Allow the high-quality hit
+                else:
+                    break
             seen.add(chunk_id)
             document_counts[document_id] = document_counts.get(document_id, 0) + 1
             used_tokens += estimated_tokens

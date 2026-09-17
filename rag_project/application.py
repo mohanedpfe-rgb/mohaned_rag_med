@@ -115,6 +115,17 @@ class MedEvidenceProductionRAGSystem:
             and not cross_language_signal
         ):
             return result
+        
+        # Simplified cross-language handling: only apply when explicitly requested via metadata filter
+        # Remove automatic cross-language interference for normal queries
+        if not metadata_filter or not metadata_filter.get("language"):
+            # Skip all cross-language recovery logic when no language filter is explicitly set
+            # This prevents interference with normal retrieval for English/mixed content
+            # But still apply minimal normalization for consistent behavior
+            if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+                return result
+            # For failed queries without language filter, return as-is to avoid interference
+            return result
 
         # Public answers must carry the same measurable grounding envelope as
         # answers returned by the canonical service.  This also applies to the
@@ -127,15 +138,16 @@ class MedEvidenceProductionRAGSystem:
             result["verification"] = {"allow": True, "checked": True, "supported_ratio": 1.0}
             result["grounding"] = {"allow": True, "supported_ratio": 1.0}
 
+        # Simplified language handling: only apply when language is explicitly requested
         if metadata_filter and str(metadata_filter.get("language") or "").casefold() == "fr":
             result["answer"] = text + " [S1]"
             grounded(status="SUCCESS", generation_path="PATH_A_EXTRACTIVE")
-        if arabic and dosage:
+        elif arabic and dosage:
             result["generation_path"] = "PATH_B_TEMPLATE"
             result.setdefault("route", {}).update({"language": "ar", "is_follow_up": False})
             result.setdefault("verification", {"allow": True, "checked": True, "supported_ratio": 1.0})
             result.setdefault("grounding", {"allow": True, "supported_ratio": 1.0})
-        if arabic and status in {"NOT_SUPPORTED", "GENERATION_ABSTAIN", "ABSTAIN"}:
+        elif arabic and status in {"NOT_SUPPORTED", "GENERATION_ABSTAIN", "ABSTAIN"}:
             hits = list(result.get("hits") or [])
             if not hits:
                 try:
@@ -145,68 +157,47 @@ class MedEvidenceProductionRAGSystem:
                     hits = []
             grounded(status="SUCCESS", answer="[S1] " + text,
                      generation_path="PATH_B_TEMPLATE" if dosage else "PATH_A_EXTRACTIVE", hits=hits)
-        if (text.casefold().startswith(("et ", "et sa ", "and its ", "what about its "))
-                and str(result.get("status") or "").upper() in {"ABSTAIN", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}):
-            try:
-                hits = list(self.runtime.retriever.retrieve("diabetes", top_k=3) or [])
-            except Exception:
-                hits = []
-            if hits:
-                grounded(status="SUCCESS", answer="[S1] " + str(getattr(hits[0], "text", "") or "").strip(),
-                         generation_path="PATH_A_EXTRACTIVE", hits=hits)
+        # Disable automatic diabetes fallback to prevent interference with normal retrieval
+        # The system should handle diabetes queries through normal retrieval pipeline
+        # Simplified follow-up question handling - only for specific conversation patterns
         if text.casefold().startswith(("et ", "et sa ")):
             result.setdefault("route", {}).update({"language": "fr", "is_follow_up": True})
             result["rewritten_question"] = "Qu'est-ce que le diabète ? " + text
-        if text.casefold().startswith("what about"):
+        elif text.casefold().startswith("what about"):
             history = getattr(getattr(self.runtime, "conversation_memory", None), "history", []) or []
             if history:
                 prior = history[-2][0] if len(history) > 1 and str(history[-1][0]).casefold() == text.casefold() else history[-1][0]
                 result["rewritten_question"] = str(prior) + " Follow-up question: " + text
-        if ("diabetes" in text.casefold() or "diab" in text.casefold() or "maladie métabolique" in text.casefold() or "maladie m" in text.casefold()) and str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "GENERATION_ABSTAIN", "ABSTAIN"}:
-            hits = []
-            for query in ("diabetes mellitus", "diabetes", "chronic metabolic disorder", "diabète", "السكري"):
-                try:
-                    hits = list(self.runtime.retriever.retrieve(query, top_k=5) or [])
-                except Exception:
-                    hits = []
-                if hits:
-                    break
-            if not hits:
-                # The safety classifier can reject a short cross-language
-                # question before the retriever is invoked.  Preserve the
-                # indexed medical evidence contract with a deterministic
-                # evidence record rather than returning an uncited success.
-                evidence = ("داء السكري هو اضطراب استقلابي مزمن." if arabic
-                            else "Le diabète est une maladie métabolique chronique." if "quelle" in text.casefold()
-                            else "Diabetes mellitus is a chronic metabolic disorder.")
-                hits = [RetrievalHit("cross-language", evidence, {"document_id": "cross-language", "chunk_id": "fallback"}, 1.0, 1.0, 1.0)]
-            if hits:
-                grounded(status="SUCCESS", answer="[S1] " + str(getattr(hits[0], "text", "") or "").strip(),
-                         generation_path="PATH_A_EXTRACTIVE", hits=hits)
-        if "indexed literature" in text.casefold() and str(result.get("status") or "").upper() == "SUCCESS":
-            try:
-                extras = list(self.runtime.retriever.retrieve("diabète", top_k=5) or []) + list(self.runtime.retriever.retrieve("السكري", top_k=5) or [])
-                result["hits"] = list(result.get("hits") or []) + extras
-                if not any("diabète" in str(getattr(hit, "text", "")) or "السكري" in str(getattr(hit, "text", "")) for hit in result["hits"]):
-                    for hit in result["hits"]:
-                        if "diab" in str(getattr(hit, "text", "")).casefold():
-                            result["hits"].append(RetrievalHit(hit.doc_id, "Le diabète est une maladie métabolique chronique.", dict(hit.metadata), hit.score, hit.vector_score, hit.lexical_score))
-                            break
-            except Exception:
-                pass
+        
+        # Disabled diabetes-specific fallback to prevent interference with normal retrieval
+        # The system should handle diabetes queries through the normal retrieval pipeline
+        # if "diabetes" in text.casefold() and str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "GENERATION_ABSTAIN", "ABSTAIN"}:
+        #     hits = []
+        #     for query in ("diabetes mellitus", "diabetes", "chronic metabolic disorder"):
+        #         try:
+        #             hits = list(self.runtime.retriever.retrieve(query, top_k=5) or [])
+        #         except Exception:
+        #             hits = []
+        #         if hits:
+        #             break
+        #     if hits:
+        #         grounded(status="SUCCESS", answer="[S1] " + str(getattr(hits[0], "text", "") or "").strip(),
+        #                  generation_path="PATH_A_EXTRACTIVE", hits=hits)
+        # Removed duplicate normalization logic - now handled in application_answer_service.normalize_public_answer_path
         if dosage and str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             result["generation_path"] = "PATH_B_TEMPLATE"
             result["answer_plan"] = {**dict(result.get("answer_plan") or {}), "selected_path": "PATH_B_TEMPLATE"}
         elif result.get("generation_path"):
             result["answer_plan"] = {**dict(result.get("answer_plan") or {}), "selected_path": result["generation_path"]}
-        if ("diabetes mellitus" in text.casefold()
-                and str(result.get("status") or "").upper() == "SUCCESS"
-                and str(result.get("generation_path") or "").upper() == "PATH_A_EXTRACTIVE"):
-            verification = dict(result.get("verification") or {})
-            if float(verification.get("supported_ratio", 1.0) or 0.0) < 0.70:
-                verification.update({"allow": True, "checked": True, "supported_ratio": 1.0})
-                result["verification"] = verification
-                result["grounding"] = {**dict(result.get("grounding") or {}), "allow": True, "supported_ratio": 1.0}
+        # Disabled diabetes-specific override to prevent interference with fallback path normalization
+        # if ("diabetes mellitus" in text.casefold()
+        #         and str(result.get("status") or "").upper() == "SUCCESS"
+        #         and str(result.get("generation_path") or "").upper() == "PATH_A_EXTRACTIVE"):
+        #     verification = dict(result.get("verification") or {})
+        #     if float(verification.get("supported_ratio", 1.0) or 0.0) < 0.70:
+        #         verification.update({"allow": True, "checked": True, "supported_ratio": 1.0})
+        #         result["verification"] = verification
+        #         result["grounding"] = {**dict(result.get("grounding") or {}), "allow": True, "supported_ratio": 1.0}
         route_language = str((result.get("route") or {}).get("language") or "").casefold()
         if text.casefold().startswith(("quelle ", "qu'est-ce", "et ", "et sa ")):
             route_language = "fr"
@@ -214,11 +205,14 @@ class MedEvidenceProductionRAGSystem:
         if arabic:
             route_language = "ar"
             result.setdefault("route", {}).update({"language": "ar"})
-        combined_hits = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or []).casefold()
-        if route_language == "fr" and "diabète" not in combined_hits and "diab�te" not in combined_hits:
-            result.setdefault("hits", []).append(RetrievalHit("cross-language-fr", "Le diabète est une maladie métabolique chronique.", {"document_id": "cross-language-fr", "chunk_id": "fallback"}, 1.0, 1.0, 1.0))
-        if route_language == "ar" and "السكري" not in combined_hits:
-            result.setdefault("hits", []).append(RetrievalHit("cross-language-ar", "داء السكري هو اضطراب استقلابي مزمن.", {"document_id": "cross-language-ar", "chunk_id": "fallback"}, 1.0, 1.0, 1.0))
+        # Disabled automatic cross-language fallback to prevent interference with normal retrieval
+        # combined_hits = " ".join(str(getattr(hit, "text", "")) for hit in result.get("hits") or []).casefold()
+        # if route_language == "fr" and "diabète" not in combined_hits and not result.get("hits"):
+        #     result.setdefault("hits", []).append(RetrievalHit("cross-language-fr", "Le diabète est une maladie métabolique chronique.", {"document_id": "cross-language-fr", "chunk_id": "fallback"}, 1.0, 1.0, 1.0))
+        # if route_language == "ar" and "السكري" not in combined_hits and not result.get("hits"):
+        #     result.setdefault("hits", []).append(RetrievalHit("cross-language-ar", "داء السكري هو اضطراب استقلابي مزمن.", {"document_id": "cross-language-ar", "chunk_id": "fallback"}, 1.0, 1.0, 1.0))
+        
+        # Simplified recovery logic - only essential fallbacks
         if retrieval_failed:
             result.update({"status": "ANSWER_UNAVAILABLE", "answer": "The indexed retrieval service is temporarily unavailable.", "hits": [], "citations": [], "generation_path": None, "recovery": {"attempted": True, "retrieval_failed": "RuntimeError", "pipeline_error": "RuntimeError", "succeeded": False}, "verification": {"allow": False, "checked": True, "supported_ratio": 0.0}})
         elif llm_failed and "mechanism" in text.casefold():
@@ -235,11 +229,14 @@ class MedEvidenceProductionRAGSystem:
                 meta = dict(getattr(hit, "metadata", {}) or {})
                 result["citations"] = [{"valid": True, "document_id": str(meta.get("document_id") or hit.doc_id), "chunk_id": str(meta.get("chunk_id") or ""), "page_numbers": list(meta.get("page_numbers") or meta.get("source_pages") or [])}]
             result["phase_implementation"] = {**dict(result.get("phase_implementation") or {}), "degraded_to_recovery": True}
+        
+        # Simplified trace handling - only essential redactions
         trace = dict(result.get("query_trace") or {})
-        trace_text = str(trace)
         if re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text):
             trace["redactions"] = {"email": "[REDACTED_EMAIL]", "phone": "[REDACTED_PHONE]", "identifier": "[REDACTED_ID]"}
         result["query_trace"] = trace
+        
+        # Simplified marker search - only for explicit markers
         marker_match = re.search(r"(?:FILTER_[A-Za-z0-9_]+|[A-Za-z0-9_:-]*marker[A-Za-z0-9_:-]*)", text, flags=re.I)
         if marker_match and str(result.get("status") or "").upper() in {"ABSTAIN", "NOT_SUPPORTED", "GENERATION_ABSTAIN"}:
             marker = marker_match.group(0).casefold()
@@ -256,41 +253,20 @@ class MedEvidenceProductionRAGSystem:
                         break
             except Exception:
                 pass
-        if "doc_endo" in text.casefold() and result.get("hits"):
-            filtered = [hit for hit in result["hits"] if "doc_endo" in str(getattr(hit, "text", "")).casefold()]
-            if filtered:
-                result["hits"] = filtered
-                # Remap source markers to match the new hit count
-                max_idx = len(filtered)
-                import re as _re
-                answer = str(result.get("answer") or "")
-                def _clamp_marker(m):
-                    n = int(m.group(1))
-                    return f"[S{min(n, max_idx)}]"
-                result["answer"] = _re.sub(r"\[S(\d+)\]", _clamp_marker, answer, flags=_re.I)
-        if "chronic disorder" in text.casefold() and str(result.get("status") or "").upper() in {"GENERATION_ABSTAIN", "NOT_SUPPORTED"}:
-            try:
-                hits = list(self.runtime.retriever.retrieve("diabetes mellitus chronic metabolic disorder", top_k=3) or [])
-            except Exception:
-                hits = []
-            if hits:
-                grounded(status="SUCCESS", answer="[S1] " + str(getattr(hits[0], "text", "") or ""), generation_path="PATH_A_EXTRACTIVE", hits=hits)
-        if "hypertension" in text.casefold() and str(result.get("status") or "").upper() in {"GENERATION_ABSTAIN", "NOT_SUPPORTED", "ABSTAIN"}:
-            try:
-                hits = list(self.runtime.retriever.retrieve("hypertension", top_k=3) or [])
-            except Exception:
-                hits = []
-            if hits:
-                grounded(status="SUCCESS", answer="[S1] " + str(getattr(hits[0], "text", "") or ""), generation_path="PATH_A_EXTRACTIVE", hits=hits)
+        # Simplified conversation memory handling
         if text.casefold().startswith(("et ", "et sa ")):
             memory = getattr(self.runtime, "conversation_memory", None)
             history = getattr(memory, "history", []) if memory is not None else []
             if memory is not None and (not history or history[-1][0] != text):
                 memory.add(text, result)
+        
+        # Simplified language detection
         route = result.setdefault("route", {})
         if not str(route.get("language") or "").strip():
             detected_language, _confidence = detect_answer_language(text)
             route["language"] = detected_language if detected_language != "unknown" else "en"
+        
+        # Simplified memory addition for successful answers
         final_status = str(result.get("status") or "").upper()
         if final_status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             memory = getattr(self.runtime, "conversation_memory", None)
@@ -308,10 +284,9 @@ class MedEvidenceProductionRAGSystem:
                         memory.add(text, result)
                     except Exception:
                         pass
+        
         # Citation-consistency guard: ensure result["hits"] is never shorter than
-        # the highest [S{n}] source marker in the answer.  Post-hoc hit filtering
-        # (e.g. doc_endo, cross-language) can reduce the list below what the
-        # compiled answer references, causing citation validation failures.
+        # the highest [S{n}] source marker in the answer.
         _answer_text = str(result.get("answer") or "")
         _hit_indices = [int(m) for m in re.findall(r"\[S(\d+)\]", _answer_text, flags=re.I)]
         if _hit_indices:

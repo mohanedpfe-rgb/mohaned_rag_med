@@ -5,6 +5,7 @@ import math
 from typing import Any, Iterable, List
 
 from rag_project.retrieval.hybrid_retriever import RetrievalHit
+from rag_project.utils.text_utils import keyword_overlap_score
 
 
 class Reranker:
@@ -107,6 +108,11 @@ class Reranker:
         if not hits_list:
             return []
         if not self._ensure_model():
+            # Enhanced fallback: use keyword overlap as secondary ranking when model unavailable
+            self.logger.warning("Reranker model unavailable, using keyword overlap fallback")
+            for hit in hits_list:
+                overlap = keyword_overlap_score(query, hit.text or "")
+                hit.score = 0.7 * hit.score + 0.3 * overlap  # Blend original score with keyword overlap
             return sorted(hits_list, key=lambda item: item.score, reverse=True)
 
         # Multi-query retrieval can produce hundreds of unique candidates. On CPU,
@@ -141,4 +147,8 @@ class Reranker:
             self.error = f"Reranker inference failed: {exc}"
             self.logger.warning(self.error)
             self.model = None
+            # Enhanced fallback: blend with keyword overlap on failure
+            for hit in hits_list:
+                overlap = keyword_overlap_score(query, hit.text or "")
+                hit.score = 0.6 * hit.score + 0.4 * overlap
             return sorted(hits_list, key=lambda item: item.score, reverse=True)

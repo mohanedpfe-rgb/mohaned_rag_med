@@ -665,7 +665,10 @@ def _progressive_answer(answer: str, key: str) -> None:
 def ask_page(system) -> None:
     topbar(system, "Ask BookRAG")
     available = ready_docs(system)
-    st.markdown('<div class="section"><div class="sectiontitle">Grounded research console</div><div class="sectionsub">Ask the library, inspect answerability, and see the exact evidence that justified the response.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section"><div class="sectiontitle">Deterministic Answer Console</div><div class="sectionsub">Advanced LLM-free answer generation with NLP-powered evidence synthesis.</div>', unsafe_allow_html=True)
+    
+    # Add system info
+    st.info("🚀 **Advanced Deterministic System**: 100% LLM-free answer generation using advanced NLP techniques including semantic analysis, evidence ranking, and template-based synthesis.")
     names = ["All ready documents"] + [_doc_name(d) for d in available]
     scope = st.selectbox("Source scope", names, key="ask_scope")
     selected = None if scope == names[0] else {"document_id": available[names.index(scope) - 1].get("document_id")}
@@ -711,9 +714,15 @@ def ask_page(system) -> None:
     answer = str(answer_result.get("answer") or "")
     evidence = _evidence(answer_result)
     grounded = not bool(answer_result.get("abstained")) and str(answer_result.get("status", "")).upper() not in {"ABSTAIN", "GENERATION_ABSTAIN", "SYSTEM_NOT_READY", "NOT_SUPPORTED"}
+    
+    # Display deterministic system metadata if available
+    answer_type = answer_result.get("answer_type", "unknown")
+    confidence = answer_result.get("confidence", {}).get("top_score", 0.0)
+    quality_score = answer_result.get("quality_score", 0.0)
+    
     left, right = st.columns([1.28, .72])
     with left:
-        st.markdown(f'<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Answer</div><div class="sectionsub">{("Grounded response" if grounded else "Abstention / caution")} · {len(evidence)} evidence item(s)</div></div>{_status("GROUNDED" if grounded else "ABSTAIN")}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Deterministic Answer</div><div class="sectionsub">{("Grounded response" if grounded else "Abstention / caution")} · {len(evidence)} evidence item(s) · Type: {answer_type} · Quality: {quality_score:.2f}</div></div>{_status("GROUNDED" if grounded else "ABSTAIN")}</div>', unsafe_allow_html=True)
         reveal_key = hashlib.sha1(answer.encode()).hexdigest()[:12]
         if st.session_state.get(f"revealed_{reveal_key}"):
             st.markdown(f'<div class="answertext">{_esc(answer)}</div>', unsafe_allow_html=True)
@@ -721,6 +730,30 @@ def ask_page(system) -> None:
             _progressive_answer(answer, reveal_key)
         st.markdown('</div>', unsafe_allow_html=True)
         _render_answer_metrics(answer_result)
+        
+        # Display deterministic system info
+        if "reasoning_trace" in answer_result or "extraction_method" in answer_result:
+            st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Deterministic Analysis</div><div class="sectionsub">Advanced NLP processing details</div></div></div>', unsafe_allow_html=True)
+            
+            if "extraction_method" in answer_result:
+                st.caption(f"**Extraction Method**: {answer_result['extraction_method']}")
+            
+            if "reasoning_trace" in answer_result:
+                with st.expander("Reasoning Trace", expanded=False):
+                    for step in answer_result["reasoning_trace"]:
+                        st.text(f"• {step}")
+            
+            if "coherence_score" in answer_result:
+                st.caption(f"**Coherence Score**: {answer_result['coherence_score']:.3f}")
+            if "factual_accuracy" in answer_result:
+                st.caption(f"**Factual Accuracy**: {answer_result['factual_accuracy']:.3f}")
+            if "completeness_score" in answer_result:
+                st.caption(f"**Completeness**: {answer_result['completeness_score']:.3f}")
+            if "multi_document" in answer_result:
+                st.caption(f"**Multi-Document Synthesis**: {'Yes' if answer_result['multi_document'] else 'No'}")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+        
         st.markdown('<div class="section"><div class="sectionhead"><div><div class="sectiontitle">Evidence</div><div class="sectionsub">Open each source to inspect the retrieved passage and its score.</div></div></div>', unsafe_allow_html=True)
         if evidence:
             for i, item in enumerate(evidence, 1):

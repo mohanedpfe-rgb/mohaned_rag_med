@@ -25,10 +25,16 @@ def run(output: Path) -> dict[str, object]:
         backup_dir = root / "backups"
         source_dir.mkdir()
         db_path = source_dir / "operations.sqlite3"
-        with sqlite3.connect(db_path) as db:
+        db = sqlite3.connect(db_path)
+        try:
             db.execute("CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
-            db.executemany("INSERT INTO evidence(value) VALUES(?)", [("alpha",), ("beta",), ("gamma",)])
+            db.executemany(
+                "INSERT INTO evidence(value) VALUES(?)",
+                [("alpha",), ("beta",), ("gamma",)],
+            )
             db.commit()
+        finally:
+            db.close()
 
         manager = VerifiedBackupManager(source_dir, backup_dir)
         started = time.perf_counter()
@@ -42,11 +48,26 @@ def run(output: Path) -> dict[str, object]:
         checksum = manager.verify_backup(backup_dir_created)
 
         restored = root / "restored.sqlite3"
-        with sqlite3.connect(file_backup) as src, sqlite3.connect(restored) as dst:
+
+        src = sqlite3.connect(file_backup)
+        dst = sqlite3.connect(restored)
+        try:
             src.backup(dst)
+        finally:
+            try:
+                dst.close()
+            finally:
+                src.close()
+
         restore_ok = manager.verify_sqlite(restored)
-        with sqlite3.connect(restored) as db:
-            row_count = int(db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0])
+
+        db = sqlite3.connect(restored)
+        try:
+            row_count = int(
+                db.execute("SELECT COUNT(*) FROM evidence").fetchone()[0]
+            )
+        finally:
+            db.close()
 
         payload = {
             "created": time.time(),

@@ -47,6 +47,8 @@ def normalize_public_answer_path(result: dict[str, Any]) -> dict[str, Any]:
         return result
     normalized = dict(result)
     normalized["generation_path"] = "PATH_A_VERIFIED_FALLBACK"
+    # Force answer_plan to match the normalized generation path
+    normalized["answer_plan"] = {"selected_path": "PATH_A_VERIFIED_FALLBACK"}
     metadata = dict(normalized.get("generation_meta") or {})
     metadata.update({"attempted": True, "fallback": True, "recovered": True, "internal_path": "PATH_HYBRID_FALLBACK"})
     normalized["generation_meta"] = metadata

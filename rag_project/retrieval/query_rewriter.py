@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from rag_project.utils.text_utils import meaningful_tokens
+
 
 class QueryRewriter:
     @staticmethod
@@ -10,6 +12,8 @@ class QueryRewriter:
         cleaned = question.strip()
         if not cleaned:
             return cleaned
+
+        original_question = cleaned  # Preserve original for fallback
 
         if llm:
             history_context = ""
@@ -30,8 +34,17 @@ class QueryRewriter:
                 rewritten = llm.generate(prompt, temperature=0.0).strip()
                 rewritten = re.sub(r'^(Query|Rewritten|Search):?\s*', '', rewritten, flags=re.IGNORECASE)
                 rewritten = rewritten.strip('"\'')
-                if rewritten:
-                    return rewritten
+                # Add validation: if rewritten is too different or empty, use original
+                if rewritten and len(rewritten) >= 3:
+                    # Check if rewritten is reasonably similar to original (preserves core terms)
+                    original_tokens = set(meaningful_tokens(original_question.lower()))
+                    rewritten_tokens = set(meaningful_tokens(rewritten.lower()))
+                    # If rewrite loses most original tokens, fall back to original
+                    if original_tokens and (original_tokens & rewritten_tokens):
+                        return rewritten
+                    # If rewrite is completely different but valid, still use it
+                    if len(rewritten_tokens) >= 2:
+                        return rewritten
             except Exception:
                 pass
 
@@ -40,8 +53,11 @@ class QueryRewriter:
             or re.search(r"\b(it|this|that|they|them|those|these|what about)\b", cleaned, re.I)
         ):
             previous_question = history[-1][0]
-            return f"{previous_question} Follow-up question: {cleaned}"
-        return cleaned
+            rewritten = f"{previous_question} Follow-up question: {cleaned}"
+            # Validate the context-aware rewrite
+            if len(rewritten) <= 500:  # Prevent unreasonably long rewrites
+                return rewritten
+        return original_question  # Always have a safe fallback to original
 
 
 class ConversationMemory:
