@@ -54,7 +54,7 @@ class SafetyGate:
         # document-specific fact).  It must still reach retrieval; otherwise
         # the safety gate prevents the system from discovering that the
         # requested evidence is medical and available.
-        evidence_reference = any(term in q for term in ("marker", "evidence", "document", "indexed", "source", "figure", "table", "findings"))
+        evidence_reference = any(term in q for term in ("marker", "evidence", "document", "indexed", "source", "figure", "table", "findings", "findings", "conclusion", "result", "study", "experiment", "finding", "author", "paper", "research", "research", "section", "chapter", "page", "content", "summary"))
         has_medical=bool(set(meaningful_tokens(q))&MEDICAL_TERMS) or bool(extract_clinical_entities(query)) or evidence_reference; emergency=any(term in q for term in EMERGENCY_TERMS); real_patient=any(term in q for term in REAL_PATIENT_HINTS); high_rigor=any(term in q for term in HIGH_RIGOR_HINTS)
         if not has_medical:return SafetyDecision("ABSTAIN","outside_medical_scope",.95,emergency,real_patient,high_rigor,.25)
         threshold=.90 if real_patient else .85 if high_rigor else .75

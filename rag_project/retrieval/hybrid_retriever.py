@@ -102,13 +102,14 @@ class HybridRetriever:
         query_tokens = {token for token in meaningful_tokens(lowered_query) if len(token) >= 3}
         token_hits = sum(1 for token in query_tokens if token in lowered_text)
         bonus = min(0.18, 0.025 * token_hits)
+        # Reduced bonuses to prevent keyword stuffing from overriding semantic relevance
         asks_table = any(term in lowered_query for term in ("table", "tableau", "rows", "columns", "جدول"))
         is_table = "table" in lowered_text or str((hit.metadata or {}).get("representation_type", "")).casefold() == "table" or bool((hit.metadata or {}).get("table_id"))
-        if asks_table and is_table: bonus += 0.40
+        if asks_table and is_table: bonus += 0.20  # Reduced from 0.40
         asks_numeric = bool(_NUMERIC_PATTERN.search(lowered_query) or any(term in lowered_query for term in ("dose", "dosage", "how much", "how many", "value", "range", "جرعة", "قيمة")))
-        if asks_numeric and _NUMERIC_PATTERN.search(lowered_text): bonus += 0.28
+        if asks_numeric and _NUMERIC_PATTERN.search(lowered_text): bonus += 0.15  # Reduced from 0.28
         for phrase in ("hba1c", "glycemic control", "metformin", "diabetes mellitus"):
-            if phrase in lowered_query and phrase in lowered_text: bonus += 0.12
+            if phrase in lowered_query and phrase in lowered_text: bonus += 0.08  # Reduced from 0.12
         return min(0.90, bonus)
 
     def retrieve(self, query: str, top_k: int = 6, where: Dict[str, Any] | None = None) -> List[RetrievalHit]:
