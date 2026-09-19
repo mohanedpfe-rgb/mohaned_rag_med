@@ -133,8 +133,13 @@ class OllamaLLMClient:
         self.last_metrics = {k: data.get(k) for k in ("prompt_eval_count", "eval_count", "eval_duration", "load_duration", "total_duration") if k in data}
         message = data.get("message")
         if isinstance(message, dict) and isinstance(message.get("content"), str):
+            content = message["content"].strip()
+            if not content:
+                error = RuntimeError("Ollama returned an empty response.")
+                self._record_failure(error)
+                raise error
             self._record_success()
-            return message["content"].strip()[:20000]
+            return content[:20000]
         error = RuntimeError("Ollama returned an invalid chat response.")
         self._record_failure(error)
         raise error

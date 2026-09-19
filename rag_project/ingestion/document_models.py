@@ -32,6 +32,22 @@ class PageExtraction:
     entities: Dict[str, List[str]] = field(default_factory=dict)
     headings: List[str] = field(default_factory=list)
     representation_ids: List[str] = field(default_factory=list)
+    # Phase 15 fix: Add footnote extraction fields
+    footnotes: List[str] = field(default_factory=list)
+    footnote_ids: List[str] = field(default_factory=list)
+    references: List[str] = field(default_factory=list)
+    # Phase 14 fix: Add multi-page table tracking
+    table_continuation: bool = False
+    table_continuation_id: str | None = None
+    multi_page_table_groups: Dict[str, List[str]] = field(default_factory=dict)
+    # Phase 12 fix: Add figure-caption association
+    figure_caption_associations: Dict[str, str] = field(default_factory=dict)  # figure_id -> caption_id
+    # Phase 39 fix: Add document edition/version tracking
+    document_edition: str | None = None
+    document_version: str | None = None
+    publication_year: int | None = None
+    isbn: str | None = None
+    doi: str | None = None
 
 
 @dataclass

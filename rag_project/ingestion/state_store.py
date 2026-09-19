@@ -20,7 +20,7 @@ _ALLOWED_DOCUMENT_UPDATE_KEYS = {
     "ingestion_started_at", "ingestion_completed_at", "current_stage", "current_page", "total_pages", "status", "error",
     "parser_version", "ocr_config", "chunking_config", "embedding_model", "embedding_dimension",
     "index_state", "version_id", "lease_owner", "lease_expires_at", "heartbeat_at",
-    "ingestion_metrics",
+    "ingestion_metrics", "chunk_count", "embedding_count",
 }
 
 _ALLOWED_PAGE_UPDATE_KEYS = {
@@ -106,6 +106,8 @@ class IngestionStateStore:
                     lease_expires_at TEXT,
                     heartbeat_at TEXT,
                     ingestion_metrics TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    embedding_count INTEGER DEFAULT 0,
                     UNIQUE(content_hash)
                 );
                 CREATE INDEX IF NOT EXISTS idx_documents_path ON documents(file_path);
@@ -152,6 +154,8 @@ class IngestionStateStore:
                 "lease_expires_at": "ALTER TABLE documents ADD COLUMN lease_expires_at TEXT",
                 "heartbeat_at": "ALTER TABLE documents ADD COLUMN heartbeat_at TEXT",
                 "ingestion_metrics": "ALTER TABLE documents ADD COLUMN ingestion_metrics TEXT",
+                "chunk_count": "ALTER TABLE documents ADD COLUMN chunk_count INTEGER DEFAULT 0",
+                "embedding_count": "ALTER TABLE documents ADD COLUMN embedding_count INTEGER DEFAULT 0",
             }.items():
                 if column_name not in columns:
                     connection.execute(definition)
@@ -361,6 +365,22 @@ class IngestionStateStore:
 
     def recover_stale_documents(self) -> int:
         now=utc_now()
+        # First, get the documents that will be recovered to clean up their vectors
+        with self._connect() as connection:
+            cursor=connection.execute("SELECT document_id, version_id FROM documents WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", (now,))
+            stale_docs = cursor.fetchall()
+        
+        # Clean up partial vectors from vector store for stale documents
+        if hasattr(self, '_vector_store') and self._vector_store is not None:
+            for doc_id, version_id in stale_docs:
+                try:
+                    if version_id:
+                        self._vector_store.delete_version(doc_id, version_id)
+                except Exception:
+                    # Log but continue with recovery even if vector cleanup fails
+                    pass
+        
+        # Now update the database state
         with self._connect() as connection: cursor=connection.execute("UPDATE documents SET status = 'INTERRUPTED', current_stage = 'INTERRUPTED', index_state = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, heartbeat_at = NULL, modified_at = ? WHERE status IN ('RUNNING', 'DISCOVERED', 'VALIDATING', 'EXTRACTING', 'OCR', 'CHUNKING', 'EMBEDDING', 'INDEXING', 'VALIDATING_INDEX', 'INTERRUPTED', 'RECOVERING') AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?", (now, now))
         return cursor.rowcount
 

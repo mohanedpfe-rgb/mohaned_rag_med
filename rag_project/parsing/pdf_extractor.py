@@ -144,6 +144,48 @@ class PDFExtractor:
                         return captions
         return captions
 
+    @staticmethod
+    def _extract_footnotes(page: fitz.Page) -> list[str]:
+        """Extract footnotes and references from page."""
+        footnotes: list[str] = []
+        try:
+            blocks = page.get_text("blocks", sort=True)
+        except Exception:
+            return footnotes
+        
+        # Pattern for footnote markers and references
+        footnote_patterns = [
+            re.compile(r"^\s*\d+\.\s+", re.I),  # Numbered footnotes (1., 2., etc.)
+            re.compile(r"^\s*\[\d+\]", re.I),    # Bracketed footnotes [1], [2]
+            re.compile(r"^\s*\*\d+\*\s+", re.I),  # Asterisk footnotes *1*, *2*
+            re.compile(r"^\s*[a-z]+\.\s+", re.I),  # Letter footnotes a., b.
+        ]
+        
+        for block in blocks:
+            if len(block) <= 4:
+                continue
+            value = clean_text(str(block[4] or ""))
+            if not value:
+                continue
+            
+            for line in value.splitlines():
+                line = clean_text(line)
+                if not line:
+                    continue
+                    
+                # Check if line matches footnote patterns
+                is_footnote = any(pattern.match(line) for pattern in footnote_patterns)
+                
+                # Also detect references (e.g., "Ref. 1", "Reference 1")
+                is_reference = re.search(r"^\s*(?:ref\.?|reference|bibliography|citation)", line, re.I)
+                
+                if is_footnote or is_reference:
+                    footnotes.append(line[:500])
+                    if len(footnotes) >= 20:
+                        return footnotes
+        
+        return footnotes
+
     def extract(self, pdf_path: str | Path, document_id: str | None = None) -> list[PageExtraction]:
         return list(self.extract_iter(pdf_path, document_id))
 
@@ -201,6 +243,7 @@ class PDFExtractor:
                 printed_page_number = extract_page_number(text)
                 figure_ids = [f"{document_id}:p{physical_page}:figure:{i + 1}" for i in range(assessment["image_count"])]
                 figure_captions = self._extract_figure_captions(page)
+                footnotes = self._extract_footnotes(page)
 
                 extraction = PageExtraction(
                     document_id=document_id,
@@ -216,7 +259,7 @@ class PDFExtractor:
                     table_count=len(table_blocks),
                     has_images=assessment["has_images"],
                     blocks=[p.strip() for p in split_paragraphs(text) if p.strip()],
-                    metadata={"word_count": assessment["word_count"], "char_count": assessment["char_count"], "alpha_count": assessment["alpha_count"], "image_coverage": round(assessment["image_coverage"], 4), "char_density": round(assessment["char_density"], 6), "physical_page": physical_page, "printed_page_number": printed_page_number, "ocr_reasons": assessment["reasons"], "table_ids": table_ids, "figure_ids": figure_ids, "table_texts": table_blocks, "figure_captions": figure_captions, "evidence_types": (["text"] if text else []) + (["table"] if table_blocks else []) + (["figure"] if figure_ids else []), "quality_score": quality.quality, "routing_decision": quality.route, **enrichment},
+                    metadata={"word_count": assessment["word_count"], "char_count": assessment["char_count"], "alpha_count": assessment["alpha_count"], "image_coverage": round(assessment["image_coverage"], 4), "char_density": round(assessment["char_density"], 6), "physical_page": physical_page, "printed_page_number": printed_page_number, "ocr_reasons": assessment["reasons"], "table_ids": table_ids, "figure_ids": figure_ids, "table_texts": table_blocks, "figure_captions": figure_captions, "footnotes": footnotes, "evidence_types": (["text"] if text else []) + (["table"] if table_blocks else []) + (["figure"] if figure_ids else []) + (["footnote"] if footnotes else []), "quality_score": quality.quality, "routing_decision": quality.route, **enrichment},
                     source_path=str(pdf_file),
                     quality_score=quality.quality,
                     routing_decision=quality.route,
@@ -255,9 +298,11 @@ class PDFExtractor:
                 extraction.metadata["ocr_status"] = extraction.ocr_status
                 extraction.metadata["quality_score"] = extraction.quality_score
 
-                # Skip pages where OCR was required but failed - they contain no usable text
+                # Record pages where OCR was required but failed - they contain no usable text
                 if extraction.ocr_required and extraction.ocr_status == "failed":
-                    logger.warning("Skipping page %s: OCR required but failed (error: %s)", physical_page, extraction.metadata.get("ocr_error", "unknown"))
+                    logger.warning("Recording failed OCR page %s (error: %s)", physical_page, extraction.metadata.get("ocr_error", "unknown"))
+                    if self.state_store:
+                        self.state_store.record_page(extraction, cache_reference=EXTRACTION_CACHE_VERSION)
                     continue
 
                 if self.state_store:
@@ -269,10 +314,12 @@ class PDFExtractor:
                 pdf.close()
 
     def _extract_page_text(self, page: fitz.Page) -> str:
+        # First try text with sorting to handle multi-column layouts properly
         text = page.get_text("text", sort=True)
         if text and text.strip():
             return text
         try:
+            # Fallback to blocks extraction if text extraction fails
             text = page.get_text("blocks", sort=True)
             return "\n".join(str(block[4] or "") for block in text if len(block) > 4)
         except Exception:
@@ -291,10 +338,12 @@ class PDFExtractor:
                     markdown = table.to_markdown()
                     if markdown:
                         rendered.append(markdown)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Table extraction failed for page: %s", exc)
                     continue
             return "\n\n".join(rendered)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Table finder failed for page: %s", exc)
             return ""
 
     def _extract_table_blocks_from_text(self, text: str) -> list[str]:

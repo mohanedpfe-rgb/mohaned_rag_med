@@ -75,7 +75,30 @@ def normalize_whitespace(value: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    cleaned = unicodedata.normalize("NFKC", text or "").replace("\xa0", " ")
+    # Preserve chemical superscripts/subscripts before NFKC normalization
+    # Map Unicode subscript/superscript to readable notation
+    subscript_map = {
+        '\u2080': '_0', '\u2081': '_1', '\u2082': '_2', '\u2083': '_3', '\u2084': '_4',
+        '\u2085': '_5', '\u2086': '_6', '\u2087': '_7', '\u2088': '_8', '\u2089': '_9',
+        '\u208a': '_+', '\u208b': '_-', '\u208c': '_=', '\u208d': '(_)', '\u208e': '_n',
+    }
+    superscript_map = {
+        '\u2070': '^0', '\u00b9': '^1', '\u00b2': '^2', '\u00b3': '^3',
+        '\u2074': '^4', '\u2075': '^5', '\u2076': '^6', '\u2077': '^7', '\u2078': '^8', '\u2079': '^9',
+        '\u207a': '^+', '\u207b': '^-', '\u207c': '^=', '\u207d': '(^)', '\u207e': '^n',
+    }
+    
+    # Replace subscripts and superscripts with readable notation before normalization
+    text = text or ""
+    for sub_char, replacement in subscript_map.items():
+        text = text.replace(sub_char, replacement)
+    for sup_char, replacement in superscript_map.items():
+        text = text.replace(sup_char, replacement)
+    
+    # Join hyphenated line-breaks (e.g., "anti-\nhypertensive" → "antihypertensive")
+    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
+    
+    cleaned = unicodedata.normalize("NFKC", text).replace("\xa0", " ")
     cleaned = cleaned.replace("\r\n", "\n")
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -139,7 +162,7 @@ def extract_page_number(page_text: str) -> int | None:
         r"(?im)^\s*(?:page|p\.)\s*[:#-]?\s*(\d{1,4})\b",
         r"(?im)^\s*(\d{1,4})\s*(?:-|–|—)?\s*(?:of|/|\\)\s*\d{1,4}",
     ):
-        match = re.search(pattern, text[:500])
+        match = re.search(pattern, text[:2000])
         if match:
             try:
                 return int(match.group(1))

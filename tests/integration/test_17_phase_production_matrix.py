@@ -31,7 +31,8 @@ def _store(document_id: str = "integration-doc") -> tuple[VectorStore, tempfile.
     holder = tempfile.TemporaryDirectory(prefix="rag_integration_")
     store = VectorStore(Path(holder.name) / "index", collection_name="integration")
     text = "Diabetes mellitus diagnosis uses plasma glucose and HbA1c."
-    emb = [1.0, 0.5, 0.25, 0.125]
+    # Use production-ready 768-dimensional vectors instead of test-mode 4-dim vectors
+    emb = [1.0, 0.5, 0.25, 0.125] * 192  # Expand to 768 dimensions to match production
     store.add_documents([text], [{"document_id": document_id, "chunk_id": f"{document_id}:0", "version_id": "v1", "page_numbers": [1], "section_id": "s1", "parent_id": "p1", "index_state": "READY"}], [emb], [f"{document_id}:0"])
     return store, holder
 

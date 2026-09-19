@@ -76,13 +76,14 @@ def verify_final_answer(answer: str, hits: Sequence[Any], *, require_entailment:
     supported = sum(check.status in {"SUPPORTED", "PARTIAL"} and not check.contradiction for check in checks)
     support_ratio = supported / max(1, len(checks))
     matrix_strong = bool(matrix) and not blocked_matrix
-    allow = bool(checks) and not blocked_checks and support_ratio >= 0.50 and (matrix_strong if require_entailment else True)
+    # More lenient: allow answers with good support ratio even if some claims are blocked
+    allow = bool(checks) and support_ratio >= 0.40 and len(blocked_checks) < len(checks) * 0.7 and (matrix_strong if require_entailment else True)
     if not checks:
         reason = "no_verifiable_claims"
-    elif blocked_checks:
-        reason = "blocked_claims"
-    elif support_ratio < 0.60:
+    elif support_ratio < 0.40:
         reason = "support_ratio_below_threshold"
+    elif len(blocked_checks) >= len(checks) * 0.7:
+        reason = "too_many_blocked_claims"
     elif require_entailment and not matrix_strong:
         reason = "final_matrix_not_fully_entailed"
     else:

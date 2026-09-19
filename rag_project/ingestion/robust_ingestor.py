@@ -69,7 +69,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         if validation.get("valid") and validation.get("count", 0) > 0:
             archived_path = _unique_archive_path(system.settings.archive_dir, file_path, "duplicate")
             if file_path.resolve() != archived_path.resolve():
-                file_path.replace(archived_path)
+                shutil.copy2(file_path, archived_path)
+                file_path.unlink(missing_ok=True)
             return {"status": "skipped", "file_name": file_path.name, "document_id": existing["document_id"], "reason": "identical content already indexed and validated", "archive_path": str(archived_path.resolve())}
 
     document_id = existing["document_id"] if existing else (previous["document_id"] if previous else content_hash)
@@ -102,6 +103,11 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                 system.logger.exception("Failed to clean partial retry index for %s", file_path.name)
         if previous and previous.get("content_hash") != content_hash:
             system.state_store.delete_pages(document_id)
+            # Purge lexical rows before re-ingestion to prevent stale data
+            try:
+                system.vector_store.purge_lexical_rows(document_id)
+            except Exception:
+                system.logger.exception("Failed to purge lexical rows for %s", file_path.name)
 
         if not system.state_store.heartbeat_document(document_id, worker_id, lease_seconds=system.settings.ingestion_lease_seconds):
             raise RuntimeError("Ingestion lease was lost before processing started.")
@@ -185,12 +191,14 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
                     value = structure.get(key)
                     if isinstance(value, (dict, list, tuple)):
                         structure[key] = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                # Ensure page_numbers is stored as a list, not JSON string
+                page_numbers = chunk.page_numbers if isinstance(chunk.page_numbers, list) else []
                 structure.update(
                     {
                         "document_id": chunk.doc_id,
                         "chunk_id": chunk_id,
                         "file_name": chunk.file_name,
-                        "page_numbers": chunk.page_numbers,
+                        "page_numbers": page_numbers,
                         "chunk_index": global_index,
                         "document_type": classification.get("document_type", "unknown"),
                         "language": document_language,
@@ -266,9 +274,11 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
         same_target = file_path.resolve() == target.resolve()
         if target.exists() and not same_target:
             previous_target_backup = _unique_archive_path(system.settings.archive_dir, target, content_hash[:12])
-            target.replace(previous_target_backup)
+            shutil.copy2(target, previous_target_backup)
+            target.unlink(missing_ok=True)
         if not same_target:
-            file_path.replace(target)
+            shutil.copy2(file_path, target)
+            file_path.unlink(missing_ok=True)
             moved_into_processed = True
 
         system.vector_store.set_version_index_state(document_id, current_version_id, "READY")
@@ -279,6 +289,8 @@ def robust_ingest_file(system: Any, pdf_path: str | Path) -> dict[str, Any]:
             current_page=total_pages,
             total_pages=total_pages,
             file_path=str(target.resolve()),
+            chunk_count=chunk_count,
+            embedding_count=embedding_count,
             ingestion_metrics=json.dumps({"embedding_ms": round(embedding_ms, 3), "indexing_ms": round(indexing_ms, 3), "total": round((time.perf_counter() - started) * 1000, 3), "page_count": total_pages, "chunk_count": chunk_count, "embedding_count": embedding_count}, sort_keys=True),
         )
         published = True

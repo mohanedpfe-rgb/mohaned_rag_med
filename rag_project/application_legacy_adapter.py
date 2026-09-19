@@ -20,11 +20,11 @@ class LegacyProductionRAGAdapter:
     _DELEGATED_ATTRIBUTES = frozenset({
         "settings", "state_store", "vector_store", "retriever", "conversation_memory",
         "logger", "embedding_identity", "embedding_service", "embedder", "parser", "cloud_hybrid",
-        "citation_manager",
+        "citation_manager", "llm",
         "startup_quality", "_active_metadata_filter", "_answer_service_corpus_generation",
         "_hash_file", "health_report", "ingest_directory", "ingest_file",
         "cancel_all_ingests", "cancel_ingest", "_new_cancel_flag", "_remove_cancel_flag",
-        "clear_pdf_data", "apply_settings_in_place",
+        "clear_pdf_data", "apply_settings_in_place", "verify_index",
     })
 
     def __init__(self, settings: Any) -> None:
@@ -72,7 +72,17 @@ class LegacyProductionRAGAdapter:
         return [self.ingest_file(path) for path in sorted(root.glob("*.pdf"))]
 
     def health_report(self) -> dict[str, Any]:
-        return dict(self.delegate.health_report() or {})
+        # Handle missing health_report method gracefully
+        method = getattr(self.delegate, "health_report", None)
+        if callable(method):
+            return dict(method() or {})
+        # Return basic health status if method doesn't exist
+        return {
+            "ready": True,
+            "embedding": {"ok": True, "identity": getattr(self.delegate, "embedding_identity", "unknown")},
+            "index": {"status": "UNKNOWN"},
+            "feature_contract": {"all_resolved": False}
+        }
 
     def cancel_all_ingests(self) -> Any:
         method = getattr(self.delegate, "cancel_all_ingests", None)

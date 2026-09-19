@@ -226,11 +226,15 @@ class EmbeddingService:
             if self.provider == "sentence-transformers"
             else "ollama-api-v1"
         )
+        # Phase 84 fix: Add embedding model version management
+        # Instead of using "latest", use a deterministic version based on model name and dimension
+        model_version = f"v{self.dimension}" if not self.test_mode else "test-v1"
+        
         profile = EmbeddingProfile(
             provider=self.provider,
             model=self.model,
             dimension=self.dimension,
-            model_version="latest",
+            model_version=model_version,
             normalization="none",
             metric="cosine",
             implementation_version=implementation,
@@ -239,6 +243,10 @@ class EmbeddingService:
         return profile
 
     def discover_dimension(self) -> int:
+        # For test mode, set a default dimension to enable identity creation
+        if self.test_mode and self.dimension is None:
+            self.dimension = 768  # Standard test dimension
+        
         self.embed_query("__rag_dimension_probe__")
         if self.dimension is None:
             raise RuntimeError("Embedding dimension discovery produced no dimension.")
@@ -381,7 +389,7 @@ class EmbeddingService:
                 texts,
                 batch_size=max(1, min(self.batch_size, len(texts))),
                 show_progress_bar=False,
-                normalize_embeddings=False,
+                normalize_embeddings=True,  # Enable L2 normalization
                 convert_to_numpy=True,
             )
             self.provider = "sentence-transformers"
@@ -485,6 +493,22 @@ class EmbeddingService:
         self._validate(vectors, len(_as_list(vectors)))
 
     def _test_embedding(self, text: str) -> list[float]:
-        vector = [byte / 255.0 for byte in hashlib.sha256(text.encode("utf-8")).digest()]
+        # Generate 768-dimensional vectors to match production embedding dimension
+        # Use SHA256 and expand to 768 dimensions with reproducible hashing
+        hash_bytes = hashlib.sha256(text.encode("utf-8")).digest()
+        # Expand 32 bytes to 768 dimensions using reproducible expansion
+        vector = []
+        for i in range(768):
+            byte_index = i % 32
+            position_factor = (i // 32) / 24.0  # 768/32 = 24
+            byte_value = hash_bytes[byte_index]
+            value = (byte_value / 255.0) * (1.0 + position_factor * 0.1)
+            vector.append(value)
+        
+        # Apply L2 normalization for consistent cosine similarity
+        norm = math.sqrt(sum(v * v for v in vector))
+        if norm > 1e-12:
+            vector = [v / norm for v in vector]
+        
         self._validate([vector], 1)
         return vector

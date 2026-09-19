@@ -21,6 +21,13 @@ ACTIVE = {
     "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING",
     "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING", "INTERRUPTED", "RECOVERING",
 }
+
+# Include final stages for complete tracking
+TRACKING_STAGES = {
+    "RUNNING", "DISCOVERED", "VALIDATING", "EXTRACTING", "OCR", "CHUNKING",
+    "EMBEDDING", "INDEXING", "VALIDATING_INDEX", "BUILDING", "INTERRUPTED", "RECOVERING",
+    "READY", "COMPLETED", "FAILED", "FAILED_EMBEDDING", "FAILED_INDEXING"
+}
 STAGES = {
     "RUNNING": ("Starting", "The document has entered the pipeline."),
     "DISCOVERED": ("Discovered", "The PDF was accepted and queued."),
@@ -134,6 +141,32 @@ def ready_docs(system) -> list[dict[str, Any]]:
 
 def active_docs(system) -> list[dict[str, Any]]:
     return [d for d in docs(system) if str(d.get("status", "")).upper() in ACTIVE]
+
+
+def tracking_docs(system) -> list[dict[str, Any]]:
+    """Get all documents that are in any tracking stage, including recently completed ones."""
+    all_docs = docs(system)
+    # Include active documents plus recently completed ones (within last 5 minutes)
+    tracking = [d for d in all_docs if str(d.get("status", "")).upper() in TRACKING_STAGES]
+    
+    # Add recently completed documents (completed within last 5 minutes)
+    now = datetime.now(timezone.utc)
+    recently_completed = []
+    for doc in all_docs:
+        if str(doc.get("status", "")).upper() in {"READY", "COMPLETED"}:
+            completed_at = _utc(doc.get("ingestion_completed_at"))
+            if completed_at and (now - completed_at).total_seconds() < 300:  # 5 minutes
+                recently_completed.append(doc)
+    
+    # Combine tracking docs with recently completed, avoiding duplicates
+    seen_ids = {str(d.get("document_id")) for d in tracking}
+    for doc in recently_completed:
+        doc_id = str(doc.get("document_id"))
+        if doc_id not in seen_ids:
+            tracking.append(doc)
+            seen_ids.add(doc_id)
+    
+    return tracking
 
 
 def total_chunks(system) -> int:
@@ -371,7 +404,8 @@ def sidebar(system) -> None:
 
 
 def topbar(system, title: str) -> None:
-    active = len(active_docs(system))
+    tracking = tracking_docs(system)
+    active = len([d for d in tracking if str(d.get("status", "")).upper() in ACTIVE])
     st.markdown('<div class="top"><div><div class="crumb">BookRAG / Research workspace</div><div class="title">' + _esc(title) + '</div></div><div class="topright"><div class="chip"><span class="dot"></span>' + str(active) + ' processing</div></div></div>', unsafe_allow_html=True)
     _command_palette(system)
 
@@ -409,9 +443,37 @@ def upload_block(system) -> None:
 @st.fragment(run_every="2s")
 def global_live(system) -> None:
     active = active_docs(system)
+    tracking = tracking_docs(system)
     ready = ready_docs(system)
-    label = f"{len(active)} document(s) actively processing" if active else (f"{len(ready)} document(s) ready" if ready else "Workspace idle")
-    state = "PROCESSING" if active or _job_running() else ("READY" if ready else "IDLE")
+    
+    # Show processing status including recently completed
+    if active:
+        label = f"{len(active)} document(s) actively processing"
+        state = "PROCESSING"
+    elif tracking:
+        recently_completed = [d for d in tracking if str(d.get("status", "")).upper() in {"READY", "COMPLETED"}]
+        recently_failed = [d for d in tracking if "FAILED" in str(d.get("status", "")).upper()]
+        if recently_completed:
+            label = f"{len(recently_completed)} document(s) recently completed"
+            state = "COMPLETED"
+        elif recently_failed:
+            label = f"{len(recently_failed)} document(s) failed - review needed"
+            state = "FAILED"
+        else:
+            label = f"{len(tracking)} document(s) in pipeline"
+            state = "PROCESSING"
+    elif ready:
+        label = f"{len(ready)} document(s) ready"
+        state = "READY"
+    else:
+        label = "Workspace idle"
+        state = "IDLE"
+    
+    # Add job running status
+    if _job_running():
+        state = "PROCESSING"
+        label += " · background job active"
+    
     st.markdown(f'<div class="livebar"><span class="livepulse"></span><b>LIVE</b><span>{_esc(label)}</span><span class="grow"></span>{_status(state)}</div>', unsafe_allow_html=True)
 
 
@@ -430,6 +492,7 @@ def home(system) -> None:
     documents = docs(system)
     ready = ready_docs(system)
     active = active_docs(system)
+    tracking = tracking_docs(system)
     stats = [
         ("Documents", len(documents), "managed PDFs"),
         ("Ready", len(ready), "grounded research sources"),
@@ -593,8 +656,8 @@ def documents_page(system) -> None:
 @st.fragment(run_every="2s")
 def processing_live(system) -> None:
     topbar(system, "Live Processing")
-    active = active_docs(system)
-    if not active:
+    tracking = tracking_docs(system)
+    if not tracking:
         st.markdown('<div class="section"><div class="empty">No document is processing right now. Upload a PDF to start the live pipeline.</div></div>', unsafe_allow_html=True)
         return
     recent_events = events(system, limit=800)
@@ -602,7 +665,7 @@ def processing_live(system) -> None:
     for event in recent_events:
         latest_by_doc[str(event.get("document_id"))] = event
     stage_keys = list(STAGES.keys())
-    for document in active:
+    for document in tracking:
         document_id = str(document.get("document_id"))
         name = _doc_name(document)
         stage, description = _stage(document)
@@ -611,10 +674,29 @@ def processing_live(system) -> None:
         latest = latest_by_doc.get(document_id, {})
         stage_key = str(document.get("current_stage") or document.get("status") or "RUNNING").upper()
         current_idx = stage_keys.index(stage_key) if stage_key in stage_keys else 0
-        st.markdown(f'<div class="section"><div class="dochead"><div><div class="docname">{_esc(name)}</div><div class="meta">{_esc(stage)} · {_fmt_time(_elapsed(document.get("ingestion_started_at")))} elapsed</div></div>{_status(document.get("status"))}</div><div class="sectionsub">{_esc(description)}</div>', unsafe_allow_html=True)
-        st.progress(progress, text=f"Pipeline progress · {progress * 100:.0f}%")
+        status_value = str(document.get("status") or "UNKNOWN").upper()
+        is_completed = status_value in {"READY", "COMPLETED"}
+        is_failed = "FAILED" in status_value
+        
+        st.markdown(f'<div class="section"><div class="dochead"><div><div class="docname">{_esc(name)}</div><div class="meta">{_esc(stage)} · {_fmt_time(_elapsed(document.get("ingestion_started_at"), document.get("ingestion_completed_at")))} elapsed</div></div>{_status(document.get("status"))}</div><div class="sectionsub">{_esc(description)}</div>', unsafe_allow_html=True)
+        
+        if is_completed:
+            st.success(f"✓ Processing completed successfully in {_fmt_time(_elapsed(document.get("ingestion_started_at"), document.get("ingestion_completed_at")))}")
+        elif is_failed:
+            st.error(f"✗ Processing failed at {stage} stage")
+        else:
+            st.progress(progress, text=f"Pipeline progress · {progress * 100:.0f}%")
+        
         st.markdown('<div class="pipeline">' + ''.join(f'<div class="step {"on" if i < current_idx else ""} {"current" if i == current_idx else ""}"></div>' for i, _ in enumerate(stage_keys[:10])) + '</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="metricgrid"><div class="metric"><label>Current page</label><b>{current or "—"} / {total or "—"}</b><small>durable checkpoint</small></div><div class="metric"><label>Stage</label><b>{_esc(stage)}</b><small>persisted state</small></div><div class="metric"><label>Latest event</label><b>{_esc(latest.get("message") or latest.get("event_type") or "Working…")}</b><small>most recent state signal</small></div><div class="metric"><label>Elapsed</label><b>{_fmt_time(_elapsed(document.get("ingestion_started_at")))}</b><small>live wall-clock time</small></div></div>', unsafe_allow_html=True)
+        if is_completed:
+            final_time = _fmt_time(_elapsed(document.get("ingestion_started_at"), document.get("ingestion_completed_at")))
+            chunk_count = _int(document.get("chunk_count"))
+            embedding_count = _int(document.get("embedding_count"))
+            st.markdown(f'<div class="metricgrid"><div class="metric"><label>Total pages</label><b>{total or "—"}</b><small>document pages</small></div><div class="metric"><label>Chunks created</label><b>{chunk_count:,}</b><small>searchable sections</small></div><div class="metric"><label>Embeddings generated</label><b>{embedding_count:,}</b><small>semantic vectors</small></div><div class="metric"><label>Total time</label><b>{final_time}</b><small>processing duration</small></div></div>', unsafe_allow_html=True)
+        elif is_failed:
+            st.markdown(f'<div class="metricgrid"><div class="metric"><label>Failed at stage</label><b>{_esc(stage)}</b><small>processing stopped</small></div><div class="metric"><label>Pages processed</label><b>{current or "—"} / {total or "—"}</b><small>partial progress</small></div><div class="metric"><label>Error</label><b>{_esc(document.get("error") or "Unknown error")}</b><small>failure reason</small></div><div class="metric"><label>Elapsed</label><b>{_fmt_time(_elapsed(document.get("ingestion_started_at")))}</b><small>time to failure</small></div></div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="metricgrid"><div class="metric"><label>Current page</label><b>{current or "—"} / {total or "—"}</b><small>durable checkpoint</small></div><div class="metric"><label>Stage</label><b>{_esc(stage)}</b><small>persisted state</small></div><div class="metric"><label>Latest event</label><b>{_esc(latest.get("message") or latest.get("event_type") or "Working…")}</b><small>most recent state signal</small></div><div class="metric"><label>Elapsed</label><b>{_fmt_time(_elapsed(document.get("ingestion_started_at")))}</b><small>live wall-clock time</small></div></div>', unsafe_allow_html=True)
         page_rows = pages(system, document_id)
         if page_rows:
             done = sum(1 for row in page_rows if str(row.get("extraction_status", "")).upper() == "COMPLETED")
@@ -629,6 +711,16 @@ def processing_live(system) -> None:
 
 def processing_page(system) -> None:
     processing_live(system)
+    
+    # Auto-navigate to home if all documents are completed and no active processing
+    tracking = tracking_docs(system)
+    active = [d for d in tracking if str(d.get("status", "")).upper() in ACTIVE]
+    recently_completed = [d for d in tracking if str(d.get("status", "")).upper() in {"READY", "COMPLETED"}]
+    
+    if not active and recently_completed and not _job_running():
+        st.info("🎉 All documents have completed processing! Navigate to 'Ask BookRAG' to start querying your documents.")
+        if st.button("Go to Ask BookRAG", key="auto_navigate_ask", type="primary"):
+            _navigate("Ask BookRAG")
 
 
 def _render_answer_metrics(result: dict[str, Any]) -> None:

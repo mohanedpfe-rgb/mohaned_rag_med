@@ -338,6 +338,9 @@ def _scan_once(system: Any) -> None:
 
     if _WORKING:
         try:
+            # Inject vector_store into state_store for stale lease recovery cleanup
+            if hasattr(system, 'vector_store') and not hasattr(system.state_store, '_vector_store'):
+                system.state_store._vector_store = system.vector_store
             recovered = int(system.state_store.recover_stale_documents() or 0)
         except Exception:
             recovered = 0

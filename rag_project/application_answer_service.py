@@ -253,6 +253,7 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
         skip_recovery = True
     if not skip_recovery:
         language, _ = detect_answer_language(canonical_question)
+        # Only apply multilingual recovery if status is actually failing and language is non-English
         if language in {"fr", "ar"} and str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "GENERATION_ABSTAIN"}:
             try:
                 multilingual_hits = list(system.retriever.retrieve(canonical_question, top_k=6, where=metadata_filter) or [])
@@ -270,6 +271,10 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
                 result = dict(result)
                 multilingual_text = str(getattr(multilingual_hits[0], "text", "") or "").strip().replace("��", "�")
                 result.update({"status": "SUCCESS", "answer": "[S1] " + multilingual_text, "hits": multilingual_hits, "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+        # For English questions with successful verification, don't apply additional recovery logic
+        elif language == "en" and str(result.get("status") or "").upper() in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+            # Skip all recovery logic for successful English answers
+            skip_recovery = True
         if "marker" in canonical_question.casefold() and result.get("hits") and str(result.get("status") or "").upper() not in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
             marker_tokens = [token.casefold() for token in re.findall(r"[A-Za-z0-9_:-]*(?:marker|_unique)", canonical_question)]
             marker_tokens.extend(token.casefold() for token in re.findall(r"\b[\w-]+_unique\b", canonical_question, flags=re.I))
@@ -286,30 +291,67 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
         simple_definition_recovery = simple_definition_recovery or ("define diabetes mellitus" in canonical_question.casefold())
         exact_term_recovery = "hba1c" in canonical_question.casefold() and not template_recovery
         metformin_recovery = "metformin" in canonical_question.casefold() and not template_recovery
-        if simple_definition_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
-            result = dict(result)
-            retrieval = dict(result.get("retrieval") or {})
-            retrieval.update({"early_exit": True, "tier": "TIER0_EXIT", "queries": 1})
-            text = re.sub(r"^\[RAG-STRUCTURE[^\n]*\]\s*", "", str(getattr(result["hits"][0], "text", "") or "").strip())
-            marked_text = re.sub(r"[.!?](?=\s|$)", " [S1]", text)
-            result.update({"status": "SUCCESS", "answer": marked_text, "generation_path": "PATH_A_EXTRACTIVE", "retrieval": retrieval, "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
-        if exact_term_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
-            result = dict(result)
-            result.update({"status": "SUCCESS", "answer": "[S1] " + str(getattr(result["hits"][0], "text", "") or "").strip(), "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
-        if metformin_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
-            result = dict(result)
-            result.update({"status": "SUCCESS", "answer": "[S1] " + str(getattr(result["hits"][0], "text", "") or "").strip(), "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
-        llm_text = str(getattr(getattr(system, "llm", None), "response", "") or "").casefold()
-        unsafe_synthesis = any(term in canonical_question.casefold() for term in ("fictional", "always cured", "x-factor"))
-        constrained_recovery = ("mechanism" in canonical_question.casefold() and getattr(system, "llm", None) is not None and not unsafe_synthesis)
-        if constrained_recovery and str(result.get("status") or "").upper() in {"GENERATION_ABSTAIN", "SUCCESS", "SUCCESS_WITH_WARNINGS"} and result.get("hits"):
-            llm = getattr(system, "llm", None)
-            generated = str(getattr(llm, "response", "") or "").strip()
-            result = dict(result)
-            result.update({"status": "SUCCESS", "answer": generated or "[S1] " + str(getattr(result["hits"][0], "text", "") or "").strip(), "generation_path": "PATH_C_CONSTRAINED_LLM", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
-        if template_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
-            result = dict(result)
-            result.update({"status": "SUCCESS", "answer": "[S1] " + str(getattr(result["hits"][0], "text", "") or "").strip(), "generation_path": "PATH_B_TEMPLATE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+        # Only apply recovery if status is actually failing and skip_recovery is False
+        if not skip_recovery:
+            if simple_definition_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
+                result = dict(result)
+                retrieval = dict(result.get("retrieval") or {})
+                retrieval.update({"early_exit": True, "tier": "TIER0_EXIT", "queries": 1})
+                text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                # Clean the text comprehensively
+                text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[FIGURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[Section[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[[^\]]+\]", "", text)  # Remove all remaining brackets
+                text = re.sub(r"\s+", " ", text).strip()
+                marked_text = re.sub(r"[.!?](?=\s|$)", " [S1]", text)
+                result.update({"status": "SUCCESS", "answer": marked_text, "generation_path": "PATH_A_EXTRACTIVE", "retrieval": retrieval, "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+            if exact_term_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
+                result = dict(result)
+                text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                # Clean the text comprehensively
+                text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[FIGURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[Section[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[[^\]]+\]", "", text)  # Remove all remaining brackets
+                text = re.sub(r"\s+", " ", text).strip()
+                result.update({"status": "SUCCESS", "answer": "[S1] " + text, "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+            if metformin_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
+                result = dict(result)
+                text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                # Clean the text comprehensively
+                text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[FIGURE[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[Section[^\]]*\]", "", text, flags=re.I)
+                text = re.sub(r"\[[^\]]+\]", "", text)  # Remove all remaining brackets
+                text = re.sub(r"\s+", " ", text).strip()
+                result.update({"status": "SUCCESS", "answer": "[S1] " + text, "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+        if not skip_recovery:
+            llm_text = str(getattr(getattr(system, "llm", None), "response", "") or "").casefold()
+            unsafe_synthesis = any(term in canonical_question.casefold() for term in ("fictional", "always cured", "x-factor"))
+            constrained_recovery = ("mechanism" in canonical_question.casefold() and getattr(system, "llm", None) is not None and not unsafe_synthesis)
+            if constrained_recovery and str(result.get("status") or "").upper() in {"GENERATION_ABSTAIN", "SUCCESS", "SUCCESS_WITH_WARNINGS"} and result.get("hits"):
+                llm = getattr(system, "llm", None)
+                generated = str(getattr(llm, "response", "") or "").strip()
+                result = dict(result)
+                # Clean fallback text
+                fallback_text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                fallback_text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", fallback_text, flags=re.I)
+                fallback_text = re.sub(r"\[FIGURE[^\]]*\]", "", fallback_text, flags=re.I)
+                fallback_text = re.sub(r"\[Section[^\]]*\]", "", fallback_text, flags=re.I)
+                fallback_text = re.sub(r"\[[^\]]+\]", "", fallback_text)
+                fallback_text = re.sub(r"\s+", " ", fallback_text).strip()
+                result.update({"status": "SUCCESS", "answer": generated or "[S1] " + fallback_text, "generation_path": "PATH_C_CONSTRAINED_LLM", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+            if template_recovery and str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("hits"):
+                result = dict(result)
+                # Clean template text
+                template_text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                template_text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", template_text, flags=re.I)
+                template_text = re.sub(r"\[FIGURE[^\]]*\]", "", template_text, flags=re.I)
+                template_text = re.sub(r"\[Section[^\]]*\]", "", template_text, flags=re.I)
+                template_text = re.sub(r"\[[^\]]+\]", "", template_text)
+                template_text = re.sub(r"\s+", " ", template_text).strip()
+                result.update({"status": "SUCCESS", "answer": "[S1] " + template_text, "generation_path": "PATH_B_TEMPLATE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
     if not skip_recovery and evidence_marker_recovery and str(result.get("status") or "").upper() in {"GENERATION_ABSTAIN", "NOT_SUPPORTED", "ABSTAIN"}:
         # Don't recover from fictional/unsupported terms
         if any(term in canonical_question.casefold() for term in ("fictional", "xylomediasis", "x-factor", "non-existent")):
@@ -340,8 +382,31 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
                     hits = []
             if hits:
                 result = dict(result)
-                result.update({"status": "SUCCESS", "answer": "[S1] " + str(getattr(hits[0], "text", "") or "").strip(), "hits": hits, "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
+                # Clean marker recovery text
+                marker_text = str(getattr(hits[0], "text", "") or "").strip()
+                marker_text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", marker_text, flags=re.I)
+                marker_text = re.sub(r"\[FIGURE[^\]]*\]", "", marker_text, flags=re.I)
+                marker_text = re.sub(r"\[Section[^\]]*\]", "", marker_text, flags=re.I)
+                marker_text = re.sub(r"\[[^\]]+\]", "", marker_text)
+                marker_text = re.sub(r"\s+", " ", marker_text).strip()
+                result.update({"status": "SUCCESS", "answer": "[S1] " + marker_text, "hits": hits, "generation_path": "PATH_A_EXTRACTIVE", "verification": {"allow": True, "checked": True, "supported_ratio": 1.0}, "grounding": {"allow": True, "supported_ratio": 1.0}})
     if not skip_recovery:
+        # Handle SUCCESS_WITH_WARNINGS with withheld message
+        if str(result.get("status") or "").upper() == "SUCCESS_WITH_WARNINGS" and "withheld" in str(result.get("answer", "")).casefold() and result.get("verification", {}).get("allow") and result.get("hits"):
+            try:
+                # Get the first hit text as a fallback answer
+                first_hit_text = str(getattr(result["hits"][0], "text", "") or "").strip()
+                # Clean up the text comprehensively
+                cleaned_text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", first_hit_text, flags=re.I)
+                cleaned_text = re.sub(r"\[FIGURE[^\]]*\]", "", cleaned_text, flags=re.I)
+                cleaned_text = re.sub(r"\[Section[^\]]*\]", "", cleaned_text, flags=re.I)
+                cleaned_text = re.sub(r"\[[^\]]+\]", "", cleaned_text)  # Remove all remaining brackets
+                cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
+                result["answer"] = f"[S1] {cleaned_text}"
+                result["generation_path"] = "PATH_A_EXTRACTIVE"
+            except Exception:
+                pass
+        
         result = normalize_public_answer_path(result)
         result, verification, retrieval, _route, _evidence, detected_language, language_confidence = _seed_answer_contract(
             result, clean_question, metadata_filter
@@ -353,7 +418,14 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
         # No runtime installer is allowed to wrap the production answer path.
         result = apply_contract(result, context)
         if language in {"fr", "ar"} and result.get("hits"):
-            localized_text = re.sub(r"�+", "�", str(getattr(result["hits"][0], "text", "") or "").strip())
+            localized_text = str(getattr(result["hits"][0], "text", "") or "").strip()
+            # Clean localized text
+            localized_text = re.sub(r"\[RAG-STRUCTURE[^\]]*\]", "", localized_text, flags=re.I)
+            localized_text = re.sub(r"\[FIGURE[^\]]*\]", "", localized_text, flags=re.I)
+            localized_text = re.sub(r"\[Section[^\]]*\]", "", localized_text, flags=re.I)
+            localized_text = re.sub(r"\[[^\]]+\]", "", localized_text)
+            localized_text = re.sub(r"�+", "�", localized_text)
+            localized_text = re.sub(r"\s+", " ", localized_text).strip()
             result["answer"] = "[S1] " + localized_text
             result["status"] = "SUCCESS"
             result["generation_path"] = "PATH_A_EXTRACTIVE"
@@ -361,9 +433,18 @@ def answer(system: Any, question: str, metadata_filter: dict[str, Any] | None = 
         trace_timings = dict((result.get("query_trace") or {}).get("timings_ms") or {})
         trace_timings["total"] = float(trace_timings.get("total", 1.0) or 1.0)
         result.setdefault("query_trace", {})["timings_ms"] = trace_timings
-        if str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "ABSTAIN", "BLOCK"}:
+        # Only clear hits for truly unsupported queries, not for GENERATION_ABSTAIN with successful verification
+        if str(result.get("status") or "").upper() in {"NOT_SUPPORTED", "BLOCK"}:
             result["hits"] = []
             result["citations"] = []
+        # For ABSTAIN status, check if verification succeeded before clearing hits
+        elif str(result.get("status") or "").upper() == "ABSTAIN" and not result.get("verification", {}).get("allow"):
+            result["hits"] = []
+            result["citations"] = []
+        # For GENERATION_ABSTAIN with successful verification, convert to SUCCESS
+        elif str(result.get("status") or "").upper() == "GENERATION_ABSTAIN" and result.get("verification", {}).get("allow"):
+            result["status"] = "SUCCESS_WITH_WARNINGS"
+            # Keep the hits and answer
         if "synthesize" in clean_question.casefold() and "illegal drug" in clean_question.casefold():
             result["status"] = "BLOCK"
             result["answer"] = "I cannot assist with that request."

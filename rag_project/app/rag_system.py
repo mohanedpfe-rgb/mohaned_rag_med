@@ -879,6 +879,8 @@ class RAGSystem:
                 ingestion_completed_at=utc_now(),
                 current_page=classification["page_count"],
                 file_path=str(target.resolve()),
+                chunk_count=chunk_count,
+                embedding_count=embedding_count,
                 ingestion_metrics=json.dumps(
                     {
                         **stage_timings,
@@ -1157,34 +1159,53 @@ class RAGSystem:
         generation_started = time.perf_counter()
         cited_markers: set[int] = set()
         
-        # Use deterministic answer generator instead of LLM
+        # Use LLM for answer generation when available, fall back to deterministic generator
         try:
-            deterministic_result = self.deterministic_generator.generate_answer(question, selected_hits)
-            answer = deterministic_result.answer_text
-            cited_markers = set(range(1, len(deterministic_result.citations) + 1))
-            
-            # Add reasoning trace to answer if available
-            if deterministic_result.reasoning_trace:
-                reasoning_text = "\n\n[Reasoning: " + "; ".join(deterministic_result.reasoning_trace) + "]"
-                if len(answer + reasoning_text) < 2000:  # Only add if not too long
-                    answer += reasoning_text
-            
-            # Add quality score to metadata
-            quality_info = f"\n\n[Answer Quality Score: {deterministic_result.quality_score:.3f}, Confidence: {deterministic_result.confidence:.3f}]"
-            if len(answer + quality_info) < 2000:
-                answer += quality_info
+            # Try LLM first for better answer quality
+            if self.llm:
+                llm_prompt = f"Question: {question}\n\nContext from relevant documents:\n{context}\n\nPlease provide a comprehensive answer based only on the given context. Include specific details and cite sources using [S1], [S2], etc. notation."
+                llm_answer = self.llm.generate(llm_prompt)
+                if llm_answer and len(llm_answer.strip()) > 20:
+                    answer = llm_answer
+                    # Generate citations based on selected hits
+                    cited_markers = set(range(1, len(selected_hits) + 1))
+                    # Mark as LLM generation for testing
+                    self.logger.info("LLM generation successful, answer length: %d", len(answer))
+                else:
+                    raise RuntimeError("LLM returned empty or too short response")
+            else:
+                raise RuntimeError("LLM not available")
                 
         except Exception as exc:
-            self.logger.warning("Deterministic generation failed; returning extractive evidence: %s", exc)
-            # Enhanced fallback: provide more structured extractive answer
-            if selected_hits:
-                # Sort by score and take top 3 hits
-                top_hits = sorted(selected_hits, key=lambda h: h.score, reverse=True)[:3]
-                extractive_answer = "Based on the available evidence:\n\n"
-                for i, hit in enumerate(top_hits):
-                    source_info = f"{hit.metadata.get('file_name', 'unknown')} (pages {hit.metadata.get('page_numbers', [])})"
-                    extractive_answer += f"[S{i+1}] {source_info}\n{hit.text}\n\n"
-                answer = extractive_answer
+            self.logger.warning("LLM generation failed (%s); using deterministic generator: %s", type(exc).__name__, exc)
+            # Fallback to deterministic generator
+            try:
+                deterministic_result = self.deterministic_generator.generate_answer(question, selected_hits)
+                answer = deterministic_result.answer_text
+                cited_markers = set(range(1, len(deterministic_result.citations) + 1))
+                
+                # Add reasoning trace to answer if available
+                if deterministic_result.reasoning_trace:
+                    reasoning_text = "\n\n[Reasoning: " + "; ".join(deterministic_result.reasoning_trace) + "]"
+                    if len(answer + reasoning_text) < 2000:  # Only add if not too long
+                        answer += reasoning_text
+                
+                # Add quality score to metadata
+                quality_info = f"\n\n[Answer Quality Score: {deterministic_result.quality_score:.3f}, Confidence: {deterministic_result.confidence:.3f}]"
+                if len(answer + quality_info) < 2000:
+                    answer += quality_info
+                    
+            except Exception as det_exc:
+                self.logger.warning("Deterministic generation failed; returning extractive evidence: %s", det_exc)
+                # Enhanced fallback: provide more structured extractive answer
+                if selected_hits:
+                    # Sort by score and take top 3 hits
+                    top_hits = sorted(selected_hits, key=lambda h: h.score, reverse=True)[:3]
+                    extractive_answer = "Based on the available evidence:\n\n"
+                    for i, hit in enumerate(top_hits):
+                        source_info = f"{hit.metadata.get('file_name', 'unknown')} (pages {hit.metadata.get('page_numbers', [])})"
+                        extractive_answer += f"[S{i+1}] {source_info}\n{hit.text}\n\n"
+                    answer = extractive_answer
                 cited_markers = set(range(1, len(top_hits) + 1))
             else:
                 answer = (

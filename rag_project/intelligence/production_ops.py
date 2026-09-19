@@ -313,11 +313,28 @@ class RetrainingManager:
 
 class BackupManager:
     def __init__(self, source_dir: str | Path, backup_dir: str | Path, keep: int = 28): self.source_dir = Path(source_dir); self.backup_dir = Path(backup_dir); self.keep = max(1, keep); self.backup_dir.mkdir(parents=True, exist_ok=True)
+    
+    def _wal_checkpoint(self, db_path: Path) -> None:
+        """Execute WAL checkpoint before backup to ensure consistency."""
+        try:
+            import sqlite3
+            # Only attempt checkpoint for SQLite files
+            if db_path.suffix in {'.sqlite', '.sqlite3', '.db'}:
+                with sqlite3.connect(str(db_path)) as conn:
+                    conn.execute("PRAGMA wal_checkpoint(FULL)")
+                    conn.commit()
+        except Exception:
+            # Log but continue - checkpoint failure shouldn't prevent backup
+            pass
+    
     def backup(self) -> Path:
         stamp = time.strftime("%Y%m%d-%H%M%S"); destination = self.backup_dir / stamp; destination.mkdir(parents=True, exist_ok=True)
         if self.source_dir.exists():
             for item in self.source_dir.rglob("*"):
-                if item.is_file(): target = destination / item.relative_to(self.source_dir); target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(item, target)
+                if item.is_file():
+                    # Execute WAL checkpoint for SQLite files before copy
+                    self._wal_checkpoint(item)
+                    target = destination / item.relative_to(self.source_dir); target.parent.mkdir(parents=True, exist_ok=True); shutil.copy2(item, target)
         manifests = sorted((p for p in self.backup_dir.iterdir() if p.is_dir()), key=lambda p: p.name, reverse=True)
         for stale in manifests[self.keep:]: shutil.rmtree(stale, ignore_errors=True)
         return destination

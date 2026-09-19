@@ -1,0 +1,206 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Write bug condition exploration tests (BEFORE implementing any fix)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678947273
+      },
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678954515
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing any fix)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948638
+      }
+    ],
+    "3.1 Fix A1 — FileMonitor duplicate file detection (`rag_project/ingestion/file_monitor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948733
+      }
+    ],
+    "3.2 Fix A2 — Self-replace guard in `robust_ingestor.py` (`rag_project/ingestion/robust_ingestor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948793
+      }
+    ],
+    "3.3 Fix A3 — OCR-failed page record in `pdf_extractor.py` (`rag_project/parsing/pdf_extractor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948856
+      }
+    ],
+    "3.4 Fix A4 — Two-column layout detection in `pdf_extractor.py` (`rag_project/parsing/pdf_extractor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948932
+      }
+    ],
+    "3.5 Fix A5 — OCR scale floor 0.25→0.5 in `ocr_service.py` (`rag_project/ocr/ocr_service.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678948984
+      }
+    ],
+    "3.6 Fix A6 — Table exception swallowing in `pdf_extractor.py` (`rag_project/parsing/pdf_extractor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949033
+      }
+    ],
+    "3.7 Fix A7 — Page number search limited to 500 chars in `pdf_extractor.py` (`rag_project/parsing/pdf_extractor.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949083
+      }
+    ],
+    "3.8 Fix B1 — NFKC destroys superscripts/subscripts in `text_utils.py` (`rag_project/utils/text_utils.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949154
+      }
+    ],
+    "3.9 Fix B2 — Hyphenated line-break not joined in `text_utils.py` (`rag_project/utils/text_utils.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949205
+      }
+    ],
+    "3.10 Fix B3 — OCR post-correction missing — create `ocr_corrector.py` and wire up (`rag_project/ocr/ocr_corrector.py`, `rag_project/intelligence/pdf_intelligence.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949259
+      }
+    ],
+    "3.11 Fix C1 — Chapter state not carried across batch boundaries in `semantic_chunker.py` (`rag_project/chunking/semantic_chunker.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949309
+      }
+    ],
+    "3.12 Fix C2 — Cross-document section ID collision in `semantic_chunker.py` (`rag_project/chunking/semantic_chunker.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949359
+      }
+    ],
+    "3.13 Fix C3 — Lexical rows not purged before re-ingestion (`rag_project/ingestion/robust_ingestor.py`, `rag_project/knowledge/vector_store.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949442
+      }
+    ],
+    "3.14 Fix D1 — Test-mode dimension mismatch in `embedding_service.py` (`rag_project/embeddings/embedding_service.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949501
+      }
+    ],
+    "3.15 Fix D2 — Embeddings not normalized in `embedding_service.py` (`rag_project/embeddings/embedding_service.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949549
+      }
+    ],
+    "3.16 Fix D3 — page_numbers stored as JSON string in `vector_store.py` (`rag_project/knowledge/vector_store.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949598
+      }
+    ],
+    "3.17 Fix E1 — Chroma filter on JSON-string field in `hybrid_retriever.py` (`rag_project/retrieval/hybrid_retriever.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949658
+      }
+    ],
+    "3.18 Fix E2 — Token budget undercounting in `context_builder.py` (`rag_project/retrieval/context_builder.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949730
+      }
+    ],
+    "3.19 Fix E3 — `pass` instead of `continue` in `context_builder.py` (`rag_project/retrieval/context_builder.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949771
+      }
+    ],
+    "3.20 Fix E4 — Empty LLM response no fallback in `ollama_llm_client.py` (`rag_project/generation/ollama_llm_client.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949816
+      }
+    ],
+    "3.21 Fix F1 — Stale-lease recovery missing vector cleanup in `state_store.py` (`rag_project/ingestion/state_store.py`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949857
+      }
+    ],
+    "3.22 Fix F2 — SQLite backup without WAL checkpoint (operational backup workflow/scripts)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949905
+      }
+    ],
+    "3.23 Fix F3 — Integration tests bypass `prepare_runtime` (all affected files under `rag_project/testing/`)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678949955
+      }
+    ],
+    "3.24 Verify bug condition exploration tests now pass (all 23)": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678950004
+      }
+    ],
+    "3.25 Verify preservation property tests still pass": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678950056
+      }
+    ],
+    "4. Checkpoint — Ensure all tests pass": [
+      {
+        "executionId": "9adffece-6b50-49eb-b02e-ef708a2fb76d",
+        "chatSessionId": "sess_d0eb7017-750f-48ed-ba34-088586dec4ec",
+        "timestamp": 1789678950106
+      }
+    ]
+  }
+}

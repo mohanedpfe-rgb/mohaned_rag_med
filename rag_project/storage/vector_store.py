@@ -6,6 +6,7 @@ import re
 import sqlite3
 import shutil
 import time
+import datetime
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
@@ -70,7 +71,96 @@ class VectorStore:
 
     @staticmethod
     def _lexical_tokens(text: str) -> list[str]:
-        return re.findall(r"\w+", str(text or "").casefold(), flags=re.UNICODE)
+        # Phase 66 fix: Add medical abbreviation expansion for better lexical search
+        base_tokens = re.findall(r"\w+", str(text or "").casefold(), flags=re.UNICODE)
+        
+        # Medical abbreviation dictionary
+        medical_abbreviations = {
+            'bp': 'blood pressure',
+            'hr': 'heart rate',
+            'rr': 'respiratory rate',
+            'temp': 'temperature',
+            'wbc': 'white blood cell',
+            'rbc': 'red blood cell',
+            'hgb': 'hemoglobin',
+            'hct': 'hematocrit',
+            'plt': 'platelet',
+            'na': 'sodium',
+            'k': 'potassium',
+            'cl': 'chloride',
+            'co2': 'carbon dioxide',
+            'bun': 'blood urea nitrogen',
+            'cr': 'creatinine',
+            'glu': 'glucose',
+            'ast': 'aspartate aminotransferase',
+            'alt': 'alanine aminotransferase',
+            'alp': 'alkaline phosphatase',
+            'tbil': 'total bilirubin',
+            'dbil': 'direct bilirubin',
+            'ib': 'indirect bilirubin',
+            'tsh': 'thyroid stimulating hormone',
+            't3': 'triiodothyronine',
+            't4': 'thyroxine',
+            'hba1c': 'hemoglobin a1c',
+            'hdl': 'high density lipoprotein',
+            'ldl': 'low density lipoprotein',
+            'bmi': 'body mass index',
+            'bp': 'blood pressure',
+            'map': 'mean arterial pressure',
+            'cvp': 'central venous pressure',
+            'icp': 'intracranial pressure',
+            'peep': 'positive end expiratory pressure',
+            'fio2': 'fraction of inspired oxygen',
+            'spo2': 'oxygen saturation',
+            'abg': 'arterial blood gas',
+            'cbc': 'complete blood count',
+            'bmp': 'basic metabolic panel',
+            'cmp': 'comprehensive metabolic panel',
+            'pt': 'prothrombin time',
+            'ptt': 'partial thromboplastin time',
+            'inr': 'international normalized ratio',
+            'dvt': 'deep vein thrombosis',
+            'pe': 'pulmonary embolism',
+            'mi': 'myocardial infarction',
+            'chf': 'congestive heart failure',
+            'copd': 'chronic obstructive pulmonary disease',
+            'uti': 'urinary tract infection',
+            'cva': 'cerebrovascular accident',
+            'tbi': 'traumatic brain injury',
+            'msa': 'multiple system atrophy',
+            'osa': 'obstructive sleep apnea',
+            'cpr': 'cardiopulmonary resuscitation',
+            'acls': 'advanced cardiac life support',
+            'bls': 'basic life support',
+            'cpr': 'cardiopulmonary resuscitation',
+            'ecg': 'electrocardiogram',
+            'eeg': 'electroencephalogram',
+            'ct': 'computed tomography',
+            'mri': 'magnetic resonance imaging',
+            'iv': 'intravenous',
+            'im': 'intramuscular',
+            'sc': 'subcutaneous',
+            'po': 'oral',
+            'prn': 'as needed',
+            'stat': 'immediately',
+            'bid': 'twice daily',
+            'tid': 'three times daily',
+            'qid': 'four times daily',
+            'qhs': 'at bedtime',
+            'qac': 'before meals',
+            'qpc': 'after meals',
+            'prn': 'as needed',
+        }
+        
+        expanded_tokens = list(base_tokens)
+        
+        # Expand abbreviations
+        for token in base_tokens:
+            if token in medical_abbreviations:
+                expansion = medical_abbreviations[token]
+                expanded_tokens.extend(expansion.split())
+        
+        return expanded_tokens
 
     def _upsert_lexical_records(
         self,
@@ -135,6 +225,27 @@ class VectorStore:
         # not fabricate one; callers must establish it from the first batch.
         return 0
 
+    def _normalize_where_filter(self, where: Dict[str, Any] | None) -> Dict[str, Any] | None:
+        """Normalize where filters to handle JSON-serialized fields like page_numbers."""
+        if where is None:
+            return None
+        
+        normalized = {}
+        for key, value in where.items():
+            if key == "$and" and isinstance(value, list):
+                # Recursively normalize $and clauses
+                normalized[key] = [self._normalize_where_filter(clause) for clause in value]
+            elif key == "page_numbers" and isinstance(value, str):
+                # Handle JSON-serialized page_numbers
+                try:
+                    normalized[key] = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    normalized[key] = value
+            else:
+                normalized[key] = value
+        
+        return normalized
+
     def _coerce_metadata(self, metadata: Any) -> Dict[str, Any]:
         base = _metadata_dict(metadata)
         base.setdefault("index_state", "READY")
@@ -144,7 +255,15 @@ class VectorStore:
             base["chunk_id"] = base["id"]
         if "page_numbers" in base:
             try:
-                pages = _as_list(base.get("page_numbers"))
+                pages = base.get("page_numbers")
+                # Handle JSON string representation
+                if isinstance(pages, str):
+                    try:
+                        pages = json.loads(pages)
+                    except (json.JSONDecodeError, TypeError):
+                        pages = None
+                # Convert to list if possible
+                pages = _as_list(pages)
                 if pages:
                     base["page_numbers"] = pages
                 else:
@@ -395,6 +514,18 @@ class VectorStore:
             )
             connection.commit()
 
+    def purge_lexical_rows(self, document_id: str) -> None:
+        """Purge all lexical rows for a document before re-ingestion."""
+        with sqlite3.connect(self.lexical_database) as connection:
+            connection.execute(
+                """
+                DELETE FROM lexical_documents
+                WHERE json_extract(metadata, '$.document_id') = ?
+                """,
+                (str(document_id),),
+            )
+            connection.commit()
+
     def reconcile_index(self, document_id: str | None = None) -> Dict[str, Any]:
         query = {"document_id": document_id} if document_id else None
         if query is not None:
@@ -433,6 +564,130 @@ class VectorStore:
             "count": len(deduped),
             "document_id": document_id,
         }
+    
+    def check_embedding_model_compatibility(self, expected_identity: Any) -> Dict[str, Any]:
+        """Phase 84 fix: Check if current index is compatible with expected embedding model."""
+        current_identity = self._read_collection_identity()
+        
+        if current_identity is None:
+            return {
+                "compatible": True,
+                "reason": "No existing identity, fresh index",
+                "current": None,
+                "expected": expected_identity.fingerprint if expected_identity else None,
+            }
+        
+        current_fingerprint = current_identity.get("fingerprint", "")
+        expected_fingerprint = expected_identity.fingerprint if expected_identity else ""
+        
+        if current_fingerprint == expected_fingerprint:
+            return {
+                "compatible": True,
+                "reason": "Embedding models match",
+                "current": current_fingerprint,
+                "expected": expected_fingerprint,
+            }
+        
+        # Check if dimensions match
+        current_dim = current_identity.get("dimension", 0)
+        expected_dim = expected_identity.dimension if expected_identity else 0
+        
+        if current_dim != expected_dim:
+            return {
+                "compatible": False,
+                "reason": f"Dimension mismatch: {current_dim} vs {expected_dim}",
+                "current": current_fingerprint,
+                "expected": expected_fingerprint,
+                "current_dimension": current_dim,
+                "expected_dimension": expected_dim,
+                "requires_reindex": True,
+            }
+        
+        # Models are different but dimensions match - may need reindexing
+        return {
+            "compatible": False,
+            "reason": "Embedding model changed but dimensions match",
+            "current": current_fingerprint,
+            "expected": expected_fingerprint,
+            "requires_reindex": True,
+        }
+    
+    def create_backup_before_reindex(self) -> str:
+        """Phase 84 fix: Create backup of current vector collection before reindexing."""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"{self.collection_name}_backup_{timestamp}"
+        
+        try:
+            # Create backup collection
+            backup_collection = self.client.get_or_create_collection(
+                name=backup_name,
+                metadata={"hnsw:space": "cosine", "backup": "true", "original": self.collection_name},
+            )
+            
+            # Copy all data
+            current_data = self.collection.get(include=["documents", "metadatas", "embeddings"])
+            
+            if current_data.get("ids"):
+                backup_collection.add(
+                    ids=current_data["ids"],
+                    documents=current_data.get("documents", []),
+                    metadatas=current_data.get("metadatas", []),
+                    embeddings=current_data.get("embeddings", []),
+                )
+            
+            # Phase 85 fix: Also backup the ChromaDB persistent directory
+            self._backup_chromadb_directory(timestamp)
+            
+            return backup_name
+        except Exception as exc:
+            raise RuntimeError(f"Failed to create backup: {exc}") from exc
+    
+    def _backup_chromadb_directory(self, timestamp: str) -> str:
+        """Phase 85 fix: Backup the entire ChromaDB persistent directory."""
+        backup_dir = self.persist_directory.parent / f"chromadb_backup_{timestamp}"
+        
+        try:
+            if backup_dir.exists():
+                shutil.rmtree(backup_dir)
+            
+            shutil.copytree(self.persist_directory, backup_dir)
+            
+            # Also backup the lexical database
+            lexical_backup = backup_dir / "lexical.sqlite3"
+            if self.lexical_database.exists():
+                shutil.copy2(self.lexical_database, lexical_backup)
+            
+            return str(backup_dir)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to backup ChromaDB directory: {exc}") from exc
+    
+    def restore_from_backup(self, backup_name: str) -> None:
+        """Phase 84 fix: Restore vector collection from backup."""
+        try:
+            backup_collection = self.client.get_collection(name=backup_name)
+            
+            # Get backup data
+            backup_data = backup_collection.get(include=["documents", "metadatas", "embeddings"])
+            
+            # Clear current collection
+            self.clear_all()
+            
+            # Restore from backup
+            if backup_data.get("ids"):
+                self.collection.add(
+                    ids=backup_data["ids"],
+                    documents=backup_data.get("documents", []),
+                    metadatas=backup_data.get("metadatas", []),
+                    embeddings=backup_data.get("embeddings", []),
+                )
+            
+            # Restore collection metadata
+            if backup_collection.metadata:
+                backup_metadata = {k: v for k, v in backup_collection.metadata.items() if k != "backup"}
+                self.collection.modify(metadata=backup_metadata)
+                
+        except Exception as exc:
+            raise RuntimeError(f"Failed to restore from backup: {exc}") from exc
 
     def validate_document_index(
         self, document_id: str, version_id: str | None = None
@@ -690,7 +945,11 @@ class VectorStore:
         if not vector:
             return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
         ready_where: Dict[str, Any] = {"index_state": "READY"}
-        effective_where = ready_where if where is None else {"$and": [ready_where, where]}
+        
+        # Handle page_numbers filter - normalize from JSON string to list if needed
+        normalized_where = self._normalize_where_filter(where)
+        effective_where = ready_where if normalized_where is None else {"$and": [ready_where, normalized_where]}
+        
         # ChromaDB raises when n_results > number of items in the collection.
         # Clamp to the actual collection size so small test collections don't
         # silently return empty results via the broad except below.

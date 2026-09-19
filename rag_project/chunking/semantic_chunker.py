@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Iterator
-from typing import List
+from typing import List, Tuple, Dict, Any
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -18,6 +18,16 @@ class SemanticChunker:
     def __init__(self, chunk_size: int = 700, chunk_overlap: int = 120):
         self.chunk_size = max(1, int(chunk_size))
         self.chunk_overlap = max(0, int(chunk_overlap))
+        # Persist chapter state across batch calls to prevent chapters vanishing mid-document
+        self._document_chapter: str | None = None
+        self._current_document_id: str | None = None
+        # Phase 33 fix: Medical-specific chunking patterns
+        self._medical_boundary_patterns = [
+            r'\b(?:diagnosis|treatment|management|guideline|protocol|algorithm)\b[:\s]',
+            r'\b(?:contra-indication|side effect|adverse event|complication)\b[:\s]',
+            r'\b(?:dosage|administration|monitoring|follow-up)\b[:\s]',
+            r'\b(?:clinical trial|study|evidence|recommendation)\b[:\s]',
+        ]
 
     @staticmethod
     def _stable_id(value: str) -> str:
@@ -34,12 +44,229 @@ class SemanticChunker:
     @staticmethod
     def _is_heading_line(line: str) -> bool:
         return bool(re.match(r"^\s*#{1,3}\s+\S", str(line or "")))
+    
+    @staticmethod
+    def _detect_list_structure(text: str) -> Dict[str, Any]:
+        """Phase 29 fix: Detect and preserve list structures."""
+        lines = text.split('\n')
+        list_items = []
+        list_type = None
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Detect numbered lists
+            numbered_match = re.match(r'^\s*(\d+[\.\)]\s+)', stripped)
+            if numbered_match:
+                list_type = "numbered"
+                list_items.append({
+                    'type': 'numbered',
+                    'marker': numbered_match.group(1),
+                    'content': stripped[numbered_match.end():],
+                    'original': line
+                })
+                continue
+            
+            # Detect bulleted lists
+            bullet_patterns = [r'^\s*[\-\*]\s+', r'^\s•\s+', r'^\s○\s+']
+            for pattern in bullet_patterns:
+                if re.match(pattern, stripped):
+                    list_type = list_type or "bulleted"
+                    list_items.append({
+                        'type': 'bulleted',
+                        'content': stripped,
+                        'original': line
+                    })
+                    break
+            else:
+                # Non-list content
+                if list_items:
+                    # End of current list
+                    break
+        
+        return {
+            'has_list': len(list_items) > 1,
+            'list_type': list_type,
+            'list_items': list_items,
+            'list_count': len(list_items)
+        }
+    
+    @staticmethod
+    def _preserve_formulas(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+        """Phase 19 fix: Preserve mathematical formulas and equations."""
+        # Protect mathematical expressions
+        formula_patterns = [
+            r'\$\$[^$]+\$\$',  # Display math: $$...$$ (must be checked first)
+            r'\$[^$]+\$',  # LaTeX-style formulas: $...$
+            r'\\[\[\{][^\\]*[\\\]\}]',  # LaTeX brackets: \[...\] or \{...\}
+            r'[A-Za-z]\s*=\s*[^.]+?(?=[\n;]|$)',  # Simple equations: a = ...
+        ]
+        
+        protected_text = text
+        formula_placeholders = []
+        
+        for i, pattern in enumerate(formula_patterns):
+            matches = re.finditer(pattern, protected_text)
+            for match in reversed(list(matches)):
+                formula = match.group()
+                placeholder = f"__FORMULA_{i}_{len(formula_placeholders)}__"
+                formula_placeholders.append((placeholder, formula))
+                protected_text = protected_text[:match.start()] + placeholder + protected_text[match.end():]
+        
+        return protected_text, formula_placeholders
+    
+    @staticmethod
+    def _restore_formulas(text: str, formula_placeholders: List[Tuple[str, str]]) -> str:
+        """Restore preserved formulas."""
+        restored = text
+        for placeholder, formula in formula_placeholders:
+            restored = restored.replace(placeholder, formula)
+        return restored
+    
+    @staticmethod
+    def _detect_column_layout(text: str) -> Dict[str, Any]:
+        """Phase 8 fix: Enhanced multi-column layout detection."""
+        lines = text.split('\n')
+        
+        if len(lines) < 3:
+            return {"columns": 1, "confidence": 1.0}
+        
+        # Analyze line patterns to detect columns
+        line_lengths = [len(line.strip()) for line in lines if line.strip()]
+        if not line_lengths:
+            return {"columns": 1, "confidence": 1.0}
+        
+        avg_length = sum(line_lengths) / len(line_lengths)
+        max_length = max(line_lengths)
+        
+        # Look for patterns suggesting multiple columns
+        # - Many short lines of similar length
+        # - Alternating long/short patterns
+        # - Gaps in horizontal spacing
+        
+        short_lines = [l for l in line_lengths if l < avg_length * 0.6]
+        short_ratio = len(short_lines) / len(line_lengths)
+        
+        # Detect 2-column layout
+        if short_ratio > 0.5 and avg_length < max_length * 0.7:
+            return {
+                "columns": 2,
+                "confidence": min(0.9, short_ratio),
+                "avg_length": avg_length,
+                "max_length": max_length,
+            }
+        
+        # Detect 3+ column layout (very structured)
+        very_short_lines = [l for l in line_lengths if l < avg_length * 0.4]
+        if len(very_short_lines) / len(line_lengths) > 0.6:
+            return {
+                "columns": 3,
+                "confidence": min(0.8, len(very_short_lines) / len(line_lengths)),
+                "avg_length": avg_length,
+                "max_length": max_length,
+            }
+        
+        return {"columns": 1, "confidence": 1.0 - short_ratio * 0.3}
+    
+    @staticmethod
+    def _sort_by_column_reading_order(text: str, layout_info: Dict[str, Any]) -> str:
+        """Phase 8 fix: Sort text by column reading order for multi-column layouts."""
+        if layout_info.get("columns", 1) <= 1:
+            return text
+        
+        lines = text.split('\n')
+        if len(lines) < 3:
+            return text
+        
+        # Simple column sorting: group lines by position/length pattern
+        # This is a heuristic approach - actual column detection would need visual analysis
+        
+        columns = layout_info.get("columns", 2)
+        sorted_lines = []
+        
+        # For 2-column: interleave lines (assume alternating columns)
+        if columns == 2:
+            for i in range(0, len(lines), 2):
+                sorted_lines.append(lines[i])
+                if i + 1 < len(lines):
+                    sorted_lines.append(lines[i + 1])
+        
+        # For 3+ columns: simple sequential ordering (most common fallback)
+        else:
+            sorted_lines = lines
+        
+        return '\n'.join(sorted_lines)
+    
+    @staticmethod
+    def _detect_mixed_language(text: str) -> Dict[str, Any]:
+        """Phase 26 fix: Detect mixed-language documents."""
+        # Language detection patterns
+        french_patterns = [
+            r'\b(?:le|la|les|un|une|des|et|ou|mais|où|qui|que|qu|dont|lui|leur|y|en)\b',
+            r'\b(?:être|avoir|faire|aller|dire|prendre|venir|voir|savoir|pouvoir)\b',
+            r'[àâäéèêëïîôùûüÿç]',
+        ]
+        
+        arabic_patterns = [
+            r'[\u0600-\u06FF]',  # Arabic script range
+            r'\b(?:في|من|على|إلى|عن|مع|هذا|هذه|التي|الذي|الذين)\b',
+        ]
+        
+        english_patterns = [
+            r'\b(?:the|a|an|and|or|but|where|who|which|that|this|these|those)\b',
+            r'\b(?:is|are|was|were|be|been|being|have|has|had|do|does|did)\b',
+        ]
+        
+        text_lower = text.lower()
+        
+        # Count matches for each language
+        french_score = sum(len(re.findall(pattern, text_lower)) for pattern in french_patterns)
+        arabic_score = sum(len(re.findall(pattern, text)) for pattern in arabic_patterns)
+        english_score = sum(len(re.findall(pattern, text_lower)) for pattern in english_patterns)
+        
+        total_score = french_score + arabic_score + english_score
+        
+        if total_score == 0:
+            return {"primary_language": "unknown", "mixed": False, "scores": {}}
+        
+        # Determine if mixed (multiple languages with significant scores)
+        language_scores = {
+            "french": french_score,
+            "arabic": arabic_score,
+            "english": english_score,
+        }
+        
+        significant_languages = [lang for lang, score in language_scores.items() if score > total_score * 0.2]
+        
+        primary_language = max(language_scores, key=language_scores.get)
+        
+        return {
+            "primary_language": primary_language,
+            "mixed": len(significant_languages) > 1,
+            "significant_languages": significant_languages,
+            "scores": language_scores,
+        }
 
     def _child_splitter(self) -> RecursiveCharacterTextSplitter:
+        # Phase 33 fix: Add medical-specific separators to avoid splitting clinical guidelines
+        medical_separators = [
+            "\n\n",  # Paragraph breaks
+            "\n",   # Line breaks
+            ". ",   # Sentence endings
+            "; ",   # Semicolons
+            ", ",   # Commas
+            " ",    # Spaces
+            "",     # Character level
+        ]
+        
+        # Add medical-specific boundary patterns
+        for pattern in self._medical_boundary_patterns:
+            medical_separators.insert(-1, pattern)
+        
         return RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=min(self.chunk_overlap, max(0, self.chunk_size // 2)),
-            separators=["\n\n", "\n", ". ", "; ", ", ", " ", ""],
+            separators=medical_separators,
         )
 
     def _parent_sections(self, text: str) -> list[tuple[str, dict[str, str]]]:
@@ -127,9 +354,15 @@ class SemanticChunker:
         pages = list(pages or [])
         if not pages:
             return []
+        
+        # Check if we're processing a new document and reset chapter state accordingly
+        if pages and pages[0].document_id != self._current_document_id:
+            self._document_chapter = None
+            self._current_document_id = pages[0].document_id
+        
         splitter = self._child_splitter()
         chunks: list[Chunk] = []
-        document_chapter: str | None = None
+        document_chapter = self._document_chapter
 
         for page in pages:
             page_no = int(getattr(page, "page_number", getattr(page, "page_index", 0) + 1) or 1)
@@ -163,13 +396,15 @@ class SemanticChunker:
                 chapter = hierarchy.get("chapter")
                 if chapter:
                     document_chapter = chapter
+                    self._document_chapter = chapter  # Persist across batch calls
                 elif document_chapter:
                     chapter = document_chapter
                 section = hierarchy.get("subsection") or hierarchy.get("section") or fallback
                 
                 # Use chapter/section hierarchy only, NOT page number
                 # This ensures the same logical section gets the same ID across pages
-                section_hierarchy_key = f"{chapter or ''}|{section or '__page__'}"
+                # Include document_id in hierarchy key to prevent collisions across documents
+                section_hierarchy_key = f"{page.document_id}|{chapter or ''}|{section or '__page__'}"
                 parent_id = f"{page.document_id}:parent:{self._stable_id(section_hierarchy_key)}"
                 section_id = f"{page.document_id}:section:{self._stable_id(section_hierarchy_key)}"
                 
