@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
+from .intelligent_answer_generator import IntelligentAnswerGenerator
 
 from rag_project.intelligence.evidence_guard import grounding_decision, verify_claims
 from rag_project.intelligence.final_answer_contract import verify_final_answer
@@ -349,9 +350,44 @@ class AnswerCascade:
         return "fr" if french_score > english_score else "en"
     
     @staticmethod
-    def _extractive(compiled:dict[str,Any],max_sentences:int=6)->str:
+    def _extractive(compiled:dict[str,Any],max_sentences:int=6,question:str="")->str:
+        """Intelligent extractive answer generation using advanced deterministic algorithms."""
+        claims = compiled.get("claims") or []
+        if not claims:
+            return ""
+        
+        # Use the intelligent answer generator for sophisticated answers
+        try:
+            intelligent_answer = IntelligentAnswerGenerator.generate_intelligent_answer(
+                question, claims[:max_sentences]
+            )
+            if intelligent_answer and len(intelligent_answer) > 50:
+                return intelligent_answer
+        except Exception:
+            # Fallback to professional summary if intelligent generation fails
+            pass
+        
+        # Fallback to professional summary
+        try:
+            professional_summary = IntelligentAnswerGenerator.create_professional_summary(claims, question)
+            if professional_summary and len(professional_summary) > 30:
+                # Add citations
+                sentences = re.split(r'(?<=[.!?])\s+', professional_summary)
+                cited_sentences = []
+                for i, sentence in enumerate(sentences):
+                    if i < len(claims):
+                        source_num = claims[i].source_numbers[0] if claims[i].source_numbers else (i + 1)
+                        clean_sentence = sentence.rstrip('.!?')
+                        cited_sentences.append(f"{clean_sentence} [S{source_num}].")
+                    else:
+                        cited_sentences.append(sentence)
+                return " ".join(cited_sentences)
+        except Exception:
+            pass
+        
+        # Final fallback to simple extractive method
         lines=[]
-        for claim in (compiled.get("claims") or [])[:max_sentences]:
+        for claim in claims[:max_sentences]:
             src=f"[S{claim.source_numbers[0]}]"
             # Clean the claim text to remove any remaining metadata
             claim_text = str(claim.text or "").strip()
@@ -451,7 +487,7 @@ class AnswerCascade:
         confidence_threshold = .20 if is_cross_language else .30  # Lowered confidence threshold for cross-language
         
         if route.complexity<complexity_threshold and c>=confidence_threshold:
-            extractive_answer = self._extractive(compiled)
+            extractive_answer = self._extractive(compiled, question=question)
             # Always prepend language note for cross-language scenarios
             if is_cross_language and language_note:
                 final_answer = f"{language_note}\n\n{extractive_answer}"
@@ -461,7 +497,7 @@ class AnswerCascade:
         
         # Always allow extractive for language mismatch cases, regardless of complexity
         if is_cross_language:
-            extractive_answer = self._extractive(compiled)
+            extractive_answer = self._extractive(compiled, question=question)
             # Always prepend language note for cross-language scenarios
             if language_note:
                 final_answer = f"{language_note}\n\n{extractive_answer}"
@@ -487,7 +523,7 @@ class AnswerCascade:
                 final_answer = synthesized
             return final_answer,"PATH_C_CONSTRAINED_LLM",{"attempted":True,"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         # Always use extractive fallback for questions with evidence, even for higher complexity
-        fallback=templated or self._extractive(compiled)
+        fallback=templated or self._extractive(compiled, question=question)
         if fallback:
             # Always prepend language note for cross-language scenarios
             if is_cross_language and language_note:
@@ -558,7 +594,7 @@ class MedEvidenceProEngine:
                 result={"status":"NOT_SUPPORTED","answer":"I could not find sufficient indexed evidence to answer this question safely.","citations":[],"hits":hits,"confidence":{"level":"none","evidence_confidence":0.},"safety":asdict(safety),"route":asdict(route),"retrieval":retrieval_state,"evidence":{"claim_count":0}}; self.feedback.log(clean,result,(time.perf_counter()-started)*1000); return result
         answer,generation_path,generation_meta=self.cascade.generate(clean,route,compiled); verification=self.verifier.verify(answer,hits,route,compiled) if answer else {"allow":False,"checked":True,"supported_ratio":0.,"claim_count":0,"blocked_claims":0,"numeric_mismatch":False,"contradiction":compiled.get("contradiction",{})}
         if not verification.get("allow"):
-            fallback=self.cascade._extractive(compiled,max_sentences=6); fallback_verification=self.verifier.verify(fallback,hits,route,compiled) if fallback else verification
+            fallback=self.cascade._extractive(compiled,max_sentences=6,question=clean); fallback_verification=self.verifier.verify(fallback,hits,route,compiled) if fallback else verification
             # More lenient fallback: allow extractive answers even with imperfect verification
             if fallback and (fallback_verification.get("allow") or verification.get("supported_ratio",0.)>=0.30): answer,generation_path,generation_meta=fallback,"PATH_A_VERIFIED_FALLBACK",{"attempted":True,"fallback":True}; verification=fallback_verification if fallback_verification.get("allow") else verification
             else:
