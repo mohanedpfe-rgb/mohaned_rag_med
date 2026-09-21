@@ -257,9 +257,21 @@ class EvidenceCompiler:
         query_tokens=set(meaningful_tokens(question)); expanded_tokens=set(query_tokens)
         for variant in route.query_variants: expanded_tokens.update(meaningful_tokens(variant))
         for entity in route.entities: expanded_tokens.update(meaningful_tokens(entity))
+        
+        # Detect if this is a cross-language scenario
+        query_has_french = any(char in question.lower() for char in "àâäéèêëïîôùûüÿç")
+        sample_text = " ".join(h.text for h in hits[:3]) if hits else ""
+        content_has_french = any(char in sample_text.lower() for char in "àâäéèêëïîôùûüÿç")
+        is_cross_language = query_has_french != content_has_french
+        
         ranked=[]
         numeric_listing=route.numeric_sensitivity or bool(re.search(r"\bnumeric\b|\blist\b",question,flags=re.I))
         numeric_value=re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)(?![A-Za-z0-9])",flags=re.I)
+        
+        # For cross-language scenarios, be much more lenient with overlap requirements
+        overlap_threshold = 0.01 if is_cross_language else 0.03
+        min_sentence_length = 3 if is_cross_language else 4
+        
         for index,hit in enumerate(hits[:24],1):
             for sentence in _sentences(hit.text):
                 sentence_tokens=set(meaningful_tokens(sentence)); overlap=len(sentence_tokens&expanded_tokens)/max(1,len(expanded_tokens)); entity_overlap=max((len(set(meaningful_tokens(entity))&sentence_tokens)/max(1,len(meaningful_tokens(entity))) for entity in route.entities),default=0.)
@@ -272,20 +284,28 @@ class EvidenceCompiler:
                     overlap_lower = len(sentence_lower & query_lower) / max(1, len(query_lower))
                     if overlap_lower > 0:
                         overlap = overlap_lower
-                    # Also lower the threshold for multilingual scenarios
-                    elif len(sentence_tokens) >= 3 and len(expanded_tokens) >= 2:
-                        # For multilingual, be more lenient: allow any meaningful medical sentence
-                        overlap = 0.1  # Minimum overlap for multilingual fallback
+                    # For cross-language scenarios, be much more lenient
+                    elif is_cross_language and len(sentence_tokens) >= min_sentence_length and len(expanded_tokens) >= 2:
+                        overlap = 0.15  # Higher minimum for cross-language
                 
-                # More lenient scoring: allow very low overlap for meaningful sentences
+                # More lenient scoring for cross-language scenarios
                 if overlap<=0 and entity_overlap<=0 and not (numeric_listing and numeric_value.search(sentence)): 
-                    # For multilingual scenarios, include sentences if they're medical/meaningful
-                    if len(sentence_tokens) >= 4 and any(len(token) >= 4 for token in sentence_tokens):
-                        overlap = 0.05  # Very low threshold for meaningful content
+                    # For cross-language scenarios, include sentences if they're medical/meaningful
+                    if is_cross_language and len(sentence_tokens) >= min_sentence_length and any(len(token) >= 3 for token in sentence_tokens):
+                        overlap = 0.10  # More lenient for cross-language
+                    elif len(sentence_tokens) >= 4 and any(len(token) >= 4 for token in sentence_tokens):
+                        overlap = 0.05  # Standard fallback
                     else:
                         continue
-                numeric_bonus=.12 if (route.numeric_sensitivity or numeric_listing) and numeric_value.search(sentence) else 0.; score=.55*max(0.,min(1.,hit.score))+.35*max(overlap,entity_overlap)+numeric_bonus
-                if score>=.03:ranked.append((score,sentence,index))  # Lowered threshold from .06 to .03
+                
+                # Boost score for cross-language scenarios to ensure we get enough evidence
+                cross_language_boost = 0.15 if is_cross_language else 0.0
+                numeric_bonus=.12 if (route.numeric_sensitivity or numeric_listing) and numeric_value.search(sentence) else 0.
+                score=.55*max(0.,min(1.,hit.score))+.35*max(overlap,entity_overlap)+numeric_bonus+cross_language_boost
+                
+                # Lower threshold for cross-language to ensure we get evidence
+                effective_threshold = overlap_threshold if not is_cross_language else 0.02
+                if score>=effective_threshold:ranked.append((score,sentence,index))
         ranked.sort(key=lambda x:x[0],reverse=True); claims=[];seen=set()
         for score,sentence,idx in ranked:
             key=_norm(sentence)
@@ -293,7 +313,7 @@ class EvidenceCompiler:
             seen.add(key);claims.append(EvidenceClaim(sentence,(idx,),bool(re.search(r"\d",sentence)),False,min(1.,score)))
             if len(claims)>=8:break
         numeric_values=[m.group(0) for c in claims for m in re.finditer(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|g|kg|mL|ml|L|mmHg|mmol/L|%|IU|units?)\b",c.text,flags=re.I)]; contradiction=self._detect_contradiction(claims); compressed="\n".join(f"- {c.text} [S{c.source_numbers[0]}]" for c in claims)
-        return {"claims":claims,"compressed":compressed[:6500],"numeric_values":numeric_values[:32],"contradiction":contradiction,"structured":structured,"claim_count":len(claims),"compression_chars":len(compressed[:6500])}
+        return {"claims":claims,"compressed":compressed[:6500],"numeric_values":numeric_values[:32],"contradiction":contradiction,"structured":structured,"claim_count":len(claims),"compression_chars":len(compressed[:6500]),"is_cross_language":is_cross_language}
     @staticmethod
     def _detect_contradiction(claims:Sequence[EvidenceClaim])->dict[str,Any]:
         numeric_claims=[]
@@ -313,14 +333,17 @@ class AnswerCascade:
     def _detect_content_language(text:str)->str:
         """Detect if content is primarily French or English."""
         # Enhanced French indicators including common French words and patterns
-        french_indicators = sum(1 for word in ["le", "la", "les", "et", "est", "sont", "pour", "avec", "dans", "une", "des", "du", "de", "diabète", "diabete", "traitement", "symptôme", "symptome", "médecin", "medecin", "patient", "maladie", "malade", "où", "ou", "quand", "lorsque", "mais", "alors", "donc", "or", "ni", "car", "parce", "vers", "chez", "sans", "sur", "sous", "entre", "pendant", "depuis", "jusqu", "tous", "toute", "toutes", "ce", "cet", "cette", "ces", "mon", "ma", "mes", "notre", "nos", "leur", "leurs", "dépression", "depression", "intolérance", "intolerance", "glycémie", "glycemie", "hyperglycémie", "hyperglycemie", "mnémonique", "mnemonique", "obésité", "obesite", "ostéoporose", "osteoporose", "neurologique", "neurologique", "vergetures", "hypertension", "oedeme", "edema"] if word in text.lower())
-        english_indicators = sum(1 for word in ["the", "and", "is", "are", "for", "with", "in", "of", "a", "an", "diabetes", "treatment", "symptom", "doctor", "patient", "disease", "where", "when", "while", "but", "then", "so", "or", "nor", "because", "therefore", "towards", "at", "without", "on", "under", "between", "during", "since", "until", "all", "every", "this", "that", "these", "those", "my", "your", "our", "their"] if word in text.lower())
+        french_indicators = sum(1 for word in ["le", "la", "les", "et", "est", "sont", "pour", "avec", "dans", "une", "des", "du", "de", "diabète", "diabete", "traitement", "symptôme", "symptome", "médecin", "medecin", "patient", "maladie", "malade", "où", "ou", "quand", "lorsque", "mais", "alors", "donc", "or", "ni", "car", "parce", "vers", "chez", "sans", "sur", "sous", "entre", "pendant", "depuis", "jusqu", "tous", "toute", "toutes", "ce", "cet", "cette", "ces", "mon", "ma", "mes", "notre", "nos", "leur", "leurs", "dépression", "depression", "intolérance", "intolerance", "glycémie", "glycemie", "hyperglycémie", "hyperglycemie", "mnémonique", "mnemonique", "obésité", "obesite", "ostéoporose", "osteoporose", "neurologique", "neurologique", "vergetures", "hypertension", "oedeme", "edema", "insuffisance", "rein", "foie", "cœur", "coeur", "sang", "pression", "grossesse", "enfant", "adulte", "contre", "indication", "effet", "secondaire", "prognostic", "mécanisme", "mecanisme", "physiologie", "anatomie", "laboratoire", "imagerie", "chirurgie", "dépistage", "depistage"] if word in text.lower())
+        english_indicators = sum(1 for word in ["the", "and", "is", "are", "for", "with", "in", "of", "a", "an", "diabetes", "treatment", "symptom", "doctor", "patient", "disease", "where", "when", "while", "but", "then", "so", "or", "nor", "because", "therefore", "towards", "at", "without", "on", "under", "between", "during", "since", "until", "all", "every", "this", "that", "these", "those", "my", "your", "our", "their", "kidney", "liver", "heart", "blood", "pressure", "pregnancy", "child", "adult", "contraindication", "side", "effect", "prognosis", "mechanism", "pathophysiology", "anatomy", "physiology", "laboratory", "imaging", "surgery", "screening"] if word in text.lower())
         
         # Also check for common French patterns like "o " (bullet points in French docs)
-        french_patterns = len(re.findall(r"\bo\s+[a-z]", text.lower()))
+        french_patterns = len(re.findall(r"\bo\s+[a-zàâäéèêëïîôùûüÿç]", text.lower()))
         english_patterns = len(re.findall(r"\b-\s+[a-z]", text.lower()))  # English bullet points
         
-        french_score = french_indicators + french_patterns
+        # Check for French accent characters (strong indicator)
+        french_chars = len(re.findall(r"[àâäéèêëïîôùûüÿç]", text.lower()))
+        
+        french_score = french_indicators + french_patterns + (french_chars * 2)  # Weight accents heavily
         english_score = english_indicators + english_patterns
         
         return "fr" if french_score > english_score else "en"
@@ -401,48 +424,77 @@ class AnswerCascade:
         # Detect content language and handle language mismatch
         content_language = self._detect_content_language(evidence)
         query_language = "fr" if any(char in question for char in "àâäéèêëïîôùûüÿç") else "en"
+        is_cross_language = compiled.get("is_cross_language", content_language != query_language)
         
-        # If there's a language mismatch, add a note to the answer
+        # If there's a language mismatch, add a more helpful note to the answer
         language_note = ""
-        if content_language != query_language:
+        if is_cross_language:
             if content_language == "fr" and query_language == "en":
-                language_note = "[Note: The indexed evidence is primarily in French. The answer below is a direct extraction from the French medical document.]"
+                language_note = "[Language Note: The indexed documents are primarily in French. The answer below contains extracted content from French medical sources and includes French medical terminology.]" 
             elif content_language == "en" and query_language == "fr":
-                language_note = "[Note: Les preuves indexées sont principalement en anglais. La réponse ci-dessous est une extraction directe du document médical anglais.]"
+                language_note = "[Note de langue: Les documents indexés sont principalement en anglais. La réponse ci-dessous contient du contenu extrait de sources médicales anglaises.]"
         
         templated=self._template(compiled,route)
         # Dosage and table queries are precision-first: the template path must fire
         # BEFORE the extractive short-circuit so numeric/structured questions always
         # receive the exact-value format instead of a prose extraction.
         if templated and route.template_type in {"dosage","table"}:
-            final_answer = f"{language_note}\n{templated}" if language_note else templated
-            return final_answer,"PATH_B_TEMPLATE",{"attempted":False,"confidence":c,"language_mismatch":content_language!=query_language,"content_language":content_language,"query_language":query_language}
+            # Always prepend language note for cross-language scenarios
+            if is_cross_language and language_note:
+                final_answer = f"{language_note}\n\n{templated}"
+            else:
+                final_answer = templated
+            return final_answer,"PATH_B_TEMPLATE",{"attempted":False,"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         # More lenient extractive threshold: allow extractive for low-medium complexity
-        if route.complexity<.50 and c>=.30:
+        # For cross-language, be even more lenient to ensure we get answers
+        complexity_threshold = .70 if is_cross_language else .50  # Increased threshold for cross-language
+        confidence_threshold = .20 if is_cross_language else .30  # Lowered confidence threshold for cross-language
+        
+        if route.complexity<complexity_threshold and c>=confidence_threshold:
             extractive_answer = self._extractive(compiled)
-            final_answer = f"{language_note}\n{extractive_answer}" if language_note else extractive_answer
-            return final_answer,"PATH_A_EXTRACTIVE",{"attempted":False,"confidence":c,"language_mismatch":content_language!=query_language,"content_language":content_language,"query_language":query_language}
+            # Always prepend language note for cross-language scenarios
+            if is_cross_language and language_note:
+                final_answer = f"{language_note}\n\n{extractive_answer}"
+            else:
+                final_answer = extractive_answer
+            return final_answer,"PATH_A_EXTRACTIVE",{"attempted":False,"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         
         # Always allow extractive for language mismatch cases, regardless of complexity
-        if content_language != query_language:
+        if is_cross_language:
             extractive_answer = self._extractive(compiled)
-            final_answer = f"{language_note}\n{extractive_answer}" if language_note else extractive_answer
+            # Always prepend language note for cross-language scenarios
+            if language_note:
+                final_answer = f"{language_note}\n\n{extractive_answer}"
+            else:
+                final_answer = extractive_answer
             return final_answer,"PATH_A_EXTRACTIVE",{"attempted":False,"confidence":c,"language_mismatch":True,"content_language":content_language,"query_language":query_language}
         # Comparison/mechanism templates go via PATH_B_TEMPLATE only for LOW complexity;
         # high-complexity synthesis queries (comparison with multiple aspects, mechanism
         # explanation) must proceed to PATH_C_CONSTRAINED_LLM.
         if templated and route.complexity<.70:
-            final_answer = f"{language_note}\n{templated}" if language_note else templated
-            return final_answer,"PATH_B_TEMPLATE",{"attempted":False,"confidence":c,"language_mismatch":content_language!=query_language,"content_language":content_language,"query_language":query_language}
+            # Always prepend language note for cross-language scenarios
+            if is_cross_language and language_note:
+                final_answer = f"{language_note}\n\n{templated}"
+            else:
+                final_answer = templated
+            return final_answer,"PATH_B_TEMPLATE",{"attempted":False,"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         synthesized=self._llm(question,evidence,route)
         if synthesized and self._citation_complete(synthesized,max(1,len(getattr(self.system,"_med_selected_hits",[])))):
-            final_answer = f"{language_note}\n{synthesized}" if language_note else synthesized
-            return final_answer,"PATH_C_CONSTRAINED_LLM",{"attempted":True,"confidence":c,"language_mismatch":content_language!=query_language,"content_language":content_language,"query_language":query_language}
+            # Always prepend language note for cross-language scenarios
+            if is_cross_language and language_note:
+                final_answer = f"{language_note}\n\n{synthesized}"
+            else:
+                final_answer = synthesized
+            return final_answer,"PATH_C_CONSTRAINED_LLM",{"attempted":True,"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         # Always use extractive fallback for questions with evidence, even for higher complexity
         fallback=templated or self._extractive(compiled)
         if fallback:
-            final_answer = f"{language_note}\n{fallback}" if language_note else fallback
-            return final_answer,"PATH_HYBRID_FALLBACK",{"attempted":bool(synthesized),"confidence":c,"language_mismatch":content_language!=query_language,"content_language":content_language,"query_language":query_language}
+            # Always prepend language note for cross-language scenarios
+            if is_cross_language and language_note:
+                final_answer = f"{language_note}\n\n{fallback}"
+            else:
+                final_answer = fallback
+            return final_answer,"PATH_HYBRID_FALLBACK",{"attempted":bool(synthesized),"confidence":c,"language_mismatch":is_cross_language,"content_language":content_language,"query_language":query_language}
         return "","PATH_D_ABSTAIN",{"attempted":bool(synthesized),"confidence":c}
 
 class ActiveVerifier:
